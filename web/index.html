@@ -1725,6 +1725,7 @@ class HubScreen extends Screen {
   open(make) { if (this.c.locked) { this.msg = "Locked until high school is over. Go play!"; this.msgT = 2.5; return; } App.switch(make()); }
   key(k) {
     const rows = this.rows;
+    if ((k === "b" || k === "B") && this.c.lastTourney && this.c.lastTourney.field) { App.switch(new BracketScreen(new HubScreen())); return; }
     if (K.up(k)) { this.r = (this.r - 1 + rows.length) % rows.length; }
     else if (K.down(k)) { this.r = (this.r + 1) % rows.length; }
     else if (K.left(k)) this.col = Math.max(0, this.col - 1);
@@ -1809,6 +1810,11 @@ class HubScreen extends Screen {
     rrect(36, 590, 150, 40, 8, qs ? "#343747" : null, qs ? C.gold : "#343747", 1.5);
     text("Quit to Title", 111, 610, { size: 22, color: qs ? C.white : C.grey, center: true });
     hit(36, 590, 150, 40, () => { this.r = 3; this.rows[3][0].go(); });
+    if (c.lastTourney && c.lastTourney.field) {   // the tournament bracket, any time
+      rrect(206, 590, 170, 40, 8, "#2a2214", C.gold, 1.5);
+      text(c.tourney ? "Bracket (B)" : "Last bracket (B)", 291, 610, { size: 22, color: C.gold, center: true });
+      hit(206, 590, 170, 40, () => App.switch(new BracketScreen(new HubScreen())));
+    }
     rrect(540, 100, 430, 500, 10, "#181a22", C.grey, 1.5);
     text("THE ROAD TO GOLD", 755, 126, { size: 30, color: C.gold, center: true, display: true });
     TIERS.forEach((t, i) => {
@@ -1833,7 +1839,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser");
+    this.footer("Progress saves automatically in this browser  ·  version 22 (brackets)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -1861,7 +1867,10 @@ class CourtScreen extends Screen {
     const c = this.c, o = this.options()[i]; this.sel = i;
     if (!o) return;
     if (o.kind === "tourney" && this.ci === HUSTLE && !o.game) { App.switch(new GymScreen(true)); return; }   // pick who runs with you first
-    if (o.kind === "tourney") { if (!o.game) { c.enterTourney(); App.save(); } startGame(this.ci, c.tourneyGame()); }
+    if (o.kind === "tourney") {
+      if (!o.game) { c.enterTourney(); App.save(); App.switch(new BracketScreen(() => startGame(this.ci, c.tourneyGame()))); return; }   // see the field first
+      startGame(this.ci, c.tourneyGame());
+    }
     else startGame(this.ci, o.game);
   }
   key(k) {
@@ -2508,7 +2517,7 @@ class ResultScreen extends Screen {
     else {
       if (r.nextRound || r.nextGame) items.push([`Play ${roundLabel(c.tourneyGame())}`, () => startGame(ci, c.tourneyGame())]);
       // auto-advance: straight into the next park's tournament
-      if (r.tierUp) items.push([`On to ${TIERS[c.tier].court} →`, () => { c.enterTourney(); App.save(); startGame(c.tier, c.tourneyGame()); }]);
+      if (r.tierUp) items.push([`On to ${TIERS[c.tier].court} →`, () => { c.enterTourney(); App.save(); App.switch(new BracketScreen(() => startGame(c.tier, c.tourneyGame()))); }]);
       if (crew.mode === "tourney" && c.lastTourney) items.push(["View the bracket", () => App.switch(new BracketScreen(this))]);
       items.push(["Back to the Hub", () => App.switch(new HubScreen())]);
     }
@@ -2558,7 +2567,7 @@ const BR = { W: 98, H: 22, X: [6, 114, 222, 330], TOP: 104, PAIR: 24, STEP: 60, 
 class BracketScreen extends Screen {
   // next: the screen to go to on Continue (or a function that makes it)
   constructor(next) { super(); this.next = next; this.t0 = performance.now(); }
-  go() { const n = this.next; App.switch(typeof n === "function" ? n() : n || new CourtScreen()); }
+  go() { const n = this.next, s = typeof n === "function" ? n() : n || new CourtScreen(); if (s) App.switch(s); }   // a function may switch screens itself
   key(k) { if (K.ok(k) || K.back(k) || k === "b" || k === "B") this.go(); }
   get t() { const c = this.c; return c.tourney && c.tourney.field ? c.tourney : c.lastTourney; }
   // centre y of team j (0-15 per side) in round r
@@ -2840,7 +2849,7 @@ class GymScreen extends Screen {
     App.save();
   }
   enter() {
-    const c = this.c; c.enterTourney(); App.save(); startGame(HUSTLE, c.tourneyGame());
+    const c = this.c; c.enterTourney(); App.save(); App.switch(new BracketScreen(() => startGame(HUSTLE, c.tourneyGame())));
   }
   key(k) {
     const n = this.c.gym.length;
