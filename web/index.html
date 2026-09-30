@@ -747,14 +747,40 @@ function bracket(tier, seed) {
 }
 
 const MARKET_MS = 5 * 60 * 1000;
-const RARITY = [   // name, base weight, how much fame/team level boosts it, rating offset, price per OVR point
-  { name: "Common", w: 62, boost: 0, off: -4, price: 4, color: "#b9bcc6" },
-  { name: "Rare", w: 26, boost: 1, off: 0, price: 6, color: "#5096f0" },
-  { name: "Epic", w: 9, boost: 2, off: 7, price: 9, color: "#b36bff" },
-  { name: "Legend", w: 2.5, boost: 3, off: 14, price: 14, color: "#f5c83c" },
-  { name: "Mythic", w: 0.5, boost: 4, off: 20, price: 20, color: "#ff3b5c", glow: true },
-  { name: "Eternal", w: 0.08, boost: 6, off: 28, price: 30, color: "#7ff9ff", glow: true, rainbow: true },
+// w: base odds weight · boost: how much fame/team level raises the odds · off: rating vs YOUR player's OVR
+// stats: how many of the player's 5 stats get a rarity boost · amt: size of that boost · lvl: extra attribute levels
+const RARITY = [
+  { name: "Common", w: 62, boost: 0, off: -6, stats: 0, amt: 0, lvl: 0, price: 4, color: "#b9bcc6" },
+  { name: "Rare", w: 26, boost: 1, off: -2, stats: 1, amt: 5, lvl: 0, price: 6, color: "#5096f0" },
+  { name: "Epic", w: 9, boost: 2, off: 1, stats: 2, amt: 6, lvl: 0, price: 9, color: "#b36bff" },
+  { name: "Legend", w: 2.5, boost: 3, off: 4, stats: 3, amt: 8, lvl: 1, price: 14, color: "#f5c83c" },
+  { name: "Mythic", w: 0.5, boost: 4, off: 7, stats: 4, amt: 9, lvl: 1, price: 20, color: "#ff3b5c", glow: true },
+  { name: "Eternal", w: 0.08, boost: 6, off: 10, stats: 5, amt: 11, lvl: 2, price: 30, color: "#7ff9ff", glow: true, rainbow: true },
 ];
+// Build a player of a given rarity around an anchor rating (your player's OVR).
+// Rarer players are boosted in more stats, starting with what their position is good at. Nothing is guaranteed:
+// every roll has its own spread.
+function rarePlayer(rng, anchor, rar) {
+  // The better you already are, the smaller the jump a rarity gives (there's less room left under 99).
+  const room = clamp((99 - anchor) / 57, 0.12, 1);
+  const target = clamp(Math.round(anchor + (rar.off + rar.stats * rar.amt / 5 + rng.uniform(-3, 3)) * room), 25, 99);
+  const p = generatePlayer(rng, target);
+  if (rar.lvl && p.main) p.mainLvl = Math.min(S.MAIN_MAX, p.mainLvl + rar.lvl);
+  if (rar.lvl && !p.main) { p.main = rng.choice(POS_ATTRS[p.pos]); p.mainLvl = rar.lvl; }
+  if (rar.lvl >= 2 && p.sec) p.secLvl = Math.min(S.SEC_MAX, p.secLvl + 1);
+  // boost the stats this player is best at (more stats for rarer players)…
+  const order = [...S.STATS].sort((a, b) => (POS_SHAPE[p.pos][b] + rng.uniform(-6, 6)) - (POS_SHAPE[p.pos][a] + rng.uniform(-6, 6)));
+  p.boosted = order.slice(0, rar.stats);
+  for (const k of p.boosted) p.stats[k] += Math.round(rar.amt * (0.6 + 0.4 * room)) + rng.randint(-2, 2);
+  // …then settle the whole stat line so the overall lands on the target
+  for (let pass = 0; pass < 4; pass++) {
+    const diff = target - overall(p);
+    if (diff === 0) break;
+    for (const k of S.STATS) p.stats[k] = clamp(p.stats[k] + diff, 20, S.STAT_MAX);
+  }
+  p.rarity = rar.name;
+  return p;
+}
 // Eternal cycles through every color; Mythic pulses red.
 function rarityColor(r, t = performance.now() / 1000) {
   if (r.rainbow) return `hsl(${(t * 140) % 360}, 95%, 68%)`;
@@ -859,11 +885,11 @@ class Career {
     this.refreshMarket();
     const rng = new Rng("M|" + this.market.seed), luck = this.marketLuck();
     const count = 2 + Math.floor(luck * 1.5 + rng.random() * 0.8);     // 2 players when you're unknown, up to 4
-    const level = Math.max(TIERS[this.tier].base, teamOverall(this.lineup())) + 2;
+    const anchor = overall(this.me);      // players are built around YOUR player's OVR
     const out = [];
     for (let i = 0; i < Math.min(4, count); i++) {
       const rar = rng.choices(RARITY, RARITY.map(r => r.w * (1 + r.boost * luck)));
-      const p = generatePlayer(rng, level + rar.off);
+      const p = rarePlayer(rng, anchor, rar);
       out.push({ i, rarity: rar, player: p, price: overall(p) * rar.price, sold: this.market.bought.includes(i) });
     }
     return out;
@@ -909,7 +935,7 @@ class Career {
 // =====================================================================
 const Luck = {
   SYMBOLS: ["BRICK", "BALL", "SHOE", "CASH", "CROWN", "MYTHIC", "ETERNAL"], WEIGHTS: [35, 25, 20, 13, 7, 4, 1.5], BETS: [10, 25, 50, 100, 250, 500],
-  RARITIES: [["Bum", 40, -14], ["Solid", 34.5, -2], ["Baller", 19.8, 8], ["Legend", 4.7, 18], ["Mythic", 0.8, 26], ["Eternal", 0.2, 34]],
+  RARITIES: [["Bum", 40, "Common"], ["Solid", 34.5, "Rare"], ["Baller", 19.8, "Epic"], ["Legend", 4.7, "Legend"], ["Mythic", 0.8, "Mythic"], ["Eternal", 0.2, "Eternal"]],
   spin(rng) { return [0, 1, 2].map(() => rng.choices(this.SYMBOLS, this.WEIGHTS)); },
   payout(reels) {
     const counts = {}; for (const s of reels) counts[s] = (counts[s] || 0) + 1;
@@ -925,7 +951,8 @@ const Luck = {
     if (c.cash < cost || c.crew.length >= S.CREW_MAX) return null;
     c.cash -= cost;
     const r = rng.choices(this.RARITIES, this.RARITIES.map(x => x[1]));
-    const p = generatePlayer(rng, TIERS[c.tier].base + r[2]); c.crew.push(p);
+    const rar = RARITY.find(x => x.name === r[2]);
+    const p = rarePlayer(rng, overall(c.me) + (r[0] === "Bum" ? -6 : 0), rar); c.crew.push(p);
     return [r[0], p];
   },
   wagerMult(mine, opp) { return Math.round(clamp(1.6 + (opp - mine) / 12, 1.2, 4.0) * 10) / 10; },
@@ -1309,7 +1336,8 @@ class MarketScreen extends Screen {
         const yy = y + 152 + j * 24;
         text(S.LABEL[k].slice(0, 3).toUpperCase(), x + 16, yy, { size: 20, color: C.grey });
         rrect(x + 58, yy + 3, 110, 9, 4, "#30323e"); rrect(x + 58, yy + 3, 110 * p.stats[k] / 99, 9, 4, r.color);
-        text(p.stats[k], x + w - 14, yy, { size: 20, right: true });
+        const up = p.boosted && p.boosted.includes(k);
+        text(up ? `▲${p.stats[k]}` : p.stats[k], x + w - 14, yy, { size: 20, color: up ? r.color : C.white, right: true });
       });
       const al = attrLabel(p).replace(" (2nd)", "²");
       text(al, x + w / 2, y + 280, { size: al.length > 26 ? 16 : 19, color: C.grey, center: true, weight: 500 });
@@ -1324,7 +1352,7 @@ class MarketScreen extends Screen {
       text("No player", x + 105, 364, { size: 26, color: "#50535f", center: true });
       text("Earn more fame", x + 105, 392, { size: 20, color: "#50535f", center: true, weight: 500 });
     }
-    text(`Crew ${c.crew.length}/${S.CREW_MAX}  ·  odds are per card and improve with fame, tournament wins and team OVR`, 500, 570, { size: 22, color: C.grey, center: true, weight: 500 });
+    text(`Crew ${c.crew.length}/${S.CREW_MAX}  ·  players are built around your OVR (${overall(c.me)})  ·  ▲ = rarity-boosted stat`, 500, 570, { size: 22, color: C.grey, center: true, weight: 500 });
     if (this.msg) text(this.msg, 500, 606, { size: 26, center: true });
     this.footer("◀ ▶ pick  ·  Enter to sign  ·  The market refreshes every 5 minutes");
   }
