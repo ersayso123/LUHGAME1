@@ -69,7 +69,7 @@ body {
     <div class="mid"><button class="pb" id="b-pause">PAUSE</button></div>
     <div class="acts">
       <button class="pb" id="b-switch">SWITCH</button>
-      <button class="pb" id="b-move">CROSS / STEAL</button>
+      <button class="pb" id="b-move">MOVE / STEAL</button>
       <button class="pb" id="b-pass">PASS</button>
       <button class="pb big" id="b-shoot">SHOOT</button>
     </div>
@@ -214,7 +214,7 @@ class Ball {
 // =====================================================================
 class Actor {
   constructor(p, team, slot) {
-    Object.assign(this, { p, team, slot, x: 0, y: 0, vx: 0, vy: 0, fx: 0, fy: -1, stun: 0, cool: 0, burst: 0, jump: 0, points: 0, think: 0, spot: null, spotT: 0, holdT: 0 });
+    Object.assign(this, { p, team, slot, x: 0, y: 0, vx: 0, vy: 0, dash: null, moveTag: null, stepBackT: 0, fx: 0, fy: -1, stun: 0, cool: 0, burst: 0, jump: 0, points: 0, think: 0, spot: null, spotT: 0, holdT: 0 });
     // animation only (never affects the rules)
     const h = hashStr(p.name + p.number);
     this.look = { skin: SKINS[h % SKINS.length], hair: HAIRS[(h >>> 3) % HAIRS.length], style: (h >>> 6) % 4, shoe: SHOES[(h >>> 9) % SHOES.length] };
@@ -260,6 +260,8 @@ class Match {
   update(dt, inp) {
     for (const a of this.actors) {
       if (a.anim) { a.anim.t += dt; if (a.anim.t >= a.anim.dur) a.anim = null; }
+      if (a.moveTag) { a.moveTag.t -= dt; if (a.moveTag.t <= 0) a.moveTag = null; }
+      a.stepBackT = Math.max(0, (a.stepBackT || 0) - dt);
       a.dribble += dt * 9;
       if (this.phase !== "live") a.moveAmt = Math.max(0, a.moveAmt - dt * 4);
     }
@@ -278,7 +280,7 @@ class Match {
     if (this.human && inp && inp.switchPressed) this.switchControl();
     for (const a of this.actors) {
       a.cool = Math.max(0, a.cool - dt); a.burst = Math.max(0, a.burst - dt); a.jump = Math.max(0, a.jump - dt);
-      if (a.stun > 0) { a.stun -= dt; continue; }
+      if (a.stun > 0) { a.stun -= dt; a.dash = null; a.vx *= 0.8; a.vy *= 0.8; continue; }
       const it = (this.human && a === this.controlled) ? this.humanIntent(a, inp || blankInputs(), dt) : AI.decide(this, a, dt);
       this.moveActor(a, it.move, dt);
       if (it.action) this.act(a, it);
@@ -298,14 +300,18 @@ class Match {
     if (this.ball.state === "held" && this.ball.holder === a) { speed *= 0.94; if (a === this.controlled && this.meter !== null) speed *= 0.3; }
     // players speed up and slow down smoothly instead of snapping
     const k = 1 - Math.exp(-S.ACCEL * dt);
-    a.vx += (mx * speed - a.vx) * k; a.vy += (my * speed - a.vy) * k;
+    if (a.dash) {
+      a.vx = a.dash.vx; a.vy = a.dash.vy; a.dash.t -= dt;
+      if (a.dash.t <= 0) { a.dash = null; a.vx *= 0.75; a.vy *= 0.75; }
+      mx = my = 0;   // keep facing while dashing
+    } else { a.vx += (mx * speed - a.vx) * k; a.vy += (my * speed - a.vy) * k; }
     const ox = a.x, oy = a.y;
     [a.x, a.y] = clampCourt(a.x + a.vx * dt, a.y + a.vy * dt);
     const moved = Math.hypot(a.x - ox, a.y - oy);
     if (moved < Math.hypot(a.vx, a.vy) * dt * 0.5) { a.vx *= 0.5; a.vy *= 0.5; }   // ran into the fence
     a.runPhase += moved * 0.1;
     a.moveAmt = Math.min(1, Math.hypot(a.vx, a.vy) / a.maxSpeed());
-    if (mag > 0.1) {
+    if (mag > 0.1 && Math.hypot(mx, my) > 0) {
       const [nx, ny] = norm(mx, my), t = Math.min(1, dt * 16);
       [a.fx, a.fy] = norm(a.fx + (nx - a.fx) * t, a.fy + (ny - a.fy) * t);
       if (!a.fx && !a.fy) [a.fx, a.fy] = [nx, ny];
@@ -382,7 +388,7 @@ class Match {
   meterWindow(a) {
     const t = clamp((dist(a.pos, S.HOOP) - 60) / (S.ARC + 90 - 60), 0, 1);
     const skill = 0.4 + a.p.stats.shooting / 99 * 0.9;            // 40 shooting ≈ 0.76x, 80 ≈ 1.13x
-    return (S.WIN_NEAR + (S.WIN_FAR - S.WIN_NEAR) * t) * skill + a.eff("meter");
+    return (S.WIN_NEAR + (S.WIN_FAR - S.WIN_NEAR) * t) * skill + a.eff("meter") + (a.stepBackT > 0 ? 0.015 : 0);
   }
   meterQuality(a, m) { const w = this.meterWindow(a), off = Math.abs(m - S.METER_SWEET); return off <= w ? 1 - 0.5 * off / w : Math.max(-1, -(off - w) / 0.25); }
   pickPassTarget(a, dir) {
@@ -395,7 +401,7 @@ class Match {
     const b = this.ball, has = b.state === "held" && b.holder === a;
     if (it.action === "shoot" && has) { if (!this.needsClear) this.takeShot(a, it.kind || this.shotKind(a), it.quality, it.green); }
     else if (it.action === "pass" && has) this.passBall(a, it.target || this.pickPassTarget(a, [0, 0]));
-    else if (it.action === "cross" && has && a.cool <= 0) this.crossover(a);
+    else if (it.action === "cross" && has && a.cool <= 0) this.dribbleMove(a, it.move[0], it.move[1], it.moveType);
     else if (it.action === "steal" && a.cool <= 0 && b.state === "held" && b.holder.team !== a.team) this.trySteal(a);
     else if (it.action === "jump") { a.jump = 0.4; if (!a.anim) a.setAnim("jump", 0.4); }
   }
@@ -447,12 +453,41 @@ class Match {
     if (dfd && dd < 60 && dfd.stun <= 0 && !dfd.anim) dfd.setAnim("jump", 0.45);
   }
   passBall(a, target) { a.holdT = 0; a.setAnim("pass", 0.3); this.ball.startPass(a, target, S.PASS_SPEED * (1 + a.eff("pass"))); }
-  crossover(a) {
-    a.cool = 1.3; a.burst = 0.5; a.hand = -a.hand; a.setAnim("cross", 0.35);
+  // Dribble moves follow the direction held when K is pressed (screen directions; the hoop is up).
+  //   side only → crossover that way · up + side → crossover drive · down → step back
+  //   up only → hesi-go · nothing → hesitation
+  moveType(mx, my) {
+    if (my > 0.3) return "stepback";
+    if (Math.abs(mx) > 0.3) return my < -0.3 ? "drive" : "cross";
+    if (my < -0.3) return "go";
+    return "hesi";
+  }
+  dribbleMove(a, mx = 0, my = 0, type = null) {
+    type = type || this.moveType(mx, my);
+    const side = mx > 0.3 ? 1 : mx < -0.3 ? -1 : -a.hand;
+    const MOVES = {   // dash direction, dash speed, dash time, ankle-break odds, stun time, label
+      cross: { v: [side, 0], sp: 380, t: 0.2, odds: 1.0, stun: 0.7, label: side > 0 ? "CROSSOVER ▶" : "◀ CROSSOVER" },
+      drive: { v: [side * 0.62, -0.78], sp: 430, t: 0.24, odds: 0.85, stun: 0.6, label: side > 0 ? "CROSS & DRIVE ↗" : "↖ CROSS & DRIVE" },
+      stepback: { v: norm(mx * 0.5, 1), sp: 360, t: 0.22, odds: 0.7, stun: 0.45, label: "STEP BACK" },
+      go: { v: [0, -1], sp: 400, t: 0.2, odds: 0.6, stun: 0.5, label: "HESI-GO" },
+      hesi: { v: [0, 0], sp: 0, t: 0, odds: 0.55, stun: 0.55, label: "HESI" },
+    };
+    const mv = MOVES[type];
+    if (type === "stepback" && !(this.human && a === this.controlled)) mv.v = norm(a.x - S.HOOP[0], a.y - S.HOOP[1]);  // AI steps back away from the rim
+    a.cool = 0.9;
+    if (type === "cross" || type === "drive") a.hand = side;
+    else if (type === "hesi") a.hand = -a.hand;
+    if (mv.sp) { const [vx, vy] = norm(mv.v[0], mv.v[1]); a.dash = { vx: vx * mv.sp, vy: vy * mv.sp, t: mv.t }; }
+    a.setAnim(type === "drive" ? "cross" : type, type === "stepback" ? 0.34 : type === "hesi" ? 0.4 : 0.32);
+    a.moveTag = { text: mv.label, t: 0.8 };
+    if (type === "stepback") a.stepBackT = 0.9;
     const [dd, dfd] = this.nearestOpp(a);
-    if (dfd && dd < 50) {
-      const ch = 0.25 + (a.p.stats.handles - dfd.p.stats.defense) / 200 + a.eff("cross");
-      if (this.rng.random() < clamp(ch, 0.05, 0.8)) { dfd.stun = 0.7; this.say(`${a.p.name} broke ${dfd.p.name}'s ankles!`); }
+    if (dfd && dd < 55 && dfd.stun <= 0) {
+      const ch = (0.25 + (a.p.stats.handles - dfd.p.stats.defense) / 200 + a.eff("cross")) * mv.odds;
+      if (this.rng.random() < clamp(ch, 0.04, 0.8)) {
+        dfd.stun = mv.stun; dfd.vx *= 0.2; dfd.vy *= 0.2;
+        this.say(type === "stepback" ? `${a.p.name} stepped back on ${dfd.p.name}!` : type === "hesi" ? `${a.p.name} froze ${dfd.p.name}!` : `${a.p.name} broke ${dfd.p.name}'s ankles!`);
+      }
     }
   }
   trySteal(a) {
@@ -516,7 +551,7 @@ class Match {
 const AI = (() => {
   const OFF = [[250, 190], [750, 190], [330, 360], [670, 360], [500, 420], [430, 170], [570, 170], [190, 110], [810, 110]];
   const DEEP = [[270, 400], [730, 400], [500, 480], [170, 230], [830, 230]];
-  const I = (o = {}) => ({ move: [0, 0], action: null, target: null, quality: 0, kind: null, green: false, ...o });
+  const I = (o = {}) => ({ move: [0, 0], action: null, target: null, quality: 0, kind: null, green: false, moveType: null, ...o });
   function toward(a, pt, slow = 18) { const dx = pt[0] - a.x, dy = pt[1] - a.y, d = Math.hypot(dx, dy); if (d < 4) return [0, 0]; const k = Math.min(1, d / slow); return [dx / d * k, dy / d * k]; }
   // AI "hits the green" about as often as a player of that skill would; otherwise a mistimed release.
   function jumper(m, a) {
@@ -548,7 +583,15 @@ const AI = (() => {
     const best = mates.reduce((p, q) => m.openness(q) > m.openness(p) ? q : p);
     if (m.openness(best) > nd + 35 && r() < 0.35 + a.eff("pass")) return I({ action: "pass", target: best });
     if (m.needsClear && a.holdT > 2.5 && r() < 0.3) return I({ action: "pass", target: best });
-    if (dfd && nd < 40 && a.cool <= 0 && r() < 0.25 + a.eff("cross")) return I({ action: "cross", move: toward(a, h) });
+    if (dfd && nd < 45 && a.cool <= 0 && r() < 0.3 + a.eff("cross")) {
+      const side = dfd.x < a.x ? 1 : -1;                              // go away from the defender
+      const nearArc = d > S.ARC - 40 && d < S.ARC + 60;
+      const roll = r();
+      if (nearArc && !m.needsClear && roll < 0.3) return I({ action: "cross", moveType: "stepback" });
+      if (roll < 0.65) return I({ action: "cross", move: [side, -1], moveType: "drive" });
+      if (roll < 0.9) return I({ action: "cross", move: [side, 0], moveType: "cross" });
+      return I({ action: "cross", move: [0, 0], moveType: "hesi" });
+    }
     if (m.needsClear) a.spot = clampCourt(a.x + m.rng.uniform(-80, 80), a.y + m.rng.uniform(-20, 40));
     else { let lat = m.rng.uniform(-60, 60); if (dfd && nd < 40) lat += dfd.x < a.x ? 70 : -70; a.spot = clampCourt(h[0] + lat * 0.6 + (a.x - h[0]) * 0.2, h[1] + 30); }
     return I({ move: toward(a, a.spot) });
@@ -1010,7 +1053,7 @@ function pose(m, a) {
   const b = m.ball, holding = b.state === "held" && b.holder === a;
   const dir = a.fx >= 0 ? 1 : -1;
   const swing = Math.sin(a.runPhase) * a.moveAmt;
-  let lift = 0, crouch = 0, L = [-11, -22 + swing * 4], R = [11, -22 - swing * 4], ball = null, stance = false;
+  let lift = 0, crouch = 0, lean = 0, L = [-11, -22 + swing * 4], R = [11, -22 - swing * 4], ball = null, stance = false;
   const shoot = a.animK("shoot"), dunk = a.animK("dunk"), jump = a.animK("jump"), block = a.animK("block");
   const pass = a.animK("pass"), cross = a.animK("cross"), reach = a.animK("reach"), cele = a.animK("celebrate");
   const metering = holding && m.meter !== null && a === m.controlled;
@@ -1024,24 +1067,35 @@ function pose(m, a) {
   else if (metering) { crouch = 3; L = [-5, -52]; R = [5, -53]; ball = [0, -57, 0]; }
   else if (holding && m.phase === "check") { L = [-6, -27]; R = [6, -27]; ball = [0, -27, 0]; }
   else if (holding) {
-    const h = a.hand * dir, u = Math.abs(Math.sin(a.dribble));      // u: 0 = in the hand, 1 = on the floor
+    const h = a.hand, u = Math.abs(Math.sin(a.dribble));      // h: which side of the screen the ball is on; u: 0 = in the hand, 1 = on the floor
     let bx = h * 13, by = -20 + 18 * u;
-    if (cross >= 0) { const t = Math.min(1, cross * 1.4); bx = h * (-13 + 26 * t); by = -6 - 6 * Math.sin(Math.PI * t); }
+    const step = a.animK("stepback"), hesi = a.animK("hesi"), go = a.animK("go");
+    if (cross >= 0) {        // low, quick bounce from one hand to the other
+      const t = Math.min(1, cross * 1.5); bx = h * (-14 + 28 * t); by = -5 - 5 * Math.sin(Math.PI * t);
+      crouch = 6 * ease(cross); lean = h * 5 * ease(cross);
+    } else if (step >= 0) {  // hop back and gather the ball at the chest
+      const t = step; bx = h * 8 * (1 - ease(t)); by = -28 + 8 * (1 - ease(t));
+      lift = ease(t) * 0.25; lean = 0;
+    } else if (hesi >= 0) {  // fake: rise up like a shot, then back into the dribble
+      bx = h * 6; by = -34 * ease(hesi) - 20 * (1 - ease(hesi)); lift = ease(hesi) * 0.12;
+    } else if (go >= 0) { crouch = 6 * ease(go); lean = 0; }
     const hand = [bx, Math.min(by, -18) - 2];
-    if (h > 0) { R = hand; L = [-15, -28]; } else { L = hand; R = [15, -28]; }
-    crouch = 2; ball = [bx, by, 0];
+    if (step >= 0 || hesi >= 0) { L = [bx - 6, by]; R = [bx + 6, by]; }
+    else if (h > 0) { R = hand; L = [-15, -28]; } else { L = hand; R = [15, -28]; }
+    crouch = Math.max(crouch, 2); ball = [bx, by, 0];
   } else if (reach >= 0) { const k = ease(reach); R = [dir * (11 + 14 * k), -24]; crouch = 3 * k; }
   else if (pass >= 0) { const k = ease(pass); L = [dir * 16 * k - 4, -30]; R = [dir * 16 * k + 4, -30]; }
   else if (a.team !== m.offense && b.state === "held" && b.holder && b.holder.team !== a.team && dist(a.pos, b.holder.pos) < 70) {
     stance = true; crouch = 4; L = [-20, -26]; R = [20, -26];     // defensive stance: low, arms out wide
   }
-  return { lift, crouch, L, R, ball, stance, swing, dir };
+  return { lift, crouch, lean, L, R, ball, stance, swing, dir };
 }
 
 function drawPerson(m, a, highlight) {
   const P = pose(m, a), look = a.look, team = a.team;
   const up = P.lift * 24, x = a.x, y = a.y;
   const front = a.fy > -0.2;          // facing the camera (down the screen) shows the face
+  if (a.dash) { for (let i = 1; i <= 3; i++) ellipse(x - a.dash.vx * 0.018 * i, y - a.dash.vy * 0.018 * i + 1, 10 - i * 2, 4 - i * 0.8, `rgba(255,255,255,${0.16 - i * 0.04})`); }
   // shadow on the court
   ellipse(x, y + 1, 13 - P.lift * 3, 5 - P.lift, `rgba(0,0,0,${0.45 - P.lift * 0.15})`);
   const isMain = team === 0 && a.slot === 0;
@@ -1051,6 +1105,7 @@ function drawPerson(m, a, highlight) {
   ctx.save();
   ctx.translate(x, y - up + P.crouch);
   if (a.stun > 0) ctx.rotate(Math.sin(m.elapsed * 24) * 0.18);
+  else if (P.lean) ctx.transform(1, 0, -P.lean / 40, 1, 0, 0);   // lean into the move
   ctx.lineCap = "round"; ctx.lineJoin = "round";
   // legs: stride while running, wide in a defensive stance, tucked in the air
   const spread = P.stance ? 9 : 5, air = P.lift > 0.05;
@@ -1100,7 +1155,13 @@ function drawPerson(m, a, highlight) {
     ctx.beginPath(); ctx.moveTo(x - 7, ty); ctx.lineTo(x + 7, ty); ctx.lineTo(x, ty + 9); ctx.closePath(); ctx.fillStyle = C.gold; ctx.fill();
     text(a.p.name, x, y + 16, { size: 20, center: true });
   }
-  if (P.ball) return { x: x + P.ball[0], y: y - up + P.crouch + P.ball[1] };
+  if (a.moveTag) {   // name of the dribble move pops above the player
+    const k = a.moveTag.t / 0.8;
+    ctx.globalAlpha = Math.min(1, k * 2);
+    text(a.moveTag.text, x, y - up - 74 - (1 - k) * 14, { size: 22, color: a.team === 0 ? C.gold : "#ffb3aa", center: true, display: true });
+    ctx.globalAlpha = 1;
+  }
+  if (P.ball) return { x: x + P.ball[0] - (P.lean || 0) * P.ball[1] / 40, y: y - up + P.crouch + P.ball[1] };
   return null;
 }
 
@@ -1196,7 +1257,7 @@ class MatchScreen extends Screen {
     if (m.phase === "check") text("CHECK BALL", 500, 380, { size: 40, center: true, display: true });
     if (m.phase === "over") { const won = m.winner === 0; text(won ? "YOU WIN!" : "YOU LOSE", 500, 330, { size: 80, color: won ? C.green : C.red, center: true, display: true }); }
     if (!isTouch) {
-      text("WASD move · hold SPACE, release in the green · drive fast at an open rim to DUNK · J pass · K cross/steal · Q switch · Esc", 500, S.H - 16, { size: 20, center: true, weight: 500 });
+      text("WASD move · hold SPACE, release in the green · drive fast at an open rim to DUNK · J pass · K dribble move (WASD picks it) / steal · Q switch · Esc", 500, S.H - 16, { size: 20, center: true, weight: 500 });
     }
     if (this.paused) {
       rrect(290, 240, 420, 200, 12, "rgba(16,17,22,0.95)", C.grey, 1.5);
