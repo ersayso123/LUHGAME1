@@ -867,7 +867,8 @@ const OLY_POOL = ["Team California", "Team Texas", "Team New York", "Team Florid
 const HS_POOL = ["Lincoln Lions", "Roosevelt Rams", "Kennedy Cougars", "Jefferson Jets", "Madison Mustangs", "Hamilton Hornets", "Franklin Falcons", "Washington Warriors"];
 const FRANCHISES = ["Metro Kings", "Harbor Hawks", "Capital Crowns", "Skyline Sharks", "Iron City Titans", "Bay Blaze", "Northside Knights", "Desert Suns"];
 // What the scout's grade gets you
-const DRAFT = { A: { tier: 4, bonus: 600, note: "a Rare teammate" }, B: { tier: 3, bonus: 300 }, C: { tier: 2, bonus: 120 }, D: { tier: 1, bonus: 40 }, F: { tier: 1, bonus: 0, walkOn: true } };
+// High school can get you as far as the Minor League, never higher
+const DRAFT = { A: { tier: 3, bonus: 600, note: "a Rare teammate" }, B: { tier: 3, bonus: 300 }, C: { tier: 2, bonus: 120 }, D: { tier: 1, bonus: 40 }, F: { tier: 1, bonus: 0, walkOn: true } };
 function gradeOf(score) { return score >= 85 ? "A" : score >= 70 ? "B" : score >= 55 ? "C" : score >= 45 ? "D" : "F"; }
 // One high school game, as the scout sees it (0-100)
 function scoutGameScore(won, margin, box) {
@@ -936,6 +937,79 @@ function bracket(tier, seed) {
     const players = crews[r];
     return { id: `T${tier}:${seed}:${r}`, court: tier, name, players, boss: r === FINAL_ROUND, ovr: teamOverall(players), mode: "tourney", round: r };
   });
+}
+
+// ---- the full field: 32 teams, March Madness style. You're slot 0; the crews you'll face sit where you'd meet them
+// (Round 1 slot 1, Round 2 slot 2, Quarterfinal slot 4, Semifinal slot 8, Final slot 16).
+const FIELD_SIZE = 32, PATH_SLOTS = [1, 2, 4, 8, 16];
+const HS_TOWNS = ["Oak Hill", "Riverside", "Southview", "Maplewood", "Cedar Park", "Lakeview", "Fairfield", "Brookside", "Pine Ridge", "Westfield", "Eastlake", "Millbrook", "Glenwood", "Hillcrest", "Springdale", "Northwood", "Bayside", "Clearwater", "Stonebridge", "Valley"];
+const HS_MASCOTS = ["Owls", "Raiders", "Spartans", "Mavericks", "Bulldogs", "Panthers", "Knights", "Hornets", "Wildcats", "Bears", "Rams", "Titans", "Pirates", "Vikings", "Chargers", "Cougars"];
+const CITIES = ["Metro", "Harbor", "Uptown", "Westside", "Bayview", "Iron City", "Riverside", "Hilltop", "Southside", "Northgate", "Midtown", "Lakeshore", "Eastend", "Canal St", "Parkside", "Oldtown"];
+const NICKS = ["Hoopers", "Ballers", "Buckets", "Runners", "Bricklayers", "Swishers", "Dunkers", "Hustlers", "Ankle Takers", "Glass Crew", "Snipers", "Bigs", "Wolves", "Kings", "Flyers", "Bruisers"];
+const STATES = ["Alabama", "Arizona", "Colorado", "Connecticut", "Indiana", "Kansas", "Kentucky", "Louisiana", "Maryland", "Michigan", "Minnesota", "Missouri", "Nevada", "New Jersey", "N. Carolina", "Oklahoma", "Oregon", "Pennsylvania", "Tennessee", "Utah", "Virginia", "Wisconsin", "Iowa", "Arkansas", "Nebraska", "Hawaii", "Alaska", "Maine", "Vermont", "Idaho"];
+function myTeamName(c, tier) { return tier === 0 ? "Eastside High" : tier === HUSTLE ? `${c.me.name}'s Run` : c.team || "Your Crew"; }
+function makeField(c, t) {
+  const rng = new Rng(`F|${t.tier}|${t.seed}`), path = bracket(t.tier, t.seed), base = TIERS[t.tier].base;
+  const taken = new Set(path.map(g => g.name));
+  const newName = () => {
+    for (;;) {
+      const n = t.tier === 0 ? `${rng.choice(HS_TOWNS)} ${rng.choice(HS_MASCOTS)}` : t.tier === OLYMPICS ? `Team ${rng.choice(STATES)}` : `${rng.choice(CITIES)} ${rng.choice(NICKS)}`;
+      if (!taken.has(n)) { taken.add(n); return n; }
+    }
+  };
+  const field = [];
+  for (let s = 0; s < FIELD_SIZE; s++) {
+    const r = PATH_SLOTS.indexOf(s);
+    if (s === 0) field.push({ name: myTeamName(c, t.tier), ovr: teamOverall(c.lineupFor({ court: t.tier, mode: "tourney" })), you: true });
+    else if (r >= 0) field.push({ name: path[r].name, ovr: path[r].ovr });
+    else field.push({ name: newName(), ovr: clamp(base + rng.randint(-7, 4), 25, 99) });
+  }
+  return field;
+}
+// One game between two other teams: to 11, sometimes 12 on a two at game point
+function simScore(rng) { return [rng.random() < 0.2 ? 12 : 11, rng.randint(3, 10)]; }
+// A whole series between two other teams (the crews on your path always get through to meet you)
+function simSeries(rng, field, a, b, need) {
+  const forced = PATH_SLOTS.includes(a) !== PATH_SLOTS.includes(b) ? (PATH_SLOTS.includes(a) ? a : b) : null;
+  const p = 1 / (1 + Math.exp(-(field[a].ovr - field[b].ovr) / 5));
+  const winner = forced ?? (rng.random() < p ? a : b);
+  const wins = [];
+  for (let i = 0; i < need; i++) wins.push(true);
+  if (need > 1 && rng.random() < 0.45) wins.splice(rng.randint(0, need - 1), 0, false);   // the loser steals a game
+  const games = wins.map(w => { const [hi, lo] = simScore(rng), aWon = w === (winner === a); return aWon ? [hi, lo] : [lo, hi]; });
+  return { winner, games };
+}
+// Everything shown on the bracket right now: rounds[r][m] = { a, b, games: [[pa, pb]...], winner, you }
+// Other series move along with yours: when you've played 1 game of a best-of-3, so has everyone else.
+function bracketView(t) {
+  const field = t.field, log = t.log || {}, rounds = [];
+  const cur = t.over ? ROUNDS.length : Math.max(0, t.round);
+  let alive = field.map((_, i) => i);
+  for (let r = 0; r < ROUNDS.length; r++) {
+    const ms = [], next = [], need = SERIES_WINS[r];
+    for (let m = 0; m < alive.length / 2; m++) {
+      const a = alive[2 * m], b = alive[2 * m + 1];
+      const mt = { a, b, games: [], winner: null, you: a === 0 || b === 0 };
+      if (a != null && b != null) {
+        if (mt.you) {
+          const mine = log[r] || [];
+          mt.games = mine.map(g => a === 0 ? [g[0], g[1]] : [g[1], g[0]]);
+          const w = mine.filter(g => g[2]).length, l = mine.length - w;
+          if (w >= need) mt.winner = 0;
+          else if (l >= need) mt.winner = a === 0 ? b : a;
+          else if (r < cur) { mt.winner = 0; mt.noScore = true; }   // tournaments from before the bracket kept no scores
+        } else {
+          const sim = simSeries(new Rng(`BR|${t.tier}|${t.seed}|${r}|${m}`), field, a, b, need);
+          const shown = r < cur ? sim.games.length : r === cur ? Math.min(sim.games.length, (log[r] || []).length) : 0;
+          mt.games = sim.games.slice(0, shown);
+          if (shown === sim.games.length) mt.winner = sim.winner;
+        }
+      }
+      ms.push(mt); next.push(mt.winner);
+    }
+    rounds.push(ms); alive = next;
+  }
+  return rounds;
 }
 
 const MARKET_MS = 5 * 60 * 1000;
@@ -1009,7 +1083,7 @@ class Career {
   constructor(d) {
     Object.assign(this, { cash: 100, fame: 0, tier: 0, champion: false, starters: [0, 1], tourney: null, entries: 0, titles: 0, games: 0, market: null, moves: {},
       stage: "hs", team: null, startTier: 0, gamesAtDraft: 0, hsLog: [], hsDone: false, hsChamp: false, draftGrade: null, gold: false, ladder: 2, hustleLog: [], hustleChamp: false, hustlePending: false,
-      salary: 0, proLog: [], offers: null, gamesSinceOffers: 0, gym: null, gymDay: 0, hustlePicks: [] }, d);
+      salary: 0, proLog: [], offers: null, gamesSinceOffers: 0, gym: null, gymDay: 0, hustlePicks: [], lastTourney: null }, d);
     // older saves: give everyone a position
     if (!this.me.pos) this.me.pos = "SF";
     for (const p of this.crew) if (!p.pos) p.pos = guessPos(p);
@@ -1023,7 +1097,12 @@ class Career {
       if (this.startTier >= 1) this.startTier++;
       if (this.tourney && this.tourney.tier >= 1) this.tourney.tier++;
     }
-    this.ladder = 2;
+    // drafted straight into Semi-Pro by an older version: high school tops out at the Minor League
+    if (d && (d.ladder || 0) < 3 && this.stage === "pro" && this.draftGrade && this.startTier > 3) {
+      this.startTier = 3;
+      if (this.tier > 3 && this.titles <= (this.hsChamp ? 1 : 0)) { this.tier = 3; this.salary = SALARY[3]; if (this.tourney && this.tourney.tier > 3) this.tourney = null; }
+    }
+    this.ladder = 3;
     if (this.stage === "pro" && !this.salary) this.salary = SALARY[this.tier] || 0;
   }
   static fresh(name, main, pos = "SF") {
@@ -1106,11 +1185,15 @@ class Career {
   crewsFor(ci) {
     return [0, 1].map(k => { const players = crewPlayers(ci, k); return { id: `${ci}:${k}`, court: ci, name: TIERS[ci].crews[k], players, boss: false, ovr: teamOverall(players), mode: "pickup" }; });
   }
-  enterTourney() { this.entries++; this.tourney = { tier: this.tier, seed: this.entries, round: 0, series: { w: 0, l: 0 } }; }
+  enterTourney() {
+    this.entries++; this.tourney = { tier: this.tier, seed: this.entries, round: 0, series: { w: 0, l: 0 }, log: {} };
+    this.tourney.field = makeField(this, this.tourney); this.lastTourney = this.tourney;
+  }
   tourneyGame() {
     const t = this.tourney; if (!t) return null;
     if (t.round < 0) { t.round = 0; t.series = { w: 0, l: 0 }; }          // saves from the old qualifier format
     if (!t.series) t.series = { w: 0, l: 0 };
+    if (!t.field) { t.field = makeField(this, t); t.log = t.log || {}; this.lastTourney = t; }   // tournaments from before the bracket
     const g = { ...bracket(t.tier, t.seed)[t.round], series: { ...t.series } };
     g.id += `:${t.series.w + t.series.l}`;
     return g;
@@ -1210,6 +1293,10 @@ class Career {
     if (crew.mode === "tourney" && this.tourney) {
       const t = this.tourney; t.series = t.series || { w: 0, l: 0 };
       if (won) t.series.w++; else t.series.l++;
+      if (!t.field) t.field = makeField(this, t);
+      const sc = extra.score || (won ? [11, 0] : [0, 11]);
+      t.log = t.log || {}; (t.log[t.round] = t.log[t.round] || []).push([sc[0], sc[1], won ? 1 : 0]);
+      this.lastTourney = t;
       r.series = { ...t.series, need: SERIES_WINS[t.round], round: t.round };
       if (t.series.w >= SERIES_WINS[t.round]) seriesWon = true;
       else if (t.series.l >= SERIES_WINS[t.round]) seriesLost = true;
@@ -1239,6 +1326,9 @@ class Career {
     } else {
       r.fame = -this.fameLoss(); r.cash = 10;
       if (seriesLost) { this.tourney = null; r.eliminated = true; if (hs) { this.hsDone = true; r.hsDone = true; } if (hustleT) { this.hustlePending = true; r.hustleDone = true; } }
+    }
+    if (crew.mode === "tourney" && this.lastTourney && !this.tourney && !this.lastTourney.over) {   // the bracket is finished for you
+      const t = this.lastTourney; t.over = true; t.champ = !!r.champ; t.outRound = t.round;
     }
     if (ci === HUSTLE) { r.cash = 0; r.tips = 0; r.hustle = true; }   // nobody pays you in the Hustle League
     if (hs) { r.cash = 0; r.tips = 0; r.betWin = 0; }                 // amateurs: no money in high school
@@ -1306,8 +1396,8 @@ class Career {
   }
   toggleStarter(i) { if (!this.starters.includes(i)) this.starters = [this.starters[this.starters.length - 1], i]; }
   toJSON() {
-    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks } = this;
-    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks };
+    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney } = this;
+    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney };
   }
 }
 
@@ -1782,6 +1872,7 @@ class CourtScreen extends Screen {
     else if (K.up(k)) this.sel = (this.sel - 1 + n) % n;
     else if (K.down(k)) this.sel = (this.sel + 1) % n;
     else if (K.ok(k)) this.pick(this.sel);
+    else if ((k === "b" || k === "B") && this.c.lastTourney && this.c.lastTourney.tier === this.ci) App.switch(new BracketScreen(this));
   }
   draw() {
     const c = this.c; drawCourt(this.ci);
@@ -1816,6 +1907,11 @@ class CourtScreen extends Screen {
         });
         text(o.game ? `▶ PLAY ${roundLabel(o.game).toUpperCase()}` : "▶ ENTER", 838, y + 16, { size: 26, color: C.gold, right: true, display: true });
         hit(140, y, 720, h, () => this.pick(i));
+        const lt = c.lastTourney;
+        if (lt && lt.field && lt.tier === this.ci) {   // this court's bracket (the one you're in, or the last one)
+          rrect(724, y + 44, 122, 30, 8, "#1e1a12", C.gold, 1.5); text("BRACKET (B)", 785, y + 59, { size: 18, color: C.gold, center: true, display: true });
+          hit(724, y + 44, 122, 30, () => App.switch(new BracketScreen(this)));
+        }
         y += h + 14;
       } else {
         const g = o.game, h = 84;
@@ -2253,7 +2349,10 @@ class MatchScreen extends Screen {
     }
     m.events.length = 0;
   }
-  finish(forfeit = false) { App.switch(new ResultScreen(this.ci, this.crew, this.match, this.bet, this.mult, forfeit)); }
+  finish(forfeit = false) {
+    const rs = new ResultScreen(this.ci, this.crew, this.match, this.bet, this.mult, forfeit);
+    App.switch(this.crew.mode === "tourney" && this.c.lastTourney ? new BracketScreen(rs) : rs);   // tournament games show the bracket first
+  }
   key(k) {
     if (k === "Escape" || k === "p" || k === "P") this.paused = !this.paused;
     else if (this.paused && (k === "f" || k === "F")) this.finish(true);
@@ -2400,7 +2499,7 @@ class ResultScreen extends Screen {
     super(); const c = this.c;
     Object.assign(this, { ci, crew, match, bet, forfeit });
     this.won = !forfeit && match.winner === 0;
-    this.r = c.applyResult(crew, this.won, match.score[0] - match.score[1], bet, mult, match.moveUse, match.box, { played: [...match.played], injured: match.injured });
+    this.r = c.applyResult(crew, this.won, match.score[0] - match.score[1], bet, mult, match.moveUse, match.box, { played: [...match.played], injured: match.injured, score: [...match.score] });
     this.myPts = match.mainGuy.points;
     const r = this.r, items = [];
     if (r.hsDone) items.push(["See the scout's report →", () => App.switch(new ScoutReportScreen())]);
@@ -2410,6 +2509,7 @@ class ResultScreen extends Screen {
       if (r.nextRound || r.nextGame) items.push([`Play ${roundLabel(c.tourneyGame())}`, () => startGame(ci, c.tourneyGame())]);
       // auto-advance: straight into the next park's tournament
       if (r.tierUp) items.push([`On to ${TIERS[c.tier].court} →`, () => { c.enterTourney(); App.save(); startGame(c.tier, c.tourneyGame()); }]);
+      if (crew.mode === "tourney" && c.lastTourney) items.push(["View the bracket", () => App.switch(new BracketScreen(this))]);
       items.push(["Back to the Hub", () => App.switch(new HubScreen())]);
     }
     this.menu = new Menu(items);
@@ -2450,6 +2550,112 @@ class ResultScreen extends Screen {
     if (r.gold) { text("OLYMPIC GOLD MEDAL!", 500, y, { size: 48, color: C.gold, center: true, display: true }); y += 50; text("You beat the best in the country.", 500, y, { size: 26, center: true }); y += 36; }
     if (r.tierUp && c.scouting() >= 0.15) { text(`You moved up fast. Teams are scouting you (${Math.round(c.scouting() * 100)}%).`, 500, y, { size: 24, color: "#ff8a7a", center: true }); y += 34; }
     this.menu.draw(500, Math.max(420, y + 30), 48, 34);
+  }
+}
+
+// ---------------------------------------------------------------- the tournament bracket (after every tournament game)
+const BR = { W: 98, H: 22, X: [6, 114, 222, 330], TOP: 104, PAIR: 24, STEP: 60, FX: 446, FW: 108 };
+class BracketScreen extends Screen {
+  // next: the screen to go to on Continue (or a function that makes it)
+  constructor(next) { super(); this.next = next; this.t0 = performance.now(); }
+  go() { const n = this.next; App.switch(typeof n === "function" ? n() : n || new CourtScreen()); }
+  key(k) { if (K.ok(k) || K.back(k) || k === "b" || k === "B") this.go(); }
+  get t() { const c = this.c; return c.tourney && c.tourney.field ? c.tourney : c.lastTourney; }
+  // centre y of team j (0-15 per side) in round r
+  cy(r, j) {
+    if (r === 0) return BR.TOP + Math.floor(j / 2) * BR.STEP + (j % 2) * BR.PAIR + BR.H / 2;
+    return (this.cy(r - 1, 2 * j) + this.cy(r - 1, 2 * j + 1)) / 2;
+  }
+  box(x, yc, w, slot, score, st) {
+    const t = this.t, team = slot == null ? null : t.field[slot], you = slot === 0, y = yc - BR.H / 2;
+    const lost = st === "lost", won = st === "won";
+    const pulse = you ? 0.55 + 0.45 * Math.sin((performance.now() - this.t0) / 260) : 0;
+    rrect(x, y, w, BR.H, 5, you ? (lost ? "#3a2a1a" : "#4a3a18") : team ? (won ? "#263049" : "#1c1e27") : "#16171d",
+      you ? `rgba(245,200,60,${lost ? 0.5 : pulse})` : won ? "#4d5b82" : null, you ? 2 : 1);
+    if (!team) { text("—", x + 8, y + 4, { size: 18, color: "#4a4c58" }); return; }
+    const col = you ? C.gold : lost ? "#6c6e7a" : C.white, sw = score == null ? 0 : 22;
+    ctx.save(); ctx.beginPath(); ctx.rect(x + 3, y, w - sw - 6, BR.H); ctx.clip();
+    ctx.font = `700 ${Math.round(18 * 0.72)}px ${FONT_BODY}`;
+    const nw = ctx.measureText(team.name).width, room = w - sw - 12;
+    if (nw > room) { ctx.translate(x + 6, 0); ctx.scale(room / nw, 1); text(team.name, 0, y + 5, { size: 18, color: col }); }
+    else text(team.name, x + 6, y + 5, { size: 18, color: col });
+    ctx.restore();
+    if (score != null) text(score, x + w - 6, y + 4, { size: 20, color: won ? (you ? C.gold : C.green) : col, right: true, display: false });
+  }
+  // what goes in a team's score spot: points for a single game, series wins for a best-of-3
+  scores(mt, need) {
+    if (!mt.games.length) return mt.noScore && mt.winner != null ? [mt.winner === mt.a ? "W" : "L", mt.winner === mt.b ? "W" : "L"] : [null, null];
+    if (need === 1) return mt.games[0].map(String);
+    let wa = 0, wb = 0; for (const g of mt.games) { if (g[0] > g[1]) wa++; else wb++; }
+    return [String(wa), String(wb)];
+  }
+  match(r, m, mt, x, ya, yb, w, right) {
+    const [sa, sb] = this.scores(mt, SERIES_WINS[r]);
+    const st = s => mt.winner == null ? null : mt.winner === s ? "won" : "lost";
+    this.box(x, ya, w, mt.a, sa, st(mt.a)); this.box(x, yb, w, mt.b, sb, st(mt.b));
+    if (r === FINAL_ROUND) return;
+    // connector out to the next round
+    const ex = right ? x - 4 : x + w + 4, ox = right ? x : x + w, mid = (ya + yb) / 2, nx = right ? x - 10 : x + w + 10;
+    const col = mt.you && mt.winner === 0 ? C.gold : "#3a3d4a";
+    line(ox, ya, ex, ya, col, 1.5); line(ox, yb, ex, yb, col, 1.5); line(ex, ya, ex, yb, col, 1.5); line(ex, mid, nx, mid, col, 1.5);
+  }
+  draw() {
+    const c = this.c, t = this.t;
+    ctx.fillStyle = C.bg; ctx.fillRect(0, 0, S.W, S.H);
+    if (!t || !t.field) { text("No tournament yet", 500, 300, { size: 40, center: true, display: true }); this.continueBtn(); return; }
+    const rounds = bracketView(t), log = t.log || {};
+    text(TIERS[t.tier].tourney.toUpperCase(), 500, 24, { size: 38, color: C.gold, center: true, display: true });
+    let status;
+    if (t.over) status = t.champ ? "CHAMPIONS! You won it all." : `Knocked out in ${(ROUNDS[t.outRound ?? t.round].startsWith("Round") ? "" : "the ") + ROUNDS[t.outRound ?? t.round]}. The field played on.`;
+    else {
+      const s = t.series || { w: 0, l: 0 }, bo3 = SERIES_WINS[t.round] > 1;
+      status = `You're alive · ${ROUNDS[t.round]} (${bo3 ? "best of 3" : "1 game"}${bo3 && s.w + s.l ? `, series ${s.w}-${s.l}` : ""})`;
+    }
+    text(status, 500, 56, { size: 24, color: t.over && !t.champ ? "#ff9a8a" : C.white, center: true });
+    // round labels
+    const labels = ["ROUND 1", "ROUND 2", "QUARTERS", "SEMIS"];
+    labels.forEach((l, r) => {
+      const cur = !t.over && t.round === r, col = cur ? C.gold : C.grey;
+      text(l, BR.X[r] + BR.W / 2, 84, { size: 16, color: col, center: true, display: true });
+      text(l, S.W - BR.X[r] - BR.W / 2, 84, { size: 16, color: col, center: true, display: true });
+    });
+    for (let r = 0; r < FINAL_ROUND; r++) {
+      const ms = rounds[r], half = ms.length / 2;
+      ms.forEach((mt, m) => {
+        const right = m >= half, j = right ? m - half : m;
+        const x = right ? S.W - BR.X[r] - BR.W : BR.X[r];
+        this.match(r, m, mt, x, this.cy(r, 2 * j), this.cy(r, 2 * j + 1), BR.W, right);
+      });
+    }
+    // the Final and the champion in the middle
+    const fm = rounds[FINAL_ROUND][0], mid = this.cy(4, 0);
+    text("FINAL", BR.FX + BR.FW / 2, mid - 52, { size: 22, color: !t.over && t.round === FINAL_ROUND ? C.gold : C.grey, center: true, display: true });
+    text("best of 3", BR.FX + BR.FW / 2, mid - 34, { size: 16, color: C.grey, center: true, weight: 500 });
+    this.match(FINAL_ROUND, 0, fm, BR.FX, mid - 13, mid + 13, BR.FW, false);
+    line(BR.X[3] + BR.W + 10, mid, BR.FX, mid - 13, "#3a3d4a", 1.5); line(S.W - BR.X[3] - BR.W - 10, mid, BR.FX + BR.FW, mid + 13, "#3a3d4a", 1.5);
+    const champ = fm.winner != null ? t.field[fm.winner] : null;
+    rrect(BR.FX - 6, mid - 140, BR.FW + 12, 70, 10, champ ? (champ.you ? "#4a3a18" : "#262935") : "#16171d", champ ? C.gold : "#343747", 2);
+    text("👑 CHAMPION", BR.FX + BR.FW / 2, mid - 124, { size: 18, color: C.gold, center: true, display: true });
+    if (champ) {
+      ctx.save(); ctx.font = `700 ${Math.round(22 * 0.72)}px ${FONT_BODY}`; const nw = ctx.measureText(champ.name).width, room = BR.FW;
+      ctx.translate(BR.FX + BR.FW / 2, mid - 94); if (nw > room) ctx.scale(room / nw, 1);
+      text(champ.name, 0, 0, { size: 22, color: champ.you ? C.gold : C.white, center: true }); ctx.restore();
+    } else text("?", BR.FX + BR.FW / 2, mid - 94, { size: 26, color: C.grey, center: true });
+    // your games, with the scores
+    const mine = [];
+    const SHORT = ["R1", "R2", "QF", "SF", "Final"];
+    for (let r = 0; r < ROUNDS.length; r++) if ((log[r] || []).length) mine.push(`${SHORT[r]}: ${log[r].map(g => `${g[2] ? "W" : "L"} ${g[0]}-${g[1]}`).join(", ")}`);
+    const yourLine = mine.length ? mine.join("   ·   ") : "No games played yet";
+    text("YOUR GAMES", 18, 606, { size: 16, color: C.gold, display: true });
+    ctx.save(); ctx.font = `700 ${Math.round(20 * 0.72)}px ${FONT_BODY}`; const lw = ctx.measureText(yourLine).width, room = 740;
+    ctx.translate(18, 628); if (lw > room) ctx.scale(room / lw, 1); text(yourLine, 0, 0, { size: 20, color: C.white }); ctx.restore();
+    text("Single games: points  ·  Best of 3: series wins", 18, 656, { size: 18, color: C.grey, weight: 500 });
+    this.continueBtn();
+  }
+  continueBtn() {
+    rrect(800, 616, 180, 50, 10, C.gold); text("CONTINUE ▶", 890, 641, { size: 26, color: "#1a1406", center: true, display: true });
+    hit(800, 616, 180, 50, () => this.go());
+    this.footer("Enter to continue");
   }
 }
 
@@ -2889,5 +3095,5 @@ window.claude?.hot?.snapshot?.(() => ({ career: App.career ? JSON.parse(JSON.str
 const boot = () => window.claude?.hot?.ready ? window.claude.hot.ready(start) : start(window.claude?.hot?.data ?? {});
 (document.fonts && document.fonts.load ? Promise.all([document.fonts.load('20px Bungee'), document.fonts.load('700 20px "Barlow Semi Condensed"'), document.fonts.load('500 20px "Barlow Semi Condensed"')]).catch(() => {}) : Promise.resolve()).then(boot, boot);
 // Test hook (used only by automated checks)
-window.__SK = { CrewScreen, GymScreen, OffersScreen, ScoutReportScreen, scoutGameScore, TIERS, MarketScreen, bracket, App, Match, Career, Luck, Rng, crewPlayers, overall, blankInputs, MatchScreen, HubScreen, CourtScreen, AttrScreen, SlotScreen, ResultScreen };
+window.__SK = { BracketScreen, bracketView, makeField, CrewScreen, GymScreen, OffersScreen, ScoutReportScreen, scoutGameScore, TIERS, MarketScreen, bracket, App, Match, Career, Luck, Rng, crewPlayers, overall, blankInputs, MatchScreen, HubScreen, CourtScreen, AttrScreen, SlotScreen, ResultScreen };
 </script>
