@@ -196,18 +196,21 @@ class Ball {
     this.z = Math.sin(Math.PI * f) * this.peak + 20 * f;
     return f >= 1;
   }
-  setLoose(x, y, vx, vy, z = 20, delay = 0.15) { Object.assign(this, { state: "loose", holder: null, passer: null, receiver: null, x, y, z, vx, vy, grabDelay: delay }); }
+  setLoose(x, y, vx, vy, z = 20, delay = 0.15, vz = 0) { Object.assign(this, { state: "loose", holder: null, passer: null, receiver: null, x, y, z, vx, vy, vz, grabDelay: delay }); }
   updateLoose(dt) {
     this.grabDelay = Math.max(0, this.grabDelay - dt);
     this.x += this.vx * dt; this.y += this.vy * dt;
-    const drag = Math.max(0, 1 - 1.6 * dt); this.vx *= drag; this.vy *= drag;
-    this.z = Math.max(0, this.z - 60 * dt);
+    const drag = Math.max(0, 1 - 2.2 * dt); this.vx *= drag; this.vy *= drag;
+    this.vz = (this.vz || 0) - 700 * dt; this.z += this.vz * dt;
+    if (this.z <= 0) { this.z = 0; this.vz = Math.abs(this.vz) > 70 ? -this.vz * 0.45 : 0; }   // bounce, losing energy
     const pad = 8;
     if (this.x < S.CL + pad || this.x > S.CR - pad) this.vx = -this.vx;
     if (this.y < S.CT + pad || this.y > S.CB - pad) this.vy = -this.vy;
     this.x = clamp(this.x, S.CL + pad, S.CR - pad); this.y = clamp(this.y, S.CT + pad, S.CB - pad);
   }
   setDead(x, y) { this.state = "dead"; this.holder = null; this.x = x; this.y = y; this.z = 0; }
+  // a made basket: remember how it went in, for the finish animation
+  setMade(x, y, how, at) { this.setDead(x, y); this.how = how; this.madeAt = at; this.side = Math.random() < 0.5 ? -1 : 1; }
 }
 
 // =====================================================================
@@ -259,8 +262,8 @@ class Match {
     this.ball.setHeld(this.team(team)[0]);
     if (this.human) this.controlled = this.team(0)[0];
   }
-  turnover(t) {
-    this.offense = t; this.needsClear = true; this.shotClock = S.SHOT_CLOCK; this.meter = null;
+  turnover(t, clear = true) {
+    this.offense = t; this.needsClear = clear; this.shotClock = S.SHOT_CLOCK; this.meter = null;
     for (const a of this.actors) { a.holdT = 0; a.spot = null; }
     if (this.human && t === 1) this.controlled = this.mainGuy;
   }
@@ -442,9 +445,10 @@ class Match {
     if (kind === "dunk") return clamp(S.DUNK_BASE + a.eff("dunk") - this.contest(a) * 0.3, 0.5, 0.98);
     if (kind === "layup") base = S.LAYUP_BASE + a.eff("finish") + (sh - 50) / 99 * 0.15 - this.contest(a) * 0.7;
     else {
-      if (d <= S.ARC) base = 0.44 - 0.12 * clamp((d - 60) / (S.ARC - 60), 0, 1);
-      else base = 0.32 - 0.25 * Math.max(0, d - S.ARC - 30) / 150 + a.eff("deep");
-      base += (sh - 50) / 99 * 0.3 + quality * 0.14 - this.contest(a);
+      if (d <= S.ARC) base = 0.52 - 0.12 * clamp((d - 60) / (S.ARC - 60), 0, 1);
+      else base = 0.40 - 0.25 * Math.max(0, d - S.ARC - 30) / 150 + a.eff("deep");
+      // just missing the green barely hurts; a way-off release hurts a lot (but never guarantees a miss)
+      base += (sh - 50) / 99 * 0.3 + quality * 0.18 - this.contest(a);
     }
     return clamp(base, 0.02, 0.95);
   }
@@ -556,7 +560,7 @@ class Match {
       }
       if (dist([b.x, b.y], b.receiver.pos) < 16) b.setHeld(b.receiver);
     } else if (b.state === "shot") { if (b.updateShot(dt)) this.resolveShot(); }
-    else if (b.state === "loose") { b.updateLoose(dt); if (b.grabDelay <= 0 && b.z < 25) this.tryGrab(); }
+    else if (b.state === "loose") { b.updateLoose(dt); if (b.grabDelay <= 0 && b.z < 32) this.tryGrab(); }
   }
   resolveShot() {
     const b = this.ball, sh = b.shooter;
@@ -564,7 +568,7 @@ class Match {
       this.score[sh.team] += b.points; sh.points += b.points;
       if (sh === this.mainGuy) { this.box.fgm++; this.box.pts += b.points; }
       this.say(`${sh.p.name} +${b.points}`);
-      b.setDead(S.HOOP[0], S.HOOP[1]);
+      b.setMade(S.HOOP[0], S.HOOP[1], b.dunk ? "dunk" : b.swish ? "swish" : "rim", this.elapsed);
       this.fx.swish = b.swish ? 0.8 : 0.5; if (b.dunk) this.fx.shake = 0.45;
       sh.setAnim("celebrate", 1.1);
       const wasHot = sh.onFire;
@@ -579,7 +583,7 @@ class Match {
       this.events.push({ type: "miss", team: sh.team });
       this.fx.shake = Math.max(this.fx.shake, 0.12);
       const ang = this.rng.uniform(0.15 * Math.PI, 0.85 * Math.PI), spd = this.rng.uniform(90, 220);
-      b.setLoose(S.HOOP[0], S.HOOP[1] + 12, Math.cos(ang) * spd, Math.sin(ang) * spd, 30);
+      b.setLoose(S.HOOP[0], S.HOOP[1] + 6, Math.cos(ang) * spd, Math.sin(ang) * spd, 6, 0.12, this.rng.uniform(170, 260));
     }
   }
   tryGrab() {
@@ -592,7 +596,7 @@ class Match {
     if (!cands.length) return;
     const a = this.rng.choices(cands.map(c => c[0]), cands.map(c => c[1]));
     b.setHeld(a);
-    if (a.team !== this.offense) { this.turnover(a.team); this.say(`Board: ${a.p.name}`, 1.0); }
+    if (a.team !== this.offense) { this.turnover(a.team, false); this.say(`Board: ${a.p.name}`, 1.0); }
     else { this.shotClock = S.SHOT_CLOCK; this.say(`Offensive board: ${a.p.name}`, 1.0); }
   }
 }
@@ -1789,17 +1793,37 @@ function drawPerson(m, a, highlight) {
 }
 
 // x, y = spot on the court under the ball; h = height above the court in pixels
-function drawBall(x, y, h, t, r = 6.5) {
-  ellipse(x, y + 1, r * 0.95, r * 0.45, `rgba(0,0,0,${Math.max(0.15, 0.45 - h / 200)})`);
-  const by = y - h, rr = r;
+function drawBall(x, y, h, t, r = 6.5, spin = 6) {
+  ellipse(x, y + 1, r * 0.95, r * 0.45, `rgba(0,0,0,${Math.max(0.12, 0.45 - h / 200)})`);
+  const by = y - h, rr = r * (1 + Math.max(0, h - 30) / 260);   // closer to the camera = bigger
   circle(x, by, rr, C.orange, "#3c1e0a", 1.2);
-  ctx.save(); ctx.translate(x, by); ctx.rotate(t * 6);
+  ctx.save(); ctx.translate(x, by); ctx.rotate(t * spin);
   ctx.strokeStyle = "#3c1e0a"; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(-rr, 0); ctx.lineTo(rr, 0); ctx.stroke();
   ctx.beginPath(); ctx.arc(-rr * 1.2, 0, rr * 0.95, -0.9, 0.9); ctx.stroke();
   ctx.beginPath(); ctx.arc(rr * 1.2, 0, rr * 0.95, Math.PI - 0.9, Math.PI + 0.9); ctx.stroke();
   ctx.restore();
   circle(x - rr * 0.35, by - rr * 0.35, rr * 0.3, "rgba(255,255,255,0.2)");
+}
+
+// How a made basket looks: swishes drop through the net, rim-ins roll around first, dunks get slammed.
+function drawFinish(m, b) {
+  const [hx, hy] = S.HOOP, t = m.elapsed - (b.madeAt || 0);
+  const hop = (u, v0) => { // small bounces on the floor after dropping through
+    let h = 0, v = v0, tt = u;
+    for (let i = 0; i < 3 && tt > 0; i++) { const air = 2 * v / 900; if (tt < air) { h = v * tt - 450 * tt * tt; break; } tt -= air; v *= 0.45; }
+    return Math.max(0, h);
+  };
+  let x = hx, y = hy, h = 0, r = 6.5;
+  if (b.how === "rim" && t < 0.36) {          // rattles around the rim first
+    const a = t * 20 * b.side; x = hx + Math.cos(a) * 10; y = hy + Math.sin(a) * 6;
+  } else {
+    const u = Math.max(0, t - (b.how === "rim" ? 0.36 : 0));
+    const through = Math.min(1, u / 0.14);    // sinking through the net
+    y = hy + through * 16; r = 6.5 - through * 1.2 + (u > 0.14 ? 1.2 : 0);
+    h = u > 0.14 ? hop(u - 0.14, b.how === "dunk" ? 230 : 150) : 0;
+  }
+  drawBall(x, y, h, m.elapsed, r, 3);
 }
 
 function drawRimFx(m) {
@@ -1825,16 +1849,16 @@ function drawActors(m, controlled) {
   for (const a of order) { const hb = drawPerson(m, a, controlled && a === m.controlled); if (hb) held = hb; }
   if (b.state === "held" && held) drawBall(held.x, b.holder.y, b.holder.y - held.y, m.elapsed);
   else if (b.state === "shot") {
-    const f = Math.min(1, b.t / b.dur), h = 50 * (1 - f) + b.z * 0.8 + 10 * f;
+    const f = Math.min(1, b.t / b.dur), h = 50 * (1 - f) + Math.sin(Math.PI * f) * b.peak * 0.9;   // from the hands, up, and down into the rim
     b.trail = b.trail || []; b.trail.push([b.x, b.y - h]); if (b.trail.length > 12) b.trail.shift();
     const col = b.fire ? "255,120,30" : b.green ? "255,215,80" : "255,255,255";
     b.trail.forEach(([tx, ty], i) => circle(tx, ty, 2 + i * (b.green || b.fire ? 0.7 : 0.35), `rgba(${col},${(i / b.trail.length) * (b.green || b.fire ? 0.55 : 0.2)})`));
     if (b.green || b.fire) circle(b.x, b.y - h, 13, `rgba(${col},0.25)`);
-    drawBall(b.x, b.y, h, m.elapsed);
+    drawBall(b.x, b.y, h, m.elapsed, 6.5, -9);   // backspin on the way up
   }
   else if (b.state === "pass") drawBall(b.x, b.y, 28, m.elapsed);
-  else if (b.state === "loose") drawBall(b.x, b.y, 4 + b.z * 1.2 + Math.abs(Math.sin(m.elapsed * 10)) * Math.min(14, b.z), m.elapsed);
-  else if (b.state === "dead") drawBall(b.x, b.y + 14, 4, m.elapsed);
+  else if (b.state === "loose") drawBall(b.x, b.y, 4 + b.z, m.elapsed, 6.5, 12);
+  else if (b.state === "dead") drawFinish(m, b);
 }
 
 // Fans stand along the fences. More fame = more people show up.
@@ -1886,7 +1910,7 @@ class MatchScreen extends Screen {
     this.crowdN = ci === HUSTLE ? 0 : this.c.crowdSize();
     this.crowd = makeCrowd(this.crowdN, crew.id + ":" + this.c.fame);
     this.scoutWatching = crew.mode === "tourney" && this.c.stage === "hs";
-    this.parts = []; this.pops = []; this.excite = 0.15; this.shake = 0; this.flash = 0; this.freeze = null; this.lastBounce = 0;
+    this.parts = []; this.pops = []; this.rings = []; this.excite = 0.15; this.shake = 0; this.flash = 0; this.freeze = null; this.lastBounce = 0;
   }
   burst(x, y, n, colors, speed = 160, up = 60) {
     for (let i = 0; i < n; i++) { const a = Math.random() * Math.PI * 2, sp = speed * (0.4 + Math.random() * 0.8);
@@ -1908,6 +1932,8 @@ class MatchScreen extends Screen {
         if (e.green) { Sound.green(); this.flash = 0.35; this.shake = Math.max(this.shake, 0.12); this.pop("GREEN!", a.x, a.y - 100, C.green, 54, 1.0); this.burst(a.x, a.y - 60, 16, ["#7dff9a", "#e8ffe9", C.gold], 140, 40); }
       } else if (e.type === "make") {
         const mine = e.team === 0;
+        this.rings.push({ t: 0, col: e.green ? "245,200,60" : e.kind === "dunk" ? "235,130,40" : "255,255,255" });
+        if (e.green) this.rings.push({ t: -0.12, col: "125,255,154" });
         if (e.kind === "dunk") { Sound.dunk(); this.shake = Math.max(this.shake, 0.4); this.burst(hx, hy, 30, [C.orange, C.gold, "#fff"], 260, 30); this.pop("SLAM!", hx, hy + 40, C.orange, 60); }
         else if (e.swish) { Sound.swish(); this.burst(hx, hy + 6, e.green ? 28 : 16, e.green ? [C.gold, "#fff5c4", "#7dff9a"] : ["#ffffff", "#cfe3ff"], e.green ? 220 : 150, 20); this.pop(e.green ? "SPLASH!" : "SWISH", hx, hy + 44, e.green ? C.gold : C.white, e.green ? 52 : 40); }
         else { Sound.rimIn(); this.burst(hx, hy, 10, [C.orange, "#fff"], 120, 10); }
@@ -1952,6 +1978,8 @@ class MatchScreen extends Screen {
     for (const q of this.parts) { q.life -= dt; q.vy += q.g * dt; q.x += q.vx * dt; q.y += q.vy * dt; }
     this.parts = this.parts.filter(q => q.life > 0);
     for (const q of this.pops) q.life -= dt;
+    for (const q of this.rings) q.t += dt;
+    this.rings = this.rings.filter(q => q.t < 0.5);
     this.pops = this.pops.filter(q => q.life > 0);
     // embers rise off players who are on fire
     for (const a of m.actors) if (a.onFire && Math.random() < dt * 25) this.parts.push({ x: a.x + (Math.random() - 0.5) * 20, y: a.y - Math.random() * 30, vx: (Math.random() - 0.5) * 30, vy: -60 - Math.random() * 60, life: 0.7, max: 0.7, col: Math.random() < 0.5 ? "#ff7a1a" : "#ffd23c", r: 1.5 + Math.random() * 2, g: -20 });
@@ -1970,6 +1998,7 @@ class MatchScreen extends Screen {
     if (this.scoutWatching) drawScout(84, 340, m.elapsed);
     drawActors(m, true);
     for (const q of this.parts) circle(q.x, q.y, q.r * Math.max(0.3, q.life / q.max), q.col);
+    for (const q of this.rings) if (q.t > 0) { const k = q.t / 0.5; ellipse(S.HOOP[0], S.HOOP[1], 11 + k * 46, 7 + k * 26, null, `rgba(${q.col},${1 - k})`, 3 * (1 - k) + 1); }
     // shot meter: fills while you hold, then freezes for a moment where you let go
     const a = m.controlled;
     if (m.meter !== null || this.freeze) {
