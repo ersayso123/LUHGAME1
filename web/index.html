@@ -88,7 +88,7 @@ const S = {
   HOOP: [500, 115], ARC: 250, PAINT_HW: 80, PAINT_D: 190, CHECK: [500, 450],
   GAME_TO: 11, SHOT_CLOCK: 10,
   PR: 14, BASE_SPEED: 165, SPEED_PER: 1.8, PASS_SPEED: 720, ACCEL: 11, SPRINT: 1.35, STAMINA_DRAIN: 0.42, STAMINA_REGEN: 0.22,
-  METER_TIME: 0.7, METER_SWEET: 0.8, WIN_NEAR: 0.12, WIN_FAR: 0.04,
+  METER_TIME: 0.5, METER_SWEET: 0.8, WIN_NEAR: 0.12, WIN_FAR: 0.04,
   DUNK_RANGE: 85, DUNK_BASE: 0.9, LAYUP: 95, LAYUP_BASE: 0.72,
   STEAL_RANGE: 36, STEAL_BASE: 0.16, BLOCK_RANGE: 36, BLOCK_BASE: 0.10, GRAB: 20,
   MAIN_MAX: 5, SEC_MAX: 3, SEC_PCT: 0.5, SEC_UNLOCK: 1,
@@ -315,7 +315,8 @@ class Match {
     const k = 1 - Math.exp(-S.ACCEL * dt);
     if (a.plant > 0 && !a.dash) { a.plant -= dt; a.vx = a.vy = 0; mx = my = 0; }
     else if (a.dash) {
-      a.vx = a.dash.vx; a.vy = a.dash.vy; a.dash.t -= dt;
+      const u = 1 - a.dash.t / (a.dash.T || a.dash.t), punch = Math.max(0.15, 1.8 - 1.6 * u);
+      a.vx = a.dash.vx * punch; a.vy = a.dash.vy * punch; a.dash.t -= dt;
       if (a.dash.t <= 0) {
         if (a.dash.plant) { a.vx = a.vy = 0; a.plant = 0.28; } else { a.vx *= 0.35; a.vy *= 0.35; }
         a.dash = null;
@@ -490,11 +491,11 @@ class Match {
     type = type || this.moveType(mx, my);
     const side = mx > 0.3 ? 1 : mx < -0.3 ? -1 : -a.hand;
     const MOVES = {   // dash direction, dash speed, dash time, ankle-break odds, stun time, label
-      cross: { v: [side, 0], sp: 230, t: 0.12, odds: 1.0, stun: 0.7, label: side > 0 ? "CROSSOVER ▶" : "◀ CROSSOVER" },
-      drive: { v: [side * 0.62, -0.78], sp: 270, t: 0.14, odds: 0.85, stun: 0.6, label: side > 0 ? "CROSS & DRIVE ↗" : "↖ CROSS & DRIVE" },
-      stepback: { v: [0, 1], sp: 320, t: 0.17, odds: 0.7, stun: 0.45, label: "STEP BACK", plant: true },
-      sidestep: { v: [side * 0.8, 0.6], sp: 250, t: 0.13, odds: 0.8, stun: 0.5, label: side > 0 ? "SIDE STEP ▶" : "◀ SIDE STEP", plant: true },
-      go: { v: [0, -1], sp: 260, t: 0.12, odds: 0.6, stun: 0.5, label: "HESI-GO" },
+      cross: { v: [side, 0], sp: 380, t: 0.15, odds: 1.0, stun: 0.7, label: side > 0 ? "CROSSOVER ▶" : "◀ CROSSOVER" },
+      drive: { v: [side * 0.62, -0.78], sp: 420, t: 0.16, odds: 0.85, stun: 0.6, label: side > 0 ? "CROSS & DRIVE ↗" : "↖ CROSS & DRIVE" },
+      stepback: { v: [0, 1], sp: 440, t: 0.17, odds: 0.7, stun: 0.45, label: "STEP BACK", plant: true },
+      sidestep: { v: [side * 0.8, 0.6], sp: 360, t: 0.15, odds: 0.8, stun: 0.5, label: side > 0 ? "SIDE STEP ▶" : "◀ SIDE STEP", plant: true },
+      go: { v: [0, -1], sp: 380, t: 0.15, odds: 0.6, stun: 0.5, label: "HESI-GO" },
       hesi: { v: [0, 0], sp: 0, t: 0, odds: 0.55, stun: 0.55, label: "HESI" },
     };
     const mv = MOVES[type];
@@ -509,7 +510,8 @@ class Match {
     a.cool = 0.9;
     if (type === "cross" || type === "drive" || type === "sidestep") a.hand = side;
     else if (type === "hesi") a.hand = -a.hand;
-    if (mv.sp) { const [vx, vy] = norm(mv.v[0], mv.v[1]); a.dash = { vx: vx * mv.sp, vy: vy * mv.sp, t: mv.t, plant: !!mv.plant }; }
+    if (mv.sp) { const [vx, vy] = norm(mv.v[0], mv.v[1]); a.dash = { vx: vx * mv.sp, vy: vy * mv.sp, t: mv.t, T: mv.t, plant: !!mv.plant }; }
+    this.events.push({ type: "move", kind: type, x: a.x, y: a.y, team: a.team, human: this.human && a === this.controlled });
     a.setAnim(type === "drive" ? "cross" : type === "sidestep" ? "stepback" : type, type === "stepback" || type === "sidestep" ? 0.34 : type === "hesi" ? 0.4 : 0.32);
     a.moveTag = { text: mv.label, t: 0.8 };
     if (type === "stepback" || type === "sidestep") a.stepBackT = 0.9;
@@ -1120,6 +1122,7 @@ const Sound = {
   fire() { this.noise(0.9, "lowpass", 700, 0.7, 0.25, 0.08); this.tone(220, 0.6, "sawtooth", 0.04, 440); },
   ankles() { this.noise(0.12, "highpass", 3000, 1, 0.12); this.tone(260, 0.2, "triangle", 0.06, 120, 0.03); },
   steal() { this.tone(700, 0.08, "square", 0.05, 900); },
+  whoosh(big) { this.noise(big ? 0.22 : 0.16, "bandpass", big ? 1400 : 1900, 1.2, big ? 0.16 : 0.11, 0.02); this.tone(big ? 90 : 120, 0.09, "sine", 0.14, 60); },
   cheer(size, big) { const g = Math.min(0.32, 0.03 + size / 140 * 0.22) * (big ? 1.4 : 1); this.noise(big ? 1.8 : 1.1, "bandpass", 1100, 0.45, g, 0.18); this.noise(big ? 1.6 : 1.0, "bandpass", 2400, 0.6, g * 0.5, 0.2); },
   groan(size) { const g = Math.min(0.15, 0.02 + size / 140 * 0.1); this.noise(0.8, "lowpass", 500, 0.7, g, 0.15); },
 };
@@ -1735,9 +1738,14 @@ class MatchScreen extends Screen {
         if (mine) { this.excite = Math.min(1.4, this.excite + (big ? 1.2 : 0.7)); Sound.cheer(crowd, big); }
         else { this.excite = Math.min(1, this.excite + 0.3); Sound.groan(crowd); }
       } else if (e.type === "miss") { Sound.clank(); if (e.team === 0) this.pop("CLANK", hx, hy + 40, C.grey, 30, 0.7); }
-      else if (e.type === "ankles") { Sound.ankles(); this.burst(e.x, e.y, 10, [C.gold, "#fff"], 90, 60); if (e.team === 0) { this.excite = Math.min(1.4, this.excite + 0.8); Sound.cheer(crowd, false); } }
+      else if (e.type === "ankles") { Sound.ankles(); this.shake = Math.max(this.shake, 0.22); this.pop("ANKLES!", e.x, e.y - 70, C.gold, 40, 0.9); this.burst(e.x, e.y, 10, [C.gold, "#fff"], 90, 60); if (e.team === 0) { this.excite = Math.min(1.4, this.excite + 0.8); Sound.cheer(crowd, false); } }
       else if (e.type === "block") { Sound.clank(); this.shake = Math.max(this.shake, 0.2); this.pop("REJECTED!", e.x, e.y - 90, C.red, 44); }
       else if (e.type === "steal") { Sound.steal(); }
+      else if (e.type === "move") {
+        if (e.human || e.team === 0) Sound.whoosh(e.kind === "stepback" || e.kind === "sidestep");
+        for (let i = 0; i < 9; i++) this.parts.push({ x: e.x + (Math.random() - 0.5) * 16, y: e.y + 2, vx: (Math.random() - 0.5) * 90, vy: -Math.random() * 30, life: 0.45, max: 0.45, col: "rgba(200,190,170,0.8)", r: 2 + Math.random() * 2.5, g: 40 });
+        if (e.human) this.shake = Math.max(this.shake, 0.06);
+      }
     }
     m.events.length = 0;
   }
