@@ -13,6 +13,15 @@ python main.py
 
 Progress saves automatically to `saves/career.json`.
 
+### Play in your browser (localhost)
+
+```bash
+pip install pygbag
+python -m pygbag .
+```
+
+Then open **http://localhost:8000** and click the page to start. The first load takes a bit because it downloads the Python-in-the-browser runtime. In the browser version your career lasts until you close the tab.
+
 ## Controls (in a game)
 
 | Key | On offense | On defense |

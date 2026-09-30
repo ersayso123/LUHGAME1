@@ -1,4 +1,9 @@
-"""Streetball Kingdom: a top-down 3v3 streetball career game. Run: python main.py"""
+"""Streetball Kingdom: a top-down 3v3 streetball career game.
+
+Desktop: python main.py
+Browser: python -m pygbag .   then open http://localhost:8000
+"""
+import asyncio
 from pathlib import Path
 
 import pygame
@@ -34,7 +39,7 @@ class App:
         self.save()
         self.running = False
 
-    def run(self):
+    async def run(self):
         clock = pygame.time.Clock()
         while self.running:
             dt = clock.tick(S.FPS) / 1000.0
@@ -46,15 +51,16 @@ class App:
             self.current.update(dt)
             self.current.draw(self.screen)
             pygame.display.flip()
+            await asyncio.sleep(0)  # lets the browser version draw each frame
 
 
-def main():
+async def main():
     pygame.init()
     pygame.display.set_caption(S.TITLE)
     screen = pygame.display.set_mode((S.WIDTH, S.HEIGHT))
-    App(screen).run()
+    await App(screen).run()
     pygame.quit()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
