@@ -237,6 +237,7 @@ class Match {
     this.scout = opts.scout || 0;            // 0..1: how well the other team has studied you
     this.favMove = opts.favMove || null;     // your most-used dribble move; scouted teams see it coming
     this.moveUse = {};
+    this.box = { pts: 0, fga: 0, fgm: 0, greens: 0, ankles: 0, to: 0 };   // your main player's stat line (the scout reads this)
     this.actors = [...teamA.map((p, i) => new Actor(p, 0, i)), ...teamB.map((p, i) => new Actor(p, 1, i))];
     this.ball = new Ball(); this.score = [0, 0]; this.winner = null; this.messages = [];
     this.meter = null; this.elapsed = 0; this.controlled = this.team(0)[0];
@@ -443,6 +444,7 @@ class Match {
   }
   takeShot(a, kind, quality = 0, green = false) {
     const d = dist(a.pos, S.HOOP), pts = kind === "jumper" ? shotPoints(a.pos) : 1;
+    if (a === this.mainGuy) { this.box.fga++; if (green) this.box.greens++; }
     if (!green) {   // a green release can't be blocked
       for (const dfd of this.team(1 - a.team)) {
         const dd = dist(dfd.pos, a.pos);
@@ -517,6 +519,7 @@ class Match {
       if (this.rng.random() < clamp(ch, 0.04, 0.8)) {
         dfd.stun = mv.stun; dfd.vx *= 0.2; dfd.vy *= 0.2;
         this.events.push({ type: "ankles", x: dfd.x, y: dfd.y, team: a.team });
+        if (a === this.mainGuy) this.box.ankles++;
       } else if (read) {
         dfd.moveTag = { text: "READ IT!", t: 0.8 };
         this.say(type === "stepback" ? `${a.p.name} stepped back on ${dfd.p.name}!` : type === "hesi" ? `${a.p.name} froze ${dfd.p.name}!` : `${a.p.name} broke ${dfd.p.name}'s ankles!`);
@@ -528,7 +531,7 @@ class Match {
     if (dist(a.pos, h.pos) > S.STEAL_RANGE) { a.cool = 0.4; return; }
     a.cool = 0.9; a.setAnim("reach", 0.3);
     const ch = S.STEAL_BASE + (a.p.stats.defense - h.p.stats.handles) / 250 + a.eff("steal");
-    if (this.rng.random() < clamp(ch, 0.03, 0.6)) { this.ball.setHeld(a); this.turnover(a.team); this.say(`Stolen by ${a.p.name}!`); this.events.push({ type: "steal", x: a.x, y: a.y, team: a.team }); }
+    if (this.rng.random() < clamp(ch, 0.03, 0.6)) { if (h === this.mainGuy) this.box.to++; this.ball.setHeld(a); this.turnover(a.team); this.say(`Stolen by ${a.p.name}!`); this.events.push({ type: "steal", x: a.x, y: a.y, team: a.team }); }
     else a.stun = 0.2;
   }
   updateBall(dt) {
@@ -541,7 +544,7 @@ class Match {
         if (dist([b.x, b.y], dfd.pos) < 16) {
           b.checked.add(dfd);
           const ch = 0.28 * dfd.p.stats.defense / 80 - b.passer.eff("pass") * 0.8 + dfd.eff("steal");
-          if (this.rng.random() < clamp(ch, 0.02, 0.7)) { b.setHeld(dfd); this.turnover(dfd.team); this.say(`Picked off by ${dfd.p.name}!`); return; }
+          if (this.rng.random() < clamp(ch, 0.02, 0.7)) { if (b.passer === this.mainGuy) this.box.to++; b.setHeld(dfd); this.turnover(dfd.team); this.say(`Picked off by ${dfd.p.name}!`); return; }
         }
       }
       if (dist([b.x, b.y], b.receiver.pos) < 16) b.setHeld(b.receiver);
@@ -552,6 +555,7 @@ class Match {
     const b = this.ball, sh = b.shooter;
     if (b.made) {
       this.score[sh.team] += b.points; sh.points += b.points;
+      if (sh === this.mainGuy) { this.box.fgm++; this.box.pts += b.points; }
       this.say(`${sh.p.name} +${b.points}`);
       b.setDead(S.HOOP[0], S.HOOP[1]);
       this.fx.swish = b.swish ? 0.8 : 0.5; if (b.dunk) this.fx.shake = 0.45;
@@ -690,13 +694,26 @@ const AI = (() => {
 // =====================================================================
 // Career (same as game/career.py)
 // =====================================================================
+// The story: your last high school tournament (scouts watching), then your pro team's farm chain.
+// Opponents are rated above you on purpose: it's a grind.
 const TIERS = [
-  { title: "Nobody", court: "Rusty Rim Park", tourney: "Rusty Rim Classic", base: 36, crews: ["Corner Kids", "Rec League Rejects", "The Rust Kings"] },
-  { title: "Local", court: "Southside Blacktop", tourney: "Southside Showdown", base: 48, crews: ["Southside Swingers", "Block Party", "Blacktop Bullies"] },
-  { title: "Neighborhood Name", court: "Pier Courts", tourney: "Pier Pressure Invitational", base: 60, crews: ["Salt Water Squad", "Dock Boyz", "The Tide"] },
-  { title: "City Legend", court: "Downtown Cage", tourney: "Cage Brawl", base: 72, crews: ["Chain Link Gang", "Night Shift", "Cage Kings"] },
-  { title: "City Legend", court: "The Throne", tourney: "Throne Tournament", base: 84, crews: ["Crown Chasers", "Royal Court", "The Last King"] },
+  { name: "High School", title: "High School Senior", court: "Eastside High Blacktop", tourney: "Senior State Championship", base: 45, crews: ["Westview Wolves", "Central Tigers", "Northgate Eagles"] },
+  { name: "Rec League", title: "Rec League Rookie", court: "Rusty Rim Park", tourney: "Rec League Cup", base: 52, crews: ["Corner Kids", "Rec League Rejects", "The Rust Kings"] },
+  { name: "Minor League", title: "Minor Leaguer", court: "Southside Blacktop", tourney: "Minor League Showdown", base: 61, crews: ["Southside Swingers", "Block Party", "Blacktop Bullies"] },
+  { name: "Semi-Pro", title: "Semi-Pro", court: "Pier Courts", tourney: "Semi-Pro Invitational", base: 70, crews: ["Salt Water Squad", "Dock Boyz", "The Tide"] },
+  { name: "Pro League", title: "Pro", court: "Downtown Cage", tourney: "Pro League Finals", base: 79, crews: ["Chain Link Gang", "Night Shift", "Cage Kings"] },
+  { name: "The Throne", title: "Pro Star", court: "The Throne", tourney: "Throne Tournament", base: 88, crews: ["Crown Chasers", "Royal Court", "The Last King"] },
 ];
+const HS_POOL = ["Lincoln Lions", "Roosevelt Rams", "Kennedy Cougars", "Jefferson Jets", "Madison Mustangs", "Hamilton Hornets", "Franklin Falcons", "Washington Warriors"];
+const FRANCHISES = ["Metro Kings", "Harbor Hawks", "Capital Crowns", "Skyline Sharks", "Iron City Titans", "Bay Blaze", "Northside Knights", "Desert Suns"];
+// What the scout's grade gets you
+const DRAFT = { A: { tier: 3, bonus: 600, note: "a Rare teammate" }, B: { tier: 2, bonus: 300 }, C: { tier: 1, bonus: 120 }, D: { tier: 1, bonus: 0, walkOn: true }, F: { tier: 1, bonus: 0, walkOn: true } };
+function gradeOf(score) { return score >= 85 ? "A" : score >= 70 ? "B" : score >= 55 ? "C" : score >= 45 ? "D" : "F"; }
+// One high school game, as the scout sees it (0-100)
+function scoutGameScore(won, margin, box) {
+  const fg = box.fga ? box.fgm / box.fga : 0.45;
+  return clamp(Math.round(40 + (won ? 20 : -10) + 1.5 * margin + 1.5 * box.pts + 3 * box.greens + 2 * box.ankles + 40 * (fg - 0.45) - 4 * box.to), 0, 100);
+}
 const KING = "King of the Courts";
 const ROUNDS = ["Quarterfinal", "Semifinal", "Final"];
 const ROUND_OFFSETS = [0, 3, 7];
@@ -738,7 +755,7 @@ function makeCrew(rng, base) { return [rng.choice(["PG", "SG"]), rng.choice(["SF
 function crewPlayers(ci, k) { return makeCrew(new Rng(`${TIERS[ci].court}|${TIERS[ci].crews[k]}`), TIERS[ci].base + ROUND_OFFSETS[k]); }
 // Tournament bracket for one entry: two random crews, then that court's champions in the final.
 function bracket(tier, seed) {
-  const rng = new Rng(`T|${tier}|${seed}`), pool = [...TEAM_POOL];
+  const rng = new Rng(`T|${tier}|${seed}`), pool = [...(tier === 0 ? HS_POOL : TEAM_POOL)];
   return ROUNDS.map((round, r) => {
     const name = r === 2 ? TIERS[tier].crews[2] : pool.splice(rng.randint(0, pool.length - 1), 1)[0];
     const players = makeCrew(rng, TIERS[tier].base + ROUND_OFFSETS[r]);
@@ -813,19 +830,54 @@ function marketOdds(luck) { const w = RARITY.map(r => r.w * (1 + r.boost * luck)
 
 class Career {
   constructor(d) {
-    Object.assign(this, { cash: 100, fame: 0, tier: 0, champion: false, starters: [0, 1], tourney: null, entries: 0, titles: 0, games: 0, market: null, moves: {} }, d);
+    Object.assign(this, { cash: 100, fame: 0, tier: 0, champion: false, starters: [0, 1], tourney: null, entries: 0, titles: 0, games: 0, market: null, moves: {},
+      stage: "hs", team: null, startTier: 0, gamesAtDraft: 0, hsLog: [], hsDone: false, hsChamp: false, draftGrade: null }, d);
     // older saves: give everyone a position
     if (!this.me.pos) this.me.pos = "SF";
     for (const p of this.crew) if (!p.pos) p.pos = guessPos(p);
+    // saves from before story mode: they were already on the park ladder, so they're pros
+    if (d && !d.stage) {
+      this.tier = (d.tier || 0) + 1; this.stage = "pro"; this.startTier = 1; this.team = new Rng(this.me.name).choice(FRANCHISES);
+      if (this.tourney) this.tourney.tier += 1;
+    }
   }
   static fresh(name, main, pos = "SF") {
     const rng = new Rng();
     const stats = Object.fromEntries(S.STATS.map(s => [s, 40 + POS_SHAPE[pos][s]]));
     const me = makePlayer(name, rng.randint(0, 55), stats, main, 1); me.pos = pos;
     // every new baller starts with a point guard and a big man
-    return new Career({ me, crew: [generatePlayer(rng, 33, "PG"), generatePlayer(rng, 33, "C")] });
+    return new Career({ stage: "hs", me, crew: [generatePlayer(rng, 33, "PG"), generatePlayer(rng, 33, "C")] });
   }
   get title() { return this.champion ? KING : TIERS[this.tier].title; }
+  get lowestCourt() { return this.stage === "pro" ? 1 : 0; }
+  // ---- the scout's verdict on your high school tournament
+  scoutReport() {
+    const games = this.hsLog, n = games.length || 1;
+    const avg = games.reduce((a, g) => a + g.score, 0) / n;
+    const wins = games.filter(g => g.won).length;
+    const score = clamp(Math.round(avg + 5 * wins + (this.hsChamp ? 10 : 0)), 0, 100);
+    const tot = games.reduce((t, g) => { for (const k in g.box) t[k] = (t[k] || 0) + g.box[k]; return t; }, {});
+    const notes = [];
+    if (this.hsChamp) notes.push("Led the team to the state title.");
+    if ((tot.greens || 0) >= 3) notes.push("Knockdown shooter. Hits the green under pressure.");
+    if ((tot.ankles || 0) >= 2) notes.push("Handles for days. Defenders end up on the floor.");
+    if (tot.fga && tot.fgm / tot.fga < 0.35) notes.push("Shot selection needs work.");
+    if ((tot.to || 0) / n >= 2) notes.push("Careless with the ball. Too many turnovers.");
+    if ((tot.pts || 0) / n >= 6) notes.push("Can carry the scoring load.");
+    if (!notes.length) notes.push(score >= 55 ? "Solid, but didn't stand out." : "Not ready yet. Needs to put in work.");
+    return { games, avg: Math.round(avg), wins, score, grade: gradeOf(score), notes, tot };
+  }
+  // ---- the scout's team signs you; your grade decides where you start in the chain
+  recruit(rep) {
+    if (this.stage !== "hs") return null;
+    const rng = new Rng(), d = DRAFT[rep.grade];
+    this.stage = "pro"; this.team = rng.choice(FRANCHISES); this.draftGrade = rep.grade;
+    this.tier = d.tier; this.startTier = d.tier; this.gamesAtDraft = this.games; this.tourney = null;
+    this.cash += d.bonus;
+    let extra = null;
+    if (rep.grade === "A" && this.crew.length < S.CREW_MAX) { extra = rarePlayer(rng, overall(this.me), RARITY[1]); this.crew.push(extra); }
+    return { team: this.team, tier: d.tier, bonus: d.bonus, walkOn: !!d.walkOn, extra };
+  }
   // Pickup games: two local crews at any court you've reached. They don't move you up.
   crewsFor(ci) {
     return [0, 1].map(k => { const players = crewPlayers(ci, k); return { id: `${ci}:${k}`, court: ci, name: TIERS[ci].crews[k], players, boss: false, ovr: teamOverall(players), mode: "pickup" }; });
@@ -839,24 +891,32 @@ class Career {
   // Scouting: climb faster than expected (few games played, or a team rated under the level)
   // and other teams start studying you.
   scouting() {
-    if (this.tier === 0) return 0;
-    const fast = clamp((6 * this.tier - this.games) / (6 * this.tier), 0, 1) * 0.8;   // about 6 games per level is normal
-    const under = clamp((TIERS[this.tier].base - 6 - teamOverall(this.lineup())) / 20, 0, 1);
+    const climbed = this.tier - this.startTier;
+    if (this.stage !== "pro" || climbed <= 0) return 0;
+    const played = this.games - this.gamesAtDraft;
+    const fast = clamp((6 * climbed - played) / (6 * climbed), 0, 1) * 0.8;   // about 6 games per level is normal
+    // opponents are always a bit better than you; being FAR below the level also gets you studied
+    const under = clamp((TIERS[this.tier].base - 14 - teamOverall(this.lineup())) / 20, 0, 1);
     return Math.round(Math.max(fast, under) * 100) / 100;
   }
   favoriteMove() { let best = null, n = 2; for (const [k, v] of Object.entries(this.moves)) if (v > n) { n = v; best = k; } return best; }
-  applyResult(crew, won, margin = 0, bet = 0, mult = 1, moveUse = {}) {
-    const ci = crew.court, r = { fame: 0, cash: 0, betWin: 0, tips: 0, tierUp: false, crowned: false, nextRound: false, champ: false, eliminated: false };
+  applyResult(crew, won, margin = 0, bet = 0, mult = 1, moveUse = {}, box = null) {
+    const ci = crew.court, r = { fame: 0, cash: 0, betWin: 0, tips: 0, tierUp: false, crowned: false, nextRound: false, champ: false, eliminated: false, hsDone: false, scout: null };
     this.games++;
+    const hs = crew.mode === "tourney" && this.stage === "hs";
+    if (hs && box) { r.scout = scoutGameScore(won, margin, box); this.hsLog.push({ round: crew.round, opp: crew.name, won, margin, score: r.scout, box: { ...box } }); }
     for (const [k, v] of Object.entries(moveUse)) this.moves[k] = (this.moves[k] || 0) + v;
     if (won) {
-      r.fame = (crew.mode === "tourney" ? 12 : 8) + 6 * ci + Math.floor(margin / 2);
-      r.cash = (crew.mode === "tourney" ? 60 : 40) + 40 * ci;
+      r.fame = (crew.mode === "tourney" ? 12 : 10) + 6 * ci + Math.floor(margin / 2);
+      r.cash = (crew.mode === "tourney" ? 60 : 50) + (crew.mode === "tourney" ? 40 : 50) * ci;
       if (bet) r.betWin = Math.round(bet * mult);
       r.tips = Math.round(this.crowdSize() * 0.5);
       if (crew.mode === "tourney") {
         if (this.tourney.round < 2) { this.tourney.round++; r.nextRound = true; }
-        else {   // won the whole tournament
+        else if (hs) {   // state champions: the scout has seen enough
+          r.champ = true; this.titles++; this.tourney = null; this.hsChamp = true; this.hsDone = true; r.hsDone = true;
+          r.fame += 30; r.cash += 150;
+        } else {   // won the whole tournament
           r.champ = true; this.titles++; this.tourney = null;
           r.fame += 40 + 10 * ci; r.cash += 250 + 150 * ci;
           if (ci === this.tier && this.tier < TIERS.length - 1) { this.tier++; r.tierUp = true; }
@@ -865,7 +925,7 @@ class Career {
       }
     } else {
       r.fame = -this.fameLoss(); r.cash = 10;
-      if (crew.mode === "tourney") { this.tourney = null; r.eliminated = true; }
+      if (crew.mode === "tourney") { this.tourney = null; r.eliminated = true; if (hs) { this.hsDone = true; r.hsDone = true; } }
     }
     this.fame = Math.max(0, this.fame + r.fame); this.cash += r.cash + r.betWin + r.tips;
     return r;
@@ -908,7 +968,7 @@ class Career {
   buyAttr(slot, key) {
     const me = this.me; let lvl;
     if (slot === "sec") {
-      if (!this.secUnlocked()) return [false, "Secondary unlocks at Local fame."];
+      if (!this.secUnlocked()) return [false, "Secondary unlocks when you go pro."];
       if (me.secLvl === 0 && (!key || key === me.main)) return [false, "Pick a Secondary different from your Main."];
       lvl = me.secLvl;
     } else lvl = me.mainLvl;
@@ -927,7 +987,10 @@ class Career {
     return true;
   }
   toggleStarter(i) { if (!this.starters.includes(i)) this.starters = [this.starters[this.starters.length - 1], i]; }
-  toJSON() { const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves } = this; return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves }; }
+  toJSON() {
+    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade } = this;
+    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade };
+  }
 }
 
 // =====================================================================
@@ -991,6 +1054,8 @@ function circle(x, y, r, fill, stroke, lw = 1) {
 function line(x1, y1, x2, y2, color, w) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.strokeStyle = color; ctx.lineWidth = w; ctx.stroke(); }
 
 const THEMES = [
+  // Eastside High Blacktop: school maroon and gold
+  { asphalt: "#3a3d47", surround: "#2e5a36", line: "#f2d16b", paint: "#7a1f2b", fence: "#8a8a8a" },
   { asphalt: "#4e5056", surround: "#3e693a", line: "#e1e1d7", paint: "#965032", fence: "#787878" },
   { asphalt: "#2c2e34", surround: "#78766e", line: "#f0f0f0", paint: "#325aa0", fence: "#5a5a5f" },
   { asphalt: "#38566e", surround: "#967650", line: "#f5f5eb", paint: "#1e8c96", fence: "#c8c8be" },
@@ -998,12 +1063,12 @@ const THEMES = [
   { asphalt: "#3a2452", surround: "#281e12", line: "#f5cd5a", paint: "#6e3c96", fence: "#c8a03c" },
 ];
 function drawCourt(tier) {
-  const th = THEMES[Math.min(tier, 4)], [hx, hy] = S.HOOP, r = S.ARC;
+  const th = THEMES[Math.min(tier, THEMES.length - 1)], [hx, hy] = S.HOOP, r = S.ARC;
   ctx.fillStyle = th.surround; ctx.fillRect(0, 0, S.W, S.H);
   ctx.strokeStyle = th.fence; ctx.lineWidth = 3; ctx.strokeRect(S.CL - 28, S.CT - 28, S.CR - S.CL + 56, S.CB - S.CT + 56);
   for (let x = S.CL - 28; x <= S.CR + 28; x += 80) { circle(x, S.CT - 28, 5, th.fence); circle(x, S.CB + 28, 5, th.fence); }
   ctx.fillStyle = th.asphalt; ctx.fillRect(S.CL, S.CT, S.CR - S.CL, S.CB - S.CT);
-  if (tier === 0) {
+  if (tier === 1) {
     ctx.strokeStyle = "#3c3e44"; ctx.lineWidth = 2;
     for (const pts of [[[180, 520], [230, 540], [260, 600]], [[760, 470], [800, 430], [850, 450]], [[600, 580], [640, 560], [700, 600]]]) {
       ctx.beginPath(); ctx.moveTo(...pts[0]); for (const p of pts.slice(1)) ctx.lineTo(...p); ctx.stroke();
@@ -1091,7 +1156,8 @@ class Screen {
     ctx.fillStyle = C.bg; ctx.fillRect(0, 0, S.W, S.H);
     ctx.fillStyle = C.bar; ctx.fillRect(0, 0, S.W, 70);
     text(c.me.name, 24, 12, { size: 40, color: C.gold, display: true });
-    text(`${c.title}  |  OVR ${overall(c.me)}  |  ${attrLabel(c.me)}`, 24, 46, { size: 24, color: c.champion ? C.gold : C.white });
+    const who = c.stage === "pro" ? `${c.team} · ${TIERS[c.tier].name}` : c.title;
+    text(`${who}  |  OVR ${overall(c.me)}  |  ${attrLabel(c.me)}`, 24, 46, { size: 24, color: c.champion ? C.gold : C.white });
     text(`$${c.cash}`, S.W - 24, 10, { size: 36, color: C.green, right: true, display: true });
     text(`Fame ${c.fame}`, S.W - 24, 46, { size: 24, color: C.gold, right: true });
     if (sub) text(sub, S.W / 2, 112, { size: 44, center: true, display: true });
@@ -1176,7 +1242,7 @@ class CreateScreen extends Screen {
     const sh = POS_SHAPE[this.pos];
     text(S.STATS.map(k => `${S.LABEL[k].slice(0, 3).toUpperCase()} ${40 + sh[k]}`).join("   "), 500, 440, { size: 26, center: true });
     text(ATTRS[ATTR_ORDER[this.ai]].desc, 500, 474, { size: 25, color: C.grey, center: true, weight: 500 });
-    text("You start with $100, a Point Guard and a Big Man. Win tournaments to move up.", 500, 512, { size: 24, color: C.grey, center: true, weight: 500 });
+    text("You're a high school senior with $100, a Point Guard and a Big Man. Scouts will be at your last tournament.", 500, 512, { size: 23, color: C.grey, center: true, weight: 500 });
     rrect(390, 560, 220, 56, 10, C.gold); text("START CAREER", 500, 588, { size: 30, color: "#1a1406", center: true, display: true });
     hit(390, 560, 220, 56, () => this.start());
     this.footer("▲▼ pick row  ·  ◀ ▶ change  ·  Enter to start  ·  Esc back");
@@ -1199,7 +1265,10 @@ class HubScreen extends Screen {
     ]);
   }
   key(k) { this.menu.key(k); }
-  update() { if (this.c.refreshMarket()) App.save(); }
+  update() {
+    if (this.c.stage === "hs" && this.c.hsDone) { App.switch(new ScoutReportScreen()); return; }   // report not seen yet
+    if (this.c.refreshMarket()) App.save();
+  }
   draw() {
     this.header(); const c = this.c;
     this.menu.draw(280, 140, 54, 38);
@@ -1207,13 +1276,15 @@ class HubScreen extends Screen {
     rrect(540, 100, 430, 500, 10, "#181a22", C.grey, 1.5);
     text("THE ROAD TO THE THRONE", 755, 126, { size: 30, color: C.gold, center: true, display: true });
     TIERS.forEach((t, i) => {
-      const y = 158 + i * 72;
-      const done = i < c.tier || (i === TIERS.length - 1 && c.champion), here = i === c.tier && !c.champion;
-      const col = done ? C.green : here ? C.white : C.grey;
-      text(t.court, 564, y, { size: 30, color: col });
-      text(done ? "WON" : here ? "YOU ARE HERE" : "LOCKED", 946, y + 4, { size: 20, color: col, right: true });
-      text(t.tourney, 564, y + 28, { size: 22, color: C.grey, weight: 500 });
-      if (here && c.tourney) text(`In progress: ${ROUNDS[c.tourney.round]}`, 946, y + 30, { size: 20, color: C.gold, right: true });
+      const y = 152 + i * 60;
+      const here = i === c.tier && !c.champion;
+      const done = i < c.tier || (i === TIERS.length - 1 && c.champion);
+      const status = here ? "YOU ARE HERE" : !done ? "LOCKED" : i === 0 ? "GRADUATED" : c.stage === "pro" && i < c.startTier ? "SKIPPED" : "WON";
+      const col = here ? C.white : done ? (status === "SKIPPED" ? C.grey : C.green) : "#5c5f6b";
+      text(t.name, 564, y, { size: 28, color: col });
+      text(status, 946, y + 4, { size: 18, color: col, right: true });
+      text(`${t.court} · ${t.tourney}`, 564, y + 26, { size: 19, color: C.grey, weight: 500 });
+      if (here && c.tourney) text(`${ROUNDS[c.tourney.round]} next`, 946, y + 26, { size: 18, color: C.gold, right: true });
     });
     const sc = c.scouting();
     if (sc >= 0.15) {
@@ -1221,7 +1292,10 @@ class HubScreen extends Screen {
       text(`SCOUTED ${Math.round(sc * 100)}%`, 574, 532, { size: 26, color: "#ff8a7a", display: true });
       text("You rose fast. Teams guard you tighter", 574, 558, { size: 20, color: C.grey, weight: 500 });
       text("and learn your favorite dribble move.", 574, 576, { size: 20, color: C.grey, weight: 500 });
-    } else text(`Tournament titles: ${c.titles}  ·  Games played: ${c.games}`, 755, 560, { size: 22, color: C.grey, center: true, weight: 500 });
+    } else if (c.stage === "hs") {
+      text("SCOUTS ARE WATCHING", 755, 530, { size: 24, color: C.gold, center: true, display: true });
+      text("Your last high school tournament decides your draft.", 755, 562, { size: 20, color: C.grey, center: true, weight: 500 });
+    } else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
     if (c.champion) text(`You are the ${KING}!`, 755, 500, { size: 28, color: C.gold, center: true });
     this.footer("Progress saves automatically in this browser");
   }
@@ -1231,6 +1305,7 @@ function fmtTime(ms) { const s = Math.ceil(ms / 1000); return `${Math.floor(s / 
 // ---------------------------------------------------------------- play: tournaments + pickup games
 class CourtScreen extends Screen {
   constructor() { super(); this.ci = this.c.tier; this.sel = 0; this.msg = ""; }
+  get minCourt() { return this.c.lowestCourt; }
   options() {
     const c = this.c, out = [];
     if (this.ci === c.tier && !c.champion) {
@@ -1249,7 +1324,7 @@ class CourtScreen extends Screen {
   key(k) {
     const n = this.options().length;
     if (K.back(k)) App.switch(new HubScreen());
-    else if (K.left(k)) { this.ci = Math.max(0, this.ci - 1); this.sel = 0; }
+    else if (K.left(k)) { this.ci = Math.max(this.minCourt, this.ci - 1); this.sel = 0; }
     else if (K.right(k)) { this.ci = Math.min(this.c.tier, this.ci + 1); this.sel = 0; }
     else if (K.up(k)) this.sel = (this.sel - 1 + n) % n;
     else if (K.down(k)) this.sel = (this.sel + 1) % n;
@@ -1260,7 +1335,7 @@ class CourtScreen extends Screen {
     rrect(110, 84, 780, 530, 12, "rgba(16,17,22,0.92)", C.grey, 1.5);
     this.backButton(() => App.switch(new HubScreen()));
     text(TIERS[this.ci].court, 500, 118, { size: 44, color: C.gold, center: true, display: true });
-    if (this.ci > 0) { text("◀", 190, 118, { size: 50, center: true }); hit(160, 94, 60, 50, () => { this.ci--; this.sel = 0; }); }
+    if (this.ci > this.minCourt) { text("◀", 190, 118, { size: 50, center: true }); hit(160, 94, 60, 50, () => { this.ci--; this.sel = 0; }); }
     if (this.ci < c.tier) { text("▶", 810, 118, { size: 50, center: true }); hit(780, 94, 60, 50, () => { this.ci++; this.sel = 0; }); }
     text(`Your lineup OVR ${teamOverall(c.lineup())}  ·  crowd ${c.crowdSize()}`, 500, 156, { size: 24, color: C.grey, center: true });
     let y = 180;
@@ -1270,7 +1345,9 @@ class CourtScreen extends Screen {
         const h = 170;
         rrect(140, y, 720, h, 12, sel ? "#3d2f14" : "#2a2214", sel ? C.gold : "#6b5520", 2);
         text(TIERS[this.ci].tourney, 162, y + 12, { size: 38, color: C.gold, display: true });
-        text(this.ci < TIERS.length - 1 ? `Win 3 games to advance to ${TIERS[this.ci + 1].court}` : `Win it to become ${KING}`, 162, y + 48, { size: 24, color: C.white, weight: 500 });
+        const blurb = c.stage === "hs" ? "Scouts are watching. One shot: lose and high school is over."
+          : this.ci < TIERS.length - 1 ? `Win 3 games to move up to the ${TIERS[this.ci + 1].name}` : `Win it to become ${KING}`;
+        text(blurb, 162, y + 48, { size: 24, color: c.stage === "hs" ? C.gold : C.white, weight: 500 });
         const t = c.tourney, games = bracket(this.ci, t ? t.seed : c.entries + 1);
         ROUNDS.forEach((rn, r) => {
           const x = 162 + r * 232, done = t && r < t.round, now = t && r === t.round;
@@ -1603,6 +1680,22 @@ function drawCrowd(crowd, t, excite) {
   }
 }
 
+// The scout: courtside, cap and clipboard, always writing.
+function drawScout(x, y, t) {
+  ellipse(x, y + 12, 8, 3, "rgba(0,0,0,0.4)");
+  ctx.fillStyle = "#2b2f3a"; ctx.beginPath(); ctx.roundRect(x - 7, y - 10, 14, 20, 4); ctx.fill();
+  ctx.strokeStyle = "#2b2f3a"; ctx.lineWidth = 3; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(x - 3, y + 8); ctx.lineTo(x - 3, y + 14); ctx.moveTo(x + 3, y + 8); ctx.lineTo(x + 3, y + 14); ctx.stroke();
+  rrect(x + 3, y - 6, 10, 13, 2, "#c8a26b");                       // clipboard
+  ctx.fillStyle = "#fff"; ctx.fillRect(x + 5, y - 4, 6, 8);
+  const pen = Math.sin(t * 9) * 2;
+  ctx.strokeStyle = "#1c1c1c"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x + 8 + pen, y - 2); ctx.lineTo(x + 12 + pen, y - 8); ctx.stroke();
+  circle(x, y - 16, 5.5, "#c68642");
+  ctx.fillStyle = "#c0392b"; ctx.beginPath(); ctx.arc(x, y - 17, 5.8, Math.PI, 2 * Math.PI); ctx.fill(); ctx.fillRect(x, y - 18, 8, 2.2);   // cap
+  rrect(x - 26, y - 44, 52, 18, 5, "rgba(20,20,26,0.85)");
+  text("SCOUT", x, y - 35, { size: 18, color: C.gold, center: true, display: true });
+}
+
 class MatchScreen extends Screen {
   constructor(ci, crew, bet = 0, mult = 1) {
     super(); Object.assign(this, { ci, crew, bet, mult, paused: false, doneT: 0 });
@@ -1610,6 +1703,7 @@ class MatchScreen extends Screen {
     this.match = new Match(this.c.lineup(), crew.players, new Rng(), true, S.GAME_TO, { scout: this.scout, favMove: this.c.favoriteMove() });
     this.crowdN = this.c.crowdSize();
     this.crowd = makeCrowd(this.crowdN, crew.id + ":" + this.c.fame);
+    this.scoutWatching = crew.mode === "tourney" && this.c.stage === "hs";
     this.parts = []; this.pops = []; this.excite = 0.15; this.shake = 0; this.flash = 0; this.freeze = null; this.lastBounce = 0;
   }
   burst(x, y, n, colors, speed = 160, up = 60) {
@@ -1617,9 +1711,15 @@ class MatchScreen extends Screen {
       this.parts.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - up, life: 0.6 + Math.random() * 0.5, max: 1.1, col: colors[i % colors.length], r: 2 + Math.random() * 2.5, g: 260 }); }
   }
   pop(txt, x, y, color, size = 40, life = 1.1) { this.pops.push({ txt, x, y, color, size, life, max: life }); }
+  scoutNote(txt) { if (this.scoutWatching) this.pop(`Scout: ${txt}`, 220, 300 + (this.pops.length % 3) * 26, "#ffe9a8", 26, 1.8); }
   handleEvents() {
     const m = this.match, [hx, hy] = S.HOOP, crowd = this.crowdN;
     for (const e of m.events) {
+      if (e.type === "release" && e.human && e.green) this.scoutNote("that's a green");
+      if (e.type === "make" && e.team === 0 && e.kind === "dunk") this.scoutNote("explosive");
+      if (e.type === "make" && e.team === 0 && e.newFire) this.scoutNote("can't miss");
+      if (e.type === "ankles" && e.team === 0) this.scoutNote("nice handles");
+      if (e.type === "steal" && e.team === 1) this.scoutNote("sloppy turnover");
       if (e.type === "release" && e.human) {
         const a = m.controlled;
         this.freeze = { t: 0.5, green: e.green };
@@ -1680,6 +1780,7 @@ class MatchScreen extends Screen {
     if (sk) ctx.translate((Math.random() - 0.5) * sk, (Math.random() - 0.5) * sk);
     drawCourt(this.ci);
     drawCrowd(this.crowd, m.elapsed, this.excite);
+    if (this.scoutWatching) drawScout(84, 340, m.elapsed);
     drawActors(m, true);
     for (const q of this.parts) circle(q.x, q.y, q.r * Math.max(0.3, q.life / q.max), q.col);
     // shot meter: fills while you hold, then freezes for a moment where you let go
@@ -1714,6 +1815,7 @@ class MatchScreen extends Screen {
     text(`${m.score[1]}  ${this.crew.name.toUpperCase()}`, 690, 23, { size: 30, color: C.team[1], center: true, display: true });
     text(`${TIERS[this.ci].court} · crowd ${this.crowdN}`, 16, 14, { size: 22, color: C.grey });
     text(`Shot ${Math.max(0, Math.ceil(m.shotClock))}`, S.W - 16, 12, { size: 26, right: true });
+    if (this.scoutWatching) text("SCOUT WATCHING", S.W - 16, 50, { size: 20, color: C.gold, right: true, display: true });
     if (this.scout >= 0.15) text(`SCOUTED ${Math.round(this.scout * 100)}%`, S.W - 16, 50, { size: 20, color: "#ff8a7a", right: true, display: true });
     if (m.needsClear) text(`${m.offense === 0 ? "YOU" : "THEY"} MUST CLEAR IT PAST THE ARC`, 500, 62, { size: 28, color: C.gold, center: true });
     [...m.messages].reverse().forEach(([msg], i) => text(msg, 500, 600 - i * 28, { size: i === 0 ? 32 : 24, center: true }));
@@ -1746,11 +1848,16 @@ class ResultScreen extends Screen {
     super(); const c = this.c;
     Object.assign(this, { ci, crew, match, bet, forfeit });
     this.won = !forfeit && match.winner === 0;
-    this.r = c.applyResult(crew, this.won, Math.max(0, match.score[0] - match.score[1]), bet, mult, match.moveUse);
+    this.r = c.applyResult(crew, this.won, match.score[0] - match.score[1], bet, mult, match.moveUse, match.box);
     this.myPts = match.mainGuy.points;
-    const items = [];
-    if (this.r.nextRound) items.push([`Play the ${ROUNDS[c.tourney.round]}`, () => App.switch(new WagerScreen(ci, c.tourneyGame()))]);
-    items.push(["Back to the Hub", () => App.switch(new HubScreen())]);
+    const r = this.r, items = [];
+    if (r.hsDone) items.push(["See the scout's report →", () => App.switch(new ScoutReportScreen())]);
+    else {
+      if (r.nextRound) items.push([`Play the ${ROUNDS[c.tourney.round]}`, () => App.switch(new WagerScreen(ci, c.tourneyGame()))]);
+      // auto-advance: straight into the next park's tournament
+      if (r.tierUp) items.push([`On to ${TIERS[c.tier].court} →`, () => { c.enterTourney(); App.save(); App.switch(new WagerScreen(c.tier, c.tourneyGame())); }]);
+      items.push(["Back to the Hub", () => App.switch(new HubScreen())]);
+    }
     this.menu = new Menu(items);
     App.save();
   }
@@ -1768,12 +1875,60 @@ class ResultScreen extends Screen {
     text(lines.join("     "), 500, 254, { size: 34, color: r.fame < 0 ? "#ff9a8a" : C.gold, center: true });
     let y = 300;
     if (r.fame < 0) { text("Losses cost more fame the more famous you are.", 500, y, { size: 22, color: C.grey, center: true, weight: 500 }); y += 34; }
-    if (r.eliminated) { text("You're out of the tournament. Enter again from Play.", 500, y, { size: 26, color: C.white, center: true }); y += 36; }
+    if (r.eliminated && !r.hsDone) { text("You're out of the tournament. Enter again from Play.", 500, y, { size: 26, color: C.white, center: true }); y += 36; }
     if (r.nextRound) { text(`On to the ${ROUNDS[c.tourney.round]}!`, 500, y, { size: 32, color: C.gold, center: true, display: true }); y += 40; }
-    if (r.tierUp) { text(`You won the ${TIERS[this.crew.court].tourney}! ${TIERS[c.tier].court} unlocked.`, 500, y, { size: 30, color: C.gold, center: true }); y += 38; }
+    if (r.scout != null) { text(`Scout grade this game: ${r.scout} (${gradeOf(r.scout)})`, 500, y, { size: 30, color: C.gold, center: true, display: true }); y += 40; }
+    if (r.hsDone && r.champ) { text("State champions! The scout is writing the report.", 500, y, { size: 28, color: C.gold, center: true }); y += 38; }
+    else if (r.hsDone) { text("High school is over. The scout has seen enough.", 500, y, { size: 26, color: C.white, center: true }); y += 36; }
+    if (r.tierUp) { text(`You won the ${TIERS[this.crew.court].tourney}! Next stop: ${TIERS[c.tier].court} (${TIERS[c.tier].name}).`, 500, y, { size: 28, color: C.gold, center: true }); y += 38; }
     if (r.crowned) { text(`YOU ARE THE ${KING.toUpperCase()}!`, 500, y, { size: 40, color: C.gold, center: true, display: true }); y += 44; }
     if (r.tierUp && c.scouting() >= 0.15) { text(`You moved up fast. Teams are scouting you (${Math.round(c.scouting() * 100)}%).`, 500, y, { size: 24, color: "#ff8a7a", center: true }); y += 34; }
     this.menu.draw(500, Math.max(420, y + 30), 48, 34);
+  }
+}
+
+// ---------------------------------------------------------------- the scout's report and your draft
+const GRADE_COLORS = { A: "#5ad26e", B: "#5096f0", C: "#f5c83c", D: "#eb8228", F: "#e15046" };
+class ScoutReportScreen extends Screen {
+  constructor() {
+    super(); const c = this.c;
+    this.rep = c.scoutReport();
+    this.deal = c.recruit(this.rep);      // only signs once
+    if (!this.deal) this.deal = { team: c.team, tier: c.tier, bonus: 0, walkOn: false, extra: null };
+    App.save();
+  }
+  key(k) { if (K.ok(k)) App.switch(new HubScreen()); }
+  draw() {
+    const rep = this.rep, d = this.deal;
+    ctx.fillStyle = C.bg; ctx.fillRect(0, 0, S.W, S.H);
+    // clipboard
+    rrect(80, 28, 840, 600, 16, "#e9e1cf");
+    rrect(430, 14, 140, 34, 8, "#8a8f99");
+    text("SCOUT REPORT", 120, 58, { size: 50, color: "#2a2a2a", display: true });
+    text(`${this.c.me.name} · ${POS_NAMES[this.c.me.pos]} · OVR ${overall(this.c.me)}`, 120, 104, { size: 28, color: "#4a4a4a" });
+    text(rep.grade, 845, 92, { size: 140, color: GRADE_COLORS[rep.grade], center: true, display: true });
+    text(`${rep.score}/100`, 770, 84, { size: 30, color: "#4a4a4a", right: true, display: true });
+    // game by game
+    const cols = ["Round", "Opponent", "Result", "PTS", "FG", "GRN", "TO", "Grade"], xs = [120, 250, 470, 560, 610, 670, 720, 770];
+    cols.forEach((h, i) => text(h, xs[i], 150, { size: 20, color: "#6a6a6a", display: true }));
+    rep.games.forEach((g, n) => {
+      const y = 178 + n * 30, b = g.box;
+      [ROUNDS[g.round], g.opp, g.won ? `W +${g.margin}` : `L ${g.margin}`, b.pts, `${b.fgm}/${b.fga}`, b.greens, b.to, `${g.score}`]
+        .forEach((v, i) => text(v, xs[i], y, { size: 24, color: i === 2 ? (g.won ? "#2e8b45" : "#b3362c") : "#2a2a2a" }));
+    });
+    let y = 290;
+    text("Scout's notes", 120, y, { size: 24, color: "#6a6a6a", display: true }); y += 30;
+    for (const n of rep.notes) { text("• " + n, 130, y, { size: 26, color: "#2a2a2a" }); y += 32; }
+    // the deal
+    y = Math.max(y + 12, 470);
+    rrect(110, y, 780, 118, 12, "#1b1d25");
+    text(`The ${d.team} signed you!`, 500, y + 26, { size: 36, color: C.gold, center: true, display: true });
+    const start = `You start in the ${TIERS[d.tier].name} at ${TIERS[d.tier].court}${d.walkOn ? " as a walk-on" : ""}.`;
+    text(start, 500, y + 62, { size: 26, center: true });
+    const perks = [d.bonus ? `Signing bonus $${d.bonus}` : "No signing bonus", d.extra ? `New teammate: ${d.extra.name} (Rare, OVR ${overall(d.extra)})` : null].filter(Boolean).join("  ·  ");
+    text(perks, 500, y + 92, { size: 22, color: C.green, center: true });
+    rrect(380, 644, 240, 46, 10, C.gold); text("START YOUR PRO CAREER", 500, 667, { size: 22, color: "#1a1406", center: true, display: true });
+    hit(380, 644, 240, 46, () => App.switch(new HubScreen()));
   }
 }
 
@@ -1859,7 +2014,7 @@ class AttrScreen extends Screen {
     const c = this.c, me = c.me, pct = Math.round(S.SEC_PCT * 100);
     const mainCost = c.attrCost("main");
     const rows = [[`MAIN: ${ATTRS[me.main].name}   Lv ${me.mainLvl}/${S.MAIN_MAX}`, me.mainLvl >= S.MAIN_MAX ? "MAXED" : `Buy level · $${mainCost}`, "Full effect"]];
-    if (!c.secUnlocked()) rows.push(["SECONDARY: locked", "Reach Local fame", `${pct}% effect, max level ${S.SEC_MAX}`]);
+    if (!c.secUnlocked()) rows.push(["SECONDARY: locked", "Unlocks when you go pro", `${pct}% effect, max level ${S.SEC_MAX}`]);
     else {
       const key = me.sec || ATTR_ORDER[this.secI], cost = c.attrCost("sec");
       rows.push([`SECONDARY: ${me.secLvl === 0 ? "◀ " + ATTRS[key].name + " ▶" : ATTRS[key].name}   Lv ${me.secLvl}/${S.SEC_MAX}`, me.secLvl >= S.SEC_MAX ? "MAXED" : `Buy level · $${cost}`, `${pct}% effect, max level ${S.SEC_MAX}`]);
@@ -2036,5 +2191,5 @@ window.claude?.hot?.snapshot?.(() => ({ career: App.career ? JSON.parse(JSON.str
 const boot = () => window.claude?.hot?.ready ? window.claude.hot.ready(start) : start(window.claude?.hot?.data ?? {});
 (document.fonts && document.fonts.load ? Promise.all([document.fonts.load('20px Bungee'), document.fonts.load('700 20px "Barlow Semi Condensed"'), document.fonts.load('500 20px "Barlow Semi Condensed"')]).catch(() => {}) : Promise.resolve()).then(boot, boot);
 // Test hook (used only by automated checks)
-window.__SK = { MarketScreen, bracket, App, Match, Career, Luck, Rng, crewPlayers, overall, blankInputs, MatchScreen, HubScreen, CourtScreen, AttrScreen, SlotScreen, ResultScreen };
+window.__SK = { ScoutReportScreen, scoutGameScore, TIERS, MarketScreen, bracket, App, Match, Career, Luck, Rng, crewPlayers, overall, blankInputs, MatchScreen, HubScreen, CourtScreen, AttrScreen, SlotScreen, ResultScreen };
 </script>
