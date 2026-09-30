@@ -85,10 +85,10 @@ const S = {
   W: 1000, H: 700,
   CL: 100, CT: 60, CR: 900, CB: 640,
   HOOP: [500, 115], ARC: 250, PAINT_HW: 80, PAINT_D: 190, CHECK: [500, 450],
-  GAME_TO: 11, SHOT_CLOCK: 14,
-  PR: 14, BASE_SPEED: 130, SPEED_PER: 1.5, PASS_SPEED: 520,
-  METER_TIME: 0.9, METER_SWEET: 0.8, METER_WINDOW: 0.07,
-  DUNK_RANGE: 80, DUNK_BASE: 0.72, LAYUP: 70,
+  GAME_TO: 11, SHOT_CLOCK: 10,
+  PR: 14, BASE_SPEED: 175, SPEED_PER: 2.0, PASS_SPEED: 720, ACCEL: 11,
+  METER_TIME: 0.7, METER_SWEET: 0.8, WIN_NEAR: 0.12, WIN_FAR: 0.04,
+  DUNK_RANGE: 85, DUNK_BASE: 0.9, LAYUP: 95, LAYUP_BASE: 0.72,
   STEAL_RANGE: 36, STEAL_BASE: 0.16, BLOCK_RANGE: 36, BLOCK_BASE: 0.10, GRAB: 20,
   MAIN_MAX: 5, SEC_MAX: 3, SEC_PCT: 0.5, SEC_UNLOCK: 1,
   CREW_MAX: 6, STAT_MAX: 99, STAT_STEP: 2,
@@ -214,7 +214,7 @@ class Ball {
 // =====================================================================
 class Actor {
   constructor(p, team, slot) {
-    Object.assign(this, { p, team, slot, x: 0, y: 0, fx: 0, fy: -1, stun: 0, cool: 0, burst: 0, jump: 0, points: 0, think: 0, spot: null, spotT: 0, holdT: 0 });
+    Object.assign(this, { p, team, slot, x: 0, y: 0, vx: 0, vy: 0, fx: 0, fy: -1, stun: 0, cool: 0, burst: 0, jump: 0, points: 0, think: 0, spot: null, spotT: 0, holdT: 0 });
     // animation only (never affects the rules)
     const h = hashStr(p.name + p.number);
     this.look = { skin: SKINS[h % SKINS.length], hair: HAIRS[(h >>> 3) % HAIRS.length], style: (h >>> 6) % 4, shoe: SHOES[(h >>> 9) % SHOES.length] };
@@ -244,7 +244,7 @@ class Match {
   openness(a) { return this.nearestOpp(a)[0]; }
 
   setupCheck(team) {
-    Object.assign(this, { offense: team, phase: "check", phaseT: 1.0, needsClear: false, shotClock: S.SHOT_CLOCK, meter: null });
+    Object.assign(this, { offense: team, phase: "check", phaseT: 0.5, needsClear: false, shotClock: S.SHOT_CLOCK, meter: null });
     const spots = [S.CHECK, [320, 330], [680, 330]];
     this.team(team).forEach((a, i) => { [a.x, a.y] = spots[i]; a.fx = 0; a.fy = -1; a.stun = 0; a.holdT = 0; a.spot = null; });
     this.team(1 - team).forEach((d, i) => { const sp = spots[i]; const [ux, uy] = norm(S.HOOP[0] - sp[0], S.HOOP[1] - sp[1]); d.x = sp[0] + ux * 40; d.y = sp[1] + uy * 40; d.fx = -ux; d.fy = -uy; d.stun = 0; d.spot = null; });
@@ -295,17 +295,19 @@ class Match {
     let [mx, my] = move; const mag = Math.hypot(mx, my);
     if (mag > 1) { mx /= mag; my /= mag; }
     let speed = a.maxSpeed();
-    if (this.ball.state === "held" && this.ball.holder === a) { speed *= 0.92; if (a === this.controlled && this.meter !== null) speed *= 0.35; }
+    if (this.ball.state === "held" && this.ball.holder === a) { speed *= 0.94; if (a === this.controlled && this.meter !== null) speed *= 0.3; }
+    // players speed up and slow down smoothly instead of snapping
+    const k = 1 - Math.exp(-S.ACCEL * dt);
+    a.vx += (mx * speed - a.vx) * k; a.vy += (my * speed - a.vy) * k;
     const ox = a.x, oy = a.y;
-    [a.x, a.y] = clampCourt(a.x + mx * speed * dt, a.y + my * speed * dt);
+    [a.x, a.y] = clampCourt(a.x + a.vx * dt, a.y + a.vy * dt);
     const moved = Math.hypot(a.x - ox, a.y - oy);
-    a.runPhase += moved * 0.11;
-    a.moveAmt += (Math.min(1, moved / Math.max(1e-6, speed * dt)) - a.moveAmt) * Math.min(1, dt * 10);
+    if (moved < Math.hypot(a.vx, a.vy) * dt * 0.5) { a.vx *= 0.5; a.vy *= 0.5; }   // ran into the fence
+    a.runPhase += moved * 0.1;
+    a.moveAmt = Math.min(1, Math.hypot(a.vx, a.vy) / a.maxSpeed());
     if (mag > 0.1) {
-      const [nx, ny] = norm(mx, my);
-      // turn smoothly instead of snapping
-      const k = Math.min(1, dt * 14);
-      [a.fx, a.fy] = norm(a.fx + (nx - a.fx) * k, a.fy + (ny - a.fy) * k);
+      const [nx, ny] = norm(mx, my), t = Math.min(1, dt * 16);
+      [a.fx, a.fy] = norm(a.fx + (nx - a.fx) * t, a.fy + (ny - a.fy) * t);
       if (!a.fx && !a.fy) [a.fx, a.fy] = [nx, ny];
     }
   }
@@ -322,17 +324,48 @@ class Match {
     const order = [...this.team(0)].sort((p, q) => dist(p.pos, bp) - dist(q.pos, bp));
     this.controlled = order[0] === this.controlled ? order[1] : order[0];
   }
+  // ---- shot types ------------------------------------------------------
+  // Dunk: attacking the rim fast with nobody in the lane. The Dunker attribute
+  // adds range and lets you dunk a little slower and through more traffic.
+  dunkOpen(a) {
+    const attr = canDunk(a.p), d = dist(a.pos, S.HOOP);
+    if (d > S.DUNK_RANGE + (attr ? 25 : 0)) return false;
+    const sp = Math.hypot(a.vx, a.vy), need = attr ? 0.45 : 0.7;
+    if (sp < a.maxSpeed() * need) return false;
+    const [hx, hy] = norm(S.HOOP[0] - a.x, S.HOOP[1] - a.y);
+    if ((a.vx * hx + a.vy * hy) < sp * 0.5) return false;            // must be heading at the rim
+    const clearR = attr ? 16 : 26;
+    for (const o of this.team(1 - a.team)) {                         // anyone standing in the lane?
+      const t = clamp(((o.x - a.x) * hx + (o.y - a.y) * hy) / Math.max(1, d), 0, 1);
+      const px = a.x + hx * d * t, py = a.y + hy * d * t;
+      if (Math.hypot(o.x - px, o.y - py) < clearR && o.stun <= 0) return false;
+    }
+    return true;
+  }
+  shotKind(a) {
+    if (this.dunkOpen(a)) return "dunk";
+    if (dist(a.pos, S.HOOP) <= S.LAYUP && a.moveAmt > 0.3) return "layup";
+    return "jumper";
+  }
   humanIntent(a, inp, dt) {
-    const it = { move: inp.move, action: null, target: null, quality: 0 };
+    const it = { move: inp.move, action: null, target: null, quality: 0, kind: null, green: false };
     const b = this.ball;
     if (b.state === "held" && b.holder === a) {
       if (this.meter === null && inp.shootPressed) {
         if (this.needsClear) this.say("Clear it past the arc first!", 1.0);
-        else if (canDunk(a.p) && dist(a.pos, S.HOOP) <= S.DUNK_RANGE) it.action = "shoot";
-        else this.meter = 0;
+        else {
+          const kind = this.shotKind(a);
+          if (kind === "jumper") this.meter = 0;
+          else { it.action = "shoot"; it.kind = kind; }
+        }
       } else if (this.meter !== null) {
         this.meter += dt / S.METER_TIME;
-        if (!inp.shootDown || this.meter >= 1) { it.action = "shoot"; it.quality = this.meterQuality(a, Math.min(this.meter, 1)); this.meter = null; }
+        if (!inp.shootDown || this.meter >= 1) {
+          const m = Math.min(this.meter, 1);
+          it.action = "shoot"; it.kind = "jumper";
+          it.green = Math.abs(m - S.METER_SWEET) <= this.meterWindow(a);
+          it.quality = this.meterQuality(a, m); this.meter = null;
+        }
       }
       if (!it.action && this.meter === null) {
         if (inp.passPressed) { it.action = "pass"; it.target = this.pickPassTarget(a, inp.move); }
@@ -345,7 +378,12 @@ class Match {
     }
     return it;
   }
-  meterWindow(a) { return S.METER_WINDOW + a.eff("meter"); }
+  // The green zone shrinks the farther out you shoot and the worse your Shooting rating is.
+  meterWindow(a) {
+    const t = clamp((dist(a.pos, S.HOOP) - 60) / (S.ARC + 90 - 60), 0, 1);
+    const skill = 0.4 + a.p.stats.shooting / 99 * 0.9;            // 40 shooting ≈ 0.76x, 80 ≈ 1.13x
+    return (S.WIN_NEAR + (S.WIN_FAR - S.WIN_NEAR) * t) * skill + a.eff("meter");
+  }
   meterQuality(a, m) { const w = this.meterWindow(a), off = Math.abs(m - S.METER_SWEET); return off <= w ? 1 - 0.5 * off / w : Math.max(-1, -(off - w) / 0.25); }
   pickPassTarget(a, dir) {
     const mates = this.team(a.team).filter(m => m !== a);
@@ -355,47 +393,55 @@ class Match {
   }
   act(a, it) {
     const b = this.ball, has = b.state === "held" && b.holder === a;
-    if (it.action === "shoot" && has) { if (!this.needsClear) this.takeShot(a, it.quality); }
+    if (it.action === "shoot" && has) { if (!this.needsClear) this.takeShot(a, it.kind || this.shotKind(a), it.quality, it.green); }
     else if (it.action === "pass" && has) this.passBall(a, it.target || this.pickPassTarget(a, [0, 0]));
     else if (it.action === "cross" && has && a.cool <= 0) this.crossover(a);
     else if (it.action === "steal" && a.cool <= 0 && b.state === "held" && b.holder.team !== a.team) this.trySteal(a);
     else if (it.action === "jump") { a.jump = 0.4; if (!a.anim) a.setAnim("jump", 0.4); }
   }
-  makeChance(a, quality, dunk = false) {
+  contest(a) {
+    const [dd, dfd] = this.nearestOpp(a);
+    if (!dfd || dd >= 70) return 0;
+    return (1 - dd / 70) * (0.12 + dfd.p.stats.defense / 99 * 0.2 + dfd.eff("contest"));
+  }
+  // Chance to make a shot that is NOT a green release.
+  makeChance(a, kind, quality = 0) {
     const d = dist(a.pos, S.HOOP), sh = a.p.stats.shooting;
     let base;
-    if (dunk) base = S.DUNK_BASE + a.eff("dunk") + (a.p.stats.speed - 50) / 400;
+    if (kind === "dunk") return clamp(S.DUNK_BASE + a.eff("dunk") - this.contest(a) * 0.3, 0.5, 0.98);
+    if (kind === "layup") base = S.LAYUP_BASE + a.eff("finish") + (sh - 50) / 99 * 0.15 - this.contest(a) * 0.7;
     else {
-      if (d <= S.LAYUP) base = 0.62 + a.eff("finish");
-      else if (d <= S.ARC) base = 0.46 - 0.10 * (d - S.LAYUP) / (S.ARC - S.LAYUP);
-      else base = 0.36 - 0.25 * Math.max(0, d - S.ARC - 30) / 150 + a.eff("deep");
-      base += (sh - 50) / 99 * 0.35 + quality * 0.16;
+      if (d <= S.ARC) base = 0.44 - 0.12 * clamp((d - 60) / (S.ARC - 60), 0, 1);
+      else base = 0.32 - 0.25 * Math.max(0, d - S.ARC - 30) / 150 + a.eff("deep");
+      base += (sh - 50) / 99 * 0.3 + quality * 0.14 - this.contest(a);
     }
-    const [dd, dfd] = this.nearestOpp(a);
-    if (dfd && dd < 70) { let pen = (1 - dd / 70) * (0.12 + dfd.p.stats.defense / 99 * 0.2 + dfd.eff("contest")); if (dunk) pen *= 0.4; base -= pen; }
-    return clamp(base, 0.02, 0.97);
+    return clamp(base, 0.02, 0.95);
   }
-  takeShot(a, quality) {
-    const d = dist(a.pos, S.HOOP), dunk = canDunk(a.p) && d <= S.DUNK_RANGE, pts = shotPoints(a.pos);
-    const prob = this.makeChance(a, quality, dunk);
-    for (const dfd of this.team(1 - a.team)) {
-      const dd = dist(dfd.pos, a.pos);
-      if (dd < S.BLOCK_RANGE && dfd.stun <= 0) {
-        let ch = S.BLOCK_BASE * dfd.p.stats.defense / 70 * (dfd.jump > 0 ? 1.8 : 1) * (1 - 0.5 * dd / S.BLOCK_RANGE);
-        if (dunk) ch *= 0.4; if (pts === 2) ch *= 0.6;
-        if (this.rng.random() < ch) {
-          this.say(`BLOCKED by ${dfd.p.name}!`);
-          a.setAnim("shoot", 0.3); dfd.setAnim("block", 0.5);
-          const [ux, uy] = norm(a.x - S.HOOP[0], a.y - S.HOOP[1]);
-          this.ball.setLoose(a.x, a.y, ux * 160 + this.rng.uniform(-60, 60), uy * 160 + this.rng.uniform(-60, 60), 25);
-          return;
+  takeShot(a, kind, quality = 0, green = false) {
+    const d = dist(a.pos, S.HOOP), pts = kind === "jumper" ? shotPoints(a.pos) : 1;
+    if (!green) {   // a green release can't be blocked
+      for (const dfd of this.team(1 - a.team)) {
+        const dd = dist(dfd.pos, a.pos);
+        if (dd < S.BLOCK_RANGE && dfd.stun <= 0) {
+          let ch = S.BLOCK_BASE * dfd.p.stats.defense / 70 * (dfd.jump > 0 ? 1.8 : 1) * (1 - 0.5 * dd / S.BLOCK_RANGE);
+          if (kind === "dunk") ch *= 0.3; if (pts === 2) ch *= 0.6;
+          if (this.rng.random() < ch) {
+            this.say(`BLOCKED by ${dfd.p.name}!`);
+            a.setAnim(kind === "layup" ? "layup" : "shoot", 0.3); dfd.setAnim("block", 0.5);
+            const [ux, uy] = norm(a.x - S.HOOP[0], a.y - S.HOOP[1]);
+            this.ball.setLoose(a.x, a.y, ux * 200 + this.rng.uniform(-80, 80), uy * 200 + this.rng.uniform(-80, 80), 25);
+            return;
+          }
         }
       }
     }
-    const made = this.rng.random() < prob;
-    this.ball.startShot(a, S.HOOP, dunk ? 0.35 : 0.45 + d / 700, made, pts, dunk);
-    a.setAnim(dunk ? "dunk" : "shoot", dunk ? 0.55 : 0.5);
-    if (dunk) this.say(made ? `${a.p.name} throws it down!` : "Dunk rattles out!");
+    const made = green || this.rng.random() < this.makeChance(a, kind, quality);
+    const dur = kind === "dunk" ? 0.28 : kind === "layup" ? 0.4 : 0.38 + d / 900;
+    this.ball.startShot(a, S.HOOP, dur, made, pts, kind === "dunk");
+    this.ball.green = green;
+    a.setAnim(kind, kind === "dunk" ? 0.55 : kind === "layup" ? 0.5 : 0.5);
+    if (kind === "dunk") this.say(made ? `${a.p.name} throws it down!` : "Dunk rattles out!");
+    else if (green && a.team === 0) this.say("GREEN!", 1.0);
     // a nearby defender contests the shot
     const [dd, dfd] = this.nearestOpp(a);
     if (dfd && dd < 60 && dfd.stun <= 0 && !dfd.anim) dfd.setAnim("jump", 0.45);
@@ -443,7 +489,7 @@ class Match {
       this.fx.swish = 0.6; if (b.dunk) this.fx.shake = 0.45;
       sh.setAnim("celebrate", 1.1);
       if (this.score[sh.team] >= this.gameTo) { this.phase = "over"; this.winner = sh.team; return; }
-      this.offense = sh.team; this.phase = "scored"; this.phaseT = 1.0;
+      this.offense = sh.team; this.phase = "scored"; this.phaseT = 0.6;
     } else {
       const ang = this.rng.uniform(0.15 * Math.PI, 0.85 * Math.PI), spd = this.rng.uniform(90, 220);
       b.setLoose(S.HOOP[0], S.HOOP[1] + 12, Math.cos(ang) * spd, Math.sin(ang) * spd, 30);
@@ -470,9 +516,15 @@ class Match {
 const AI = (() => {
   const OFF = [[250, 190], [750, 190], [330, 360], [670, 360], [500, 420], [430, 170], [570, 170], [190, 110], [810, 110]];
   const DEEP = [[270, 400], [730, 400], [500, 480], [170, 230], [830, 230]];
-  const I = (o = {}) => ({ move: [0, 0], action: null, target: null, quality: 0, ...o });
+  const I = (o = {}) => ({ move: [0, 0], action: null, target: null, quality: 0, kind: null, green: false, ...o });
   function toward(a, pt, slow = 18) { const dx = pt[0] - a.x, dy = pt[1] - a.y, d = Math.hypot(dx, dy); if (d < 4) return [0, 0]; const k = Math.min(1, d / slow); return [dx / d * k, dy / d * k]; }
-  const quality = (m, a) => clamp(m.rng.gauss((a.p.stats.shooting - 50) / 80 + a.eff("meter") * 4, 0.45), -1, 1);
+  // AI "hits the green" about as often as a player of that skill would; otherwise a mistimed release.
+  function jumper(m, a) {
+    const t = clamp((dist(a.pos, S.HOOP) - 60) / (S.ARC + 90 - 60), 0, 1);
+    const g = clamp((0.12 + (a.p.stats.shooting - 40) / 130 + a.eff("meter") * 3 - 0.1 * t) * (1 - m.contest(a) * 1.5), 0.03, 0.55);
+    if (m.rng.random() < g) return I({ action: "shoot", kind: "jumper", green: true, quality: 1 });
+    return I({ action: "shoot", kind: "jumper", quality: m.rng.uniform(-0.9, 0.2) });
+  }
   function withBall(m, a, dt) {
     a.holdT += dt;
     const h = S.HOOP, d = dist(a.pos, h), [nd, dfd] = m.nearestOpp(a), r = () => m.rng.random();
@@ -482,13 +534,15 @@ const AI = (() => {
     }
     a.think -= dt;
     if (a.think > 0) return I({ move: a.spot ? toward(a, a.spot) : [0, 0] });
-    a.think = m.rng.uniform(0.2, 0.4);
+    a.think = m.rng.uniform(0.1, 0.22);
     if (!m.needsClear) {
-      if (canDunk(a.p) && d <= S.DUNK_RANGE) return I({ action: "shoot" });
-      if (d <= S.LAYUP && (nd > 25 || r() < 0.5)) return I({ action: "shoot", quality: quality(m, a) });
-      const desperate = a.holdT > 5 || m.shotClock < 2.5, open = nd > 42 && d < S.ARC + 70;
+      const kind = m.shotKind(a);
+      if (kind === "dunk") return I({ action: "shoot", kind });
+      if (kind === "layup" && (nd > 22 || r() < 0.6)) return I({ action: "shoot", kind });
+      if (d <= S.LAYUP && nd > 30) return I({ action: "shoot", kind: "layup" });
+      const desperate = a.holdT > 3.5 || m.shotClock < 2, open = nd > 38 && d < S.ARC + 70;
       const bias = a.p.stats.shooting / 99 + a.eff("deep") * 4;
-      if (desperate || (open && r() < 0.25 + 0.35 * bias)) return I({ action: "shoot", quality: quality(m, a) });
+      if (desperate || (open && r() < 0.3 + 0.35 * bias)) return jumper(m, a);
     }
     const mates = m.team(a.team).filter(t => t !== a);
     const best = mates.reduce((p, q) => m.openness(q) > m.openness(p) ? q : p);
@@ -496,7 +550,7 @@ const AI = (() => {
     if (m.needsClear && a.holdT > 2.5 && r() < 0.3) return I({ action: "pass", target: best });
     if (dfd && nd < 40 && a.cool <= 0 && r() < 0.25 + a.eff("cross")) return I({ action: "cross", move: toward(a, h) });
     if (m.needsClear) a.spot = clampCourt(a.x + m.rng.uniform(-80, 80), a.y + m.rng.uniform(-20, 40));
-    else { let lat = m.rng.uniform(-60, 60); if (dfd && nd < 40) lat += dfd.x < a.x ? 70 : -70; a.spot = clampCourt(h[0] + lat + (a.x - h[0]) * 0.3, h[1] + 50); }
+    else { let lat = m.rng.uniform(-60, 60); if (dfd && nd < 40) lat += dfd.x < a.x ? 70 : -70; a.spot = clampCourt(h[0] + lat * 0.6 + (a.x - h[0]) * 0.2, h[1] + 30); }
     return I({ move: toward(a, a.spot) });
   }
   function offBall(m, a, dt) {
@@ -960,7 +1014,9 @@ function pose(m, a) {
   const shoot = a.animK("shoot"), dunk = a.animK("dunk"), jump = a.animK("jump"), block = a.animK("block");
   const pass = a.animK("pass"), cross = a.animK("cross"), reach = a.animK("reach"), cele = a.animK("celebrate");
   const metering = holding && m.meter !== null && a === m.controlled;
+  const layup = a.animK("layup");
   if (dunk >= 0) { lift = ease(dunk); L = [-4, -62]; R = [4, -62]; }
+  else if (layup >= 0) { lift = ease(layup) * 0.75; L = [-10, -34]; R = [dir * 6, -62]; }
   else if (shoot >= 0) { lift = ease(shoot) * 0.6; L = [-4, -56]; R = [5, -58]; }
   else if (block >= 0) { lift = ease(block) * 0.9; L = [-13, -58]; R = [13, -58]; }
   else if (jump >= 0) { lift = ease(jump) * 0.7; L = [-12, -56]; R = [12, -56]; }
@@ -1113,7 +1169,7 @@ class MatchScreen extends Screen {
   draw() {
     const m = this.match; drawCourt(this.ci); drawActors(m, true);
     if (m.meter !== null) {
-      const a = m.controlled, x = a.x + 24, y = a.y - 30, h = 60, w = m.meterWindow(a);
+      const a = m.controlled, x = a.x + 26, y = a.y - 66, h = 60, w = m.meterWindow(a);
       const lo = S.METER_SWEET - w, hi = S.METER_SWEET + w, fill = Math.min(1, m.meter) * h;
       ctx.fillStyle = C.dark; ctx.fillRect(x, y, 10, h);
       ctx.fillStyle = C.green; ctx.fillRect(x, y + h - hi * h, 10, (hi - lo) * h);
@@ -1128,11 +1184,19 @@ class MatchScreen extends Screen {
     text(`Shot ${Math.max(0, Math.ceil(m.shotClock))}`, S.W - 16, 12, { size: 26, right: true });
     if (m.needsClear) text(`${m.offense === 0 ? "YOU" : "THEY"} MUST CLEAR IT PAST THE ARC`, 500, 62, { size: 28, color: C.gold, center: true });
     [...m.messages].reverse().forEach(([msg], i) => text(msg, 500, 600 - i * 28, { size: i === 0 ? 32 : 24, center: true }));
+    const ca = m.controlled, cb = m.ball;
+    if (m.phase === "live" && cb.state === "held" && cb.holder === ca && !m.needsClear && m.meter === null) {
+      const kind = m.shotKind(ca);
+      if (kind !== "jumper") {
+        const tag = kind === "dunk" ? "DUNK!" : "LAYUP";
+        rrect(ca.x - 30, ca.y - 92, 60, 22, 6, kind === "dunk" ? C.orange : "rgba(20,20,26,0.85)", C.gold, 1.5);
+        text(tag, ca.x, ca.y - 81, { size: 22, color: kind === "dunk" ? "#1a0f05" : C.gold, center: true, display: true });
+      }
+    }
     if (m.phase === "check") text("CHECK BALL", 500, 380, { size: 40, center: true, display: true });
     if (m.phase === "over") { const won = m.winner === 0; text(won ? "YOU WIN!" : "YOU LOSE", 500, 330, { size: 80, color: won ? C.green : C.red, center: true, display: true }); }
     if (!isTouch) {
-      const dunk = canDunk(m.controlled.p) ? " · SPACE near rim = DUNK" : "";
-      text(`WASD move · hold SPACE, release in the green${dunk} · J pass · K cross/steal · Q switch · Esc pause`, 500, S.H - 16, { size: 20, center: true, weight: 500 });
+      text("WASD move · hold SPACE, release in the green · drive fast at an open rim to DUNK · J pass · K cross/steal · Q switch · Esc", 500, S.H - 16, { size: 20, center: true, weight: 500 });
     }
     if (this.paused) {
       rrect(290, 240, 420, 200, 12, "rgba(16,17,22,0.95)", C.grey, 1.5);
