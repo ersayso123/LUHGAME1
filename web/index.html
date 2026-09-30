@@ -215,7 +215,7 @@ class Ball {
 // =====================================================================
 class Actor {
   constructor(p, team, slot) {
-    Object.assign(this, { p, team, slot, x: 0, y: 0, vx: 0, vy: 0, dash: null, moveTag: null, stepBackT: 0, sprinting: false, stamina: 1, streak: 0, bounces: 0, fx: 0, fy: -1, stun: 0, cool: 0, burst: 0, jump: 0, points: 0, think: 0, spot: null, spotT: 0, holdT: 0 });
+    Object.assign(this, { p, team, slot, x: 0, y: 0, vx: 0, vy: 0, dash: null, plant: 0, moveTag: null, stepBackT: 0, sprinting: false, stamina: 1, streak: 0, bounces: 0, fx: 0, fy: -1, stun: 0, cool: 0, burst: 0, jump: 0, points: 0, think: 0, spot: null, spotT: 0, holdT: 0 });
     // animation only (never affects the rules)
     const h = hashStr(p.name + p.number);
     this.look = { skin: SKINS[h % SKINS.length], hair: HAIRS[(h >>> 3) % HAIRS.length], style: (h >>> 6) % 4, shoe: SHOES[(h >>> 9) % SHOES.length] };
@@ -232,8 +232,11 @@ class Actor {
 const blankInputs = () => ({ move: [0, 0], shootPressed: false, shootDown: false, passPressed: false, movePressed: false, switchPressed: false, sprint: false });
 
 class Match {
-  constructor(teamA, teamB, rng, human = true, gameTo = S.GAME_TO) {
+  constructor(teamA, teamB, rng, human = true, gameTo = S.GAME_TO, opts = {}) {
     this.rng = rng || new Rng(); this.human = human; this.gameTo = gameTo;
+    this.scout = opts.scout || 0;            // 0..1: how well the other team has studied you
+    this.favMove = opts.favMove || null;     // your most-used dribble move; scouted teams see it coming
+    this.moveUse = {};
     this.actors = [...teamA.map((p, i) => new Actor(p, 0, i)), ...teamB.map((p, i) => new Actor(p, 1, i))];
     this.ball = new Ball(); this.score = [0, 0]; this.winner = null; this.messages = [];
     this.meter = null; this.elapsed = 0; this.controlled = this.team(0)[0];
@@ -309,9 +312,13 @@ class Match {
     if (this.ball.state === "held" && this.ball.holder === a) { speed *= 0.94; if (a === this.controlled && this.meter !== null) speed *= 0.3; }
     // players speed up and slow down smoothly instead of snapping
     const k = 1 - Math.exp(-S.ACCEL * dt);
-    if (a.dash) {
+    if (a.plant > 0 && !a.dash) { a.plant -= dt; a.vx = a.vy = 0; mx = my = 0; }
+    else if (a.dash) {
       a.vx = a.dash.vx; a.vy = a.dash.vy; a.dash.t -= dt;
-      if (a.dash.t <= 0) { a.dash = null; a.vx *= 0.35; a.vy *= 0.35; }
+      if (a.dash.t <= 0) {
+        if (a.dash.plant) { a.vx = a.vy = 0; a.plant = 0.28; } else { a.vx *= 0.35; a.vy *= 0.35; }
+        a.dash = null;
+      }
       mx = my = 0;   // keep facing while dashing
     } else { a.vx += (mx * speed - a.vx) * k; a.vy += (my * speed - a.vy) * k; }
     const ox = a.x, oy = a.y;
@@ -418,7 +425,8 @@ class Match {
   contest(a) {
     const [dd, dfd] = this.nearestOpp(a);
     if (!dfd || dd >= 70) return 0;
-    return (1 - dd / 70) * (0.12 + dfd.p.stats.defense / 99 * 0.2 + dfd.eff("contest"));
+    const scouted = a.team === 0 ? 1 + 0.5 * this.scout : 1;
+    return (1 - dd / 70) * (0.12 + dfd.p.stats.defense / 99 * 0.2 + dfd.eff("contest")) * scouted;
   }
   // Chance to make a shot that is NOT a green release.
   makeChance(a, kind, quality = 0) {
@@ -471,7 +479,7 @@ class Match {
   //   side only → crossover that way · up + side → crossover drive · down → step back
   //   up only → hesi-go · nothing → hesitation
   moveType(mx, my) {
-    if (my > 0.3) return "stepback";
+    if (my > 0.3) return Math.abs(mx) > 0.3 ? "sidestep" : "stepback";
     if (Math.abs(mx) > 0.3) return my < -0.3 ? "drive" : "cross";
     if (my < -0.3) return "go";
     return "hesi";
@@ -482,25 +490,35 @@ class Match {
     const MOVES = {   // dash direction, dash speed, dash time, ankle-break odds, stun time, label
       cross: { v: [side, 0], sp: 230, t: 0.12, odds: 1.0, stun: 0.7, label: side > 0 ? "CROSSOVER ▶" : "◀ CROSSOVER" },
       drive: { v: [side * 0.62, -0.78], sp: 270, t: 0.14, odds: 0.85, stun: 0.6, label: side > 0 ? "CROSS & DRIVE ↗" : "↖ CROSS & DRIVE" },
-      stepback: { v: norm(mx * 0.4, 1), sp: 250, t: 0.16, odds: 0.7, stun: 0.45, label: "STEP BACK" },
+      stepback: { v: [0, 1], sp: 320, t: 0.17, odds: 0.7, stun: 0.45, label: "STEP BACK", plant: true },
+      sidestep: { v: [side * 0.8, 0.6], sp: 250, t: 0.13, odds: 0.8, stun: 0.5, label: side > 0 ? "SIDE STEP ▶" : "◀ SIDE STEP", plant: true },
       go: { v: [0, -1], sp: 260, t: 0.12, odds: 0.6, stun: 0.5, label: "HESI-GO" },
       hesi: { v: [0, 0], sp: 0, t: 0, odds: 0.55, stun: 0.55, label: "HESI" },
     };
     const mv = MOVES[type];
-    if (type === "stepback" && !(this.human && a === this.controlled)) mv.v = norm(a.x - S.HOOP[0], a.y - S.HOOP[1]);  // AI steps back away from the rim
+    if ((type === "stepback" || type === "sidestep") && !(this.human && a === this.controlled)) {   // AI steps back away from the rim
+      const [ax, ay] = norm(a.x - S.HOOP[0], a.y - S.HOOP[1]);
+      mv.v = type === "stepback" ? [ax, ay] : norm(ax + side * 0.8, ay);
+    }
+    if (this.human && a === this.controlled) this.moveUse[type] = (this.moveUse[type] || 0) + 1;
+    // a scouting report: they've seen your favorite move before
+    const read = a.team === 0 && this.scout > 0 && type === this.favMove;
+    if (read) mv.odds *= 1 - 0.6 * this.scout;
     a.cool = 0.9;
-    if (type === "cross" || type === "drive") a.hand = side;
+    if (type === "cross" || type === "drive" || type === "sidestep") a.hand = side;
     else if (type === "hesi") a.hand = -a.hand;
-    if (mv.sp) { const [vx, vy] = norm(mv.v[0], mv.v[1]); a.dash = { vx: vx * mv.sp, vy: vy * mv.sp, t: mv.t }; }
-    a.setAnim(type === "drive" ? "cross" : type, type === "stepback" ? 0.34 : type === "hesi" ? 0.4 : 0.32);
+    if (mv.sp) { const [vx, vy] = norm(mv.v[0], mv.v[1]); a.dash = { vx: vx * mv.sp, vy: vy * mv.sp, t: mv.t, plant: !!mv.plant }; }
+    a.setAnim(type === "drive" ? "cross" : type === "sidestep" ? "stepback" : type, type === "stepback" || type === "sidestep" ? 0.34 : type === "hesi" ? 0.4 : 0.32);
     a.moveTag = { text: mv.label, t: 0.8 };
-    if (type === "stepback") a.stepBackT = 0.9;
+    if (type === "stepback" || type === "sidestep") a.stepBackT = 0.9;
     const [dd, dfd] = this.nearestOpp(a);
     if (dfd && dd < 55 && dfd.stun <= 0) {
       const ch = (0.25 + (a.p.stats.handles - dfd.p.stats.defense) / 200 + a.eff("cross")) * mv.odds;
       if (this.rng.random() < clamp(ch, 0.04, 0.8)) {
         dfd.stun = mv.stun; dfd.vx *= 0.2; dfd.vy *= 0.2;
         this.events.push({ type: "ankles", x: dfd.x, y: dfd.y, team: a.team });
+      } else if (read) {
+        dfd.moveTag = { text: "READ IT!", t: 0.8 };
         this.say(type === "stepback" ? `${a.p.name} stepped back on ${dfd.p.name}!` : type === "hesi" ? `${a.p.name} froze ${dfd.p.name}!` : `${a.p.name} broke ${dfd.p.name}'s ankles!`);
       }
     }
@@ -610,7 +628,7 @@ const AI = (() => {
       const side = dfd.x < a.x ? 1 : -1;                              // go away from the defender
       const nearArc = d > S.ARC - 40 && d < S.ARC + 60;
       const roll = r();
-      if (nearArc && !m.needsClear && roll < 0.3) return I({ action: "cross", moveType: "stepback" });
+      if (nearArc && !m.needsClear && roll < 0.3) return I({ action: "cross", move: [side, 1], moveType: r() < 0.5 ? "stepback" : "sidestep" });
       if (roll < 0.65) return I({ action: "cross", move: [side, -1], moveType: "drive" });
       if (roll < 0.9) return I({ action: "cross", move: [side, 0], moveType: "cross" });
       return I({ action: "cross", move: [0, 0], moveType: "hesi" });
@@ -631,10 +649,11 @@ const AI = (() => {
   }
   function defend(m, a, dt) {
     const man = m.team(1 - a.team)[a.slot], b = m.ball, onBall = b.state === "held" && b.holder === man;
-    const tight = onBall ? 26 : 55, [ux, uy] = norm(S.HOOP[0] - man.x, S.HOOP[1] - man.y);
+    const sc = a.team === 1 ? m.scout : 0;
+    const tight = onBall ? 26 - 6 * sc : 55 - 18 * sc, [ux, uy] = norm(S.HOOP[0] - man.x, S.HOOP[1] - man.y);
     const it = I({ move: toward(a, [man.x + ux * tight, man.y + uy * tight], 10) });
     if (onBall && a.cool <= 0 && dist(a.pos, man.pos) < S.STEAL_RANGE) {
-      const rate = 0.6 * (a.p.stats.defense / 99 + a.eff("steal") * 3);
+      const rate = 0.6 * (a.p.stats.defense / 99 + a.eff("steal") * 3) * (1 + sc);
       if (m.rng.random() < rate * dt) it.action = "steal";
     }
     return it;
@@ -672,66 +691,159 @@ const AI = (() => {
 // Career (same as game/career.py)
 // =====================================================================
 const TIERS = [
-  { title: "Nobody", court: "Rusty Rim Park", base: 36, bossFame: 40, crews: ["Corner Kids", "Rec League Rejects", "The Rust Kings"] },
-  { title: "Local", court: "Southside Blacktop", base: 48, bossFame: 130, crews: ["Southside Swingers", "Block Party", "Blacktop Bullies"] },
-  { title: "Neighborhood Name", court: "Pier Courts", base: 60, bossFame: 280, crews: ["Salt Water Squad", "Dock Boyz", "The Tide"] },
-  { title: "City Legend", court: "Downtown Cage", base: 72, bossFame: 480, crews: ["Chain Link Gang", "Night Shift", "Cage Kings"] },
-  { title: "City Legend", court: "The Throne", base: 84, bossFame: 750, crews: ["Crown Chasers", "Royal Court", "The Last King"] },
+  { title: "Nobody", court: "Rusty Rim Park", tourney: "Rusty Rim Classic", base: 36, crews: ["Corner Kids", "Rec League Rejects", "The Rust Kings"] },
+  { title: "Local", court: "Southside Blacktop", tourney: "Southside Showdown", base: 48, crews: ["Southside Swingers", "Block Party", "Blacktop Bullies"] },
+  { title: "Neighborhood Name", court: "Pier Courts", tourney: "Pier Pressure Invitational", base: 60, crews: ["Salt Water Squad", "Dock Boyz", "The Tide"] },
+  { title: "City Legend", court: "Downtown Cage", tourney: "Cage Brawl", base: 72, crews: ["Chain Link Gang", "Night Shift", "Cage Kings"] },
+  { title: "City Legend", court: "The Throne", tourney: "Throne Tournament", base: 84, crews: ["Crown Chasers", "Royal Court", "The Last King"] },
 ];
 const KING = "King of the Courts";
-const CREW_OFFSETS = [0, 3, 7];
-const FIRST = ["Tay", "Dre", "Mook", "Jojo", "Kev", "Rell", "Dom", "Zay", "Bishop", "Ty", "Nate", "Juice", "Smoke", "Pooh", "Ant", "Deuce", "Rico", "Moe", "Stretch", "Quan", "Boogie", "Skip", "Hops", "Jamal", "Beans", "Cheese", "Ronnie"];
+const ROUNDS = ["Quarterfinal", "Semifinal", "Final"];
+const ROUND_OFFSETS = [0, 3, 7];
+const TEAM_POOL = ["Night Owls", "Hoop Dreams", "Concrete Kings", "Buckets Inc", "Fast Break Five", "Rim Rattlers", "Blacktop Bandits", "Street Legends", "Glass Eaters", "Swish City", "And-One Crew", "Nothing But Net", "Full Court Press", "Ballin Brothers"];
+const FIRST = ["Tay", "Dre", "Mook", "Jojo", "Kev", "Rell", "Dom", "Zay", "Bishop", "Ty", "Nate", "Juice", "Smoke", "Pooh", "Ant", "Deuce", "Rico", "Moe", "Stretch", "Quan", "Boogie", "Skip", "Hops", "Jamal", "Beans", "Cheese", "Ronnie", "Tre", "Manny", "Chico", "Big Lo", "Dizzy"];
 const PREFIX = ["Lil", "Big", "Young", "Slim", "Sweet", "Downtown", "Air", "Pistol", "Easy"];
-function randomName(rng) { const f = rng.choice(FIRST); return rng.random() < 0.5 ? `${rng.choice(PREFIX)} ${f}` : f; }
-function generatePlayer(rng, base) {
-  const stats = {}; for (const s of S.STATS) stats[s] = clamp(base + rng.randint(-8, 8), 20, S.STAT_MAX);
-  const main = rng.choice(ATTR_ORDER), sec = rng.choice(ATTR_ORDER.filter(a => a !== main));
+function randomName(rng) { const f = rng.choice(FIRST); return rng.random() < 0.5 && !f.includes(" ") ? `${rng.choice(PREFIX)} ${f}` : f; }
+
+// ---- positions: each one leans the stats a different way (the leanings add up to zero)
+const POSITIONS = ["PG", "SG", "SF", "PF", "C"];
+const POS_NAMES = { PG: "Point Guard", SG: "Shooting Guard", SF: "Small Forward", PF: "Power Forward", C: "Big Man" };
+const POS_SHAPE = {
+  PG: { shooting: 2, speed: 7, handles: 8, defense: -5, rebounding: -12 },
+  SG: { shooting: 8, speed: 4, handles: 3, defense: -4, rebounding: -11 },
+  SF: { shooting: 2, speed: 2, handles: 0, defense: 1, rebounding: -5 },
+  PF: { shooting: -3, speed: -3, handles: -6, defense: 5, rebounding: 7 },
+  C: { shooting: -8, speed: -7, handles: -10, defense: 9, rebounding: 16 },
+};
+const POS_ATTRS = { PG: ["playmaker", "speedster", "sharpshooter"], SG: ["sharpshooter", "speedster", "playmaker"], SF: ATTR_ORDER, PF: ["glass", "lockdown", "dunker"], C: ["glass", "dunker", "lockdown"] };
+const POS_SIZE = { PG: 0.94, SG: 0.98, SF: 1.02, PF: 1.07, C: 1.13 };
+function guessPos(p) {
+  let best = "SF", bs = -1e9;
+  for (const pos of POSITIONS) { let sc = 0; for (const k of S.STATS) sc += p.stats[k] * POS_SHAPE[pos][k]; if (sc > bs) { bs = sc; best = pos; } }
+  return best;
+}
+function generatePlayer(rng, base, pos) {
+  pos = pos || rng.choice(POSITIONS);
+  const stats = {}; for (const s of S.STATS) stats[s] = clamp(base + POS_SHAPE[pos][s] + rng.randint(-6, 6), 20, S.STAT_MAX);
+  const main = rng.random() < 0.75 ? rng.choice(POS_ATTRS[pos]) : rng.choice(ATTR_ORDER);
+  const sec = rng.choice(ATTR_ORDER.filter(a => a !== main));
   const mainLvl = clamp(Math.round((base - 30) / 14), 0, S.MAIN_MAX);
   const secLvl = base < 50 ? 0 : clamp(Math.floor((base - 44) / 14), 0, S.SEC_MAX);
-  return makePlayer(randomName(rng), rng.randint(0, 55), stats, mainLvl ? main : null, mainLvl, secLvl ? sec : null, secLvl);
+  const p = makePlayer(randomName(rng), rng.randint(0, 55), stats, mainLvl ? main : null, mainLvl, secLvl ? sec : null, secLvl);
+  p.pos = pos;
+  return p;
 }
-function crewPlayers(ci, k) {
-  const rng = new Rng(`${TIERS[ci].court}|${TIERS[ci].crews[k]}`);
-  const base = TIERS[ci].base + CREW_OFFSETS[k];
-  return [0, 1, 2].map(() => generatePlayer(rng, base));
+// A crew is a guard, a wing and a big.
+function makeCrew(rng, base) { return [rng.choice(["PG", "SG"]), rng.choice(["SF", "SG", "PF"]), rng.choice(["C", "PF"])].map(pos => generatePlayer(rng, base, pos)); }
+function crewPlayers(ci, k) { return makeCrew(new Rng(`${TIERS[ci].court}|${TIERS[ci].crews[k]}`), TIERS[ci].base + ROUND_OFFSETS[k]); }
+// Tournament bracket for one entry: two random crews, then that court's champions in the final.
+function bracket(tier, seed) {
+  const rng = new Rng(`T|${tier}|${seed}`), pool = [...TEAM_POOL];
+  return ROUNDS.map((round, r) => {
+    const name = r === 2 ? TIERS[tier].crews[2] : pool.splice(rng.randint(0, pool.length - 1), 1)[0];
+    const players = makeCrew(rng, TIERS[tier].base + ROUND_OFFSETS[r]);
+    return { id: `T${tier}:${seed}:${r}`, court: tier, name, players, boss: r === 2, ovr: teamOverall(players), mode: "tourney", round: r };
+  });
 }
 
+const MARKET_MS = 5 * 60 * 1000;
+const RARITY = [   // name, base weight, how much fame/team level boosts it, rating offset, price per OVR point
+  { name: "Common", w: 62, boost: 0, off: -4, price: 4, color: "#b9bcc6" },
+  { name: "Rare", w: 26, boost: 1, off: 0, price: 6, color: "#5096f0" },
+  { name: "Epic", w: 9, boost: 2, off: 7, price: 9, color: "#b36bff" },
+  { name: "Legend", w: 2.5, boost: 3, off: 14, price: 14, color: "#f5c83c" },
+];
+
 class Career {
-  constructor(d) { Object.assign(this, { cash: 100, fame: 0, tier: 0, beaten: [], champion: false, starters: [0, 1] }, d); }
-  static fresh(name, main) {
+  constructor(d) {
+    Object.assign(this, { cash: 100, fame: 0, tier: 0, champion: false, starters: [0, 1], tourney: null, entries: 0, titles: 0, games: 0, market: null, moves: {} }, d);
+    // older saves: give everyone a position
+    if (!this.me.pos) this.me.pos = "SF";
+    for (const p of this.crew) if (!p.pos) p.pos = guessPos(p);
+  }
+  static fresh(name, main, pos = "SF") {
     const rng = new Rng();
-    const me = makePlayer(name, rng.randint(0, 55), Object.fromEntries(S.STATS.map(s => [s, 40])), main, 1);
-    return new Career({ me, crew: [generatePlayer(rng, 32), generatePlayer(rng, 32)] });
+    const stats = Object.fromEntries(S.STATS.map(s => [s, 40 + POS_SHAPE[pos][s]]));
+    const me = makePlayer(name, rng.randint(0, 55), stats, main, 1); me.pos = pos;
+    // every new baller starts with a point guard and a big man
+    return new Career({ me, crew: [generatePlayer(rng, 33, "PG"), generatePlayer(rng, 33, "C")] });
   }
   get title() { return this.champion ? KING : TIERS[this.tier].title; }
-  bossUnlocked(ci) { return this.fame >= TIERS[ci].bossFame; }
+  // Pickup games: two local crews at any court you've reached. They don't move you up.
   crewsFor(ci) {
-    return TIERS[ci].crews.map((name, k) => {
-      const players = crewPlayers(ci, k), id = `${ci}:${k}`;
-      return { id, court: ci, name, players, boss: k === 2, ovr: teamOverall(players), beaten: this.beaten.includes(id) };
-    });
+    return [0, 1].map(k => { const players = crewPlayers(ci, k); return { id: `${ci}:${k}`, court: ci, name: TIERS[ci].crews[k], players, boss: false, ovr: teamOverall(players), mode: "pickup" }; });
   }
+  enterTourney() { this.entries++; this.tourney = { tier: this.tier, seed: this.entries, round: 0 }; }
+  tourneyGame() { const t = this.tourney; return t ? bracket(t.tier, t.seed)[t.round] : null; }
   lineup() { return [this.me, ...this.starters.map(i => this.crew[i])]; }
   secUnlocked() { return this.tier >= S.SEC_UNLOCK || this.champion; }
-  // How many people come out to watch you play.
   crowdSize() { return clamp(Math.round(3 + this.fame * 0.18), 3, 140); }
-  // Fame lost on a loss: small when you're unknown, big when you're famous.
   fameLoss() { return Math.min(this.fame, Math.round(2 + this.fame * 0.05)); }
-  applyResult(ci, crewId, isBoss, won, margin = 0, bet = 0, mult = 1) {
-    const r = { fame: 0, cash: 0, betWin: 0, tips: 0, tierUp: false, crowned: false };
+  // Scouting: climb faster than expected (few games played, or a team rated under the level)
+  // and other teams start studying you.
+  scouting() {
+    if (this.tier === 0) return 0;
+    const fast = clamp((6 * this.tier - this.games) / (6 * this.tier), 0, 1) * 0.8;   // about 6 games per level is normal
+    const under = clamp((TIERS[this.tier].base - 6 - teamOverall(this.lineup())) / 20, 0, 1);
+    return Math.round(Math.max(fast, under) * 100) / 100;
+  }
+  favoriteMove() { let best = null, n = 2; for (const [k, v] of Object.entries(this.moves)) if (v > n) { n = v; best = k; } return best; }
+  applyResult(crew, won, margin = 0, bet = 0, mult = 1, moveUse = {}) {
+    const ci = crew.court, r = { fame: 0, cash: 0, betWin: 0, tips: 0, tierUp: false, crowned: false, nextRound: false, champ: false, eliminated: false };
+    this.games++;
+    for (const [k, v] of Object.entries(moveUse)) this.moves[k] = (this.moves[k] || 0) + v;
     if (won) {
-      r.fame = 12 + 6 * ci + Math.floor(margin / 2); r.cash = 60 + 40 * ci;
-      if (isBoss) {
-        r.fame += 40 + 10 * ci; r.cash += 200 + 150 * ci;
-        if (ci === this.tier && this.tier < TIERS.length - 1) { this.tier++; r.tierUp = true; }
-        else if (ci === TIERS.length - 1 && !this.champion) { this.champion = true; r.crowned = true; }
-      }
-      if (!this.beaten.includes(crewId)) this.beaten.push(crewId);
+      r.fame = (crew.mode === "tourney" ? 12 : 8) + 6 * ci + Math.floor(margin / 2);
+      r.cash = (crew.mode === "tourney" ? 60 : 40) + 40 * ci;
       if (bet) r.betWin = Math.round(bet * mult);
       r.tips = Math.round(this.crowdSize() * 0.5);
-    } else { r.fame = -this.fameLoss(); r.cash = 10; }
+      if (crew.mode === "tourney") {
+        if (this.tourney.round < 2) { this.tourney.round++; r.nextRound = true; }
+        else {   // won the whole tournament
+          r.champ = true; this.titles++; this.tourney = null;
+          r.fame += 40 + 10 * ci; r.cash += 250 + 150 * ci;
+          if (ci === this.tier && this.tier < TIERS.length - 1) { this.tier++; r.tierUp = true; }
+          else if (ci === TIERS.length - 1 && !this.champion) { this.champion = true; r.crowned = true; }
+        }
+      }
+    } else {
+      r.fame = -this.fameLoss(); r.cash = 10;
+      if (crew.mode === "tourney") { this.tourney = null; r.eliminated = true; }
+    }
     this.fame = Math.max(0, this.fame + r.fame); this.cash += r.cash + r.betWin + r.tips;
     return r;
+  }
+  // ---- player market: new players every 5 minutes; better and more of them with more fame and a better team
+  refreshMarket(now = Date.now()) {
+    if (this.market && this.market.at > now) this.market.at = now;   // clock moved backwards
+    if (!this.market || now - this.market.at >= MARKET_MS) {
+      const at = this.market ? this.market.at + Math.floor((now - this.market.at) / MARKET_MS) * MARKET_MS : now;
+      this.market = { at, seed: `${at}|${this.me.name}`, bought: [], seen: false };
+      return true;
+    }
+    return false;
+  }
+  marketLuck() { return clamp(this.fame / 800 + this.tier * 0.12 + (teamOverall(this.lineup()) - 40) / 100, 0, 1.4); }
+  marketOffers() {
+    this.refreshMarket();
+    const rng = new Rng("M|" + this.market.seed), luck = this.marketLuck();
+    const count = 2 + Math.floor(luck * 1.5 + rng.random() * 0.8);     // 2 players when you're unknown, up to 4
+    const level = Math.max(TIERS[this.tier].base, teamOverall(this.lineup())) + 2;
+    const out = [];
+    for (let i = 0; i < Math.min(4, count); i++) {
+      const rar = rng.choices(RARITY, RARITY.map(r => r.w * (1 + r.boost * luck)));
+      const p = generatePlayer(rng, level + rar.off);
+      out.push({ i, rarity: rar, player: p, price: overall(p) * rar.price, sold: this.market.bought.includes(i) });
+    }
+    return out;
+  }
+  marketLeft(now = Date.now()) { this.refreshMarket(now); return Math.max(0, MARKET_MS - (now - this.market.at)); }
+  buyOffer(o) {
+    if (o.sold) return [false, "Already signed."];
+    if (this.crew.length >= S.CREW_MAX) return [false, "Crew is full. Release someone first."];
+    if (this.cash < o.price) return [false, `Need $${o.price}.`];
+    this.cash -= o.price; this.crew.push(copyPlayer(o.player)); this.market.bought.push(o.i);
+    return [true, `${o.player.name} signed with your crew!`];
   }
   statCost(v) { return Math.floor(10 + v * 1.5); }
   buyStat(s) { const v = this.me.stats[s], c = this.statCost(v); if (v >= S.STAT_MAX || this.cash < c) return false; this.cash -= c; this.me.stats[s] = Math.min(S.STAT_MAX, v + S.STAT_STEP); return true; }
@@ -750,8 +862,6 @@ class Career {
     if (slot === "main") me.mainLvl++; else { if (me.secLvl === 0) me.sec = key; me.secLvl++; }
     return [true, "Upgraded!"];
   }
-  recruitCost(p) { return overall(p) * 4; }
-  recruit(p) { const c = this.recruitCost(p); if (this.crew.length >= S.CREW_MAX || this.cash < c) return false; this.cash -= c; this.crew.push(copyPlayer(p)); return true; }
   release(i) {
     if (this.crew.length <= 2) return false;
     this.crew.splice(i, 1);
@@ -760,7 +870,7 @@ class Career {
     return true;
   }
   toggleStarter(i) { if (!this.starters.includes(i)) this.starters = [this.starters[this.starters.length - 1], i]; }
-  toJSON() { const { me, crew, cash, fame, tier, beaten, champion, starters } = this; return { me, crew, cash, fame, tier, beaten, champion, starters }; }
+  toJSON() { const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves } = this; return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves }; }
 }
 
 // =====================================================================
@@ -978,26 +1088,40 @@ class TitleScreen extends Screen {
 }
 
 class CreateScreen extends Screen {
-  constructor() { super(); this.ai = 0; nameInput.value = ""; }
-  start() { App.career = Career.fresh(nameInput.value.trim() || "Rookie", ATTR_ORDER[this.ai]); App.save(); App.switch(new HubScreen()); }
-  step(d) { this.ai = (this.ai + d + ATTR_ORDER.length) % ATTR_ORDER.length; }
-  key(k) { if (k === "Escape") App.switch(new TitleScreen()); else if (K.left(k)) this.step(-1); else if (K.right(k)) this.step(1); else if (k === "Enter") this.start(); }
+  constructor() { super(); this.pi = 2; this.ai = 0; this.row = 0; nameInput.value = ""; }
+  get pos() { return POSITIONS[this.pi]; }
+  start() { App.career = Career.fresh(nameInput.value.trim() || "Rookie", ATTR_ORDER[this.ai], this.pos); App.save(); App.switch(new HubScreen()); }
+  stepPos(d) { this.pi = (this.pi + d + POSITIONS.length) % POSITIONS.length; this.ai = ATTR_ORDER.indexOf(POS_ATTRS[this.pos][0]); }
+  stepAttr(d) { this.ai = (this.ai + d + ATTR_ORDER.length) % ATTR_ORDER.length; }
+  key(k) {
+    if (k === "Escape") App.switch(new TitleScreen());
+    else if (K.up(k) || K.down(k)) this.row = 1 - this.row;
+    else if (K.left(k)) this.row ? this.stepAttr(-1) : this.stepPos(-1);
+    else if (K.right(k)) this.row ? this.stepAttr(1) : this.stepPos(1);
+    else if (k === "Enter") this.start();
+  }
   draw() {
     ctx.fillStyle = C.bg; ctx.fillRect(0, 0, S.W, S.H);
-    text("Create Your Baller", 500, 80, { size: 56, color: C.gold, center: true, display: true });
-    text("Your name", 500, 160, { size: 28, color: C.grey, center: true });
-    text("Main attribute", 500, 290, { size: 28, color: C.grey, center: true });
-    const a = ATTRS[ATTR_ORDER[this.ai]];
-    text(a.name, 500, 340, { size: 50, color: C.orange, center: true, display: true });
-    text("◀", 250, 340, { size: 56, color: C.white, center: true }); hit(210, 310, 80, 60, () => this.step(-1));
-    text("▶", 750, 340, { size: 56, color: C.white, center: true }); hit(710, 310, 80, 60, () => this.step(1));
-    text(a.desc, 500, 388, { size: 27, center: true, weight: 500 });
-    text("Your Main gets the full effect and goes up to level 5. You start at level 1.", 500, 440, { size: 24, color: C.grey, center: true, weight: 500 });
-    text("At Local fame you can add a Secondary: 50% of the effect, max level 3.", 500, 470, { size: 24, color: C.grey, center: true, weight: 500 });
-    text("You start with 40 in every stat, $100, and two scrubs for a crew.", 500, 510, { size: 24, color: C.grey, center: true, weight: 500 });
+    text("Create Your Baller", 500, 70, { size: 56, color: C.gold, center: true, display: true });
+    text("Your name", 500, 150, { size: 28, color: C.grey, center: true });
+    const rows = [["Position", POS_NAMES[this.pos] + ` (${this.pos})`, () => this.stepPos(-1), () => this.stepPos(1)],
+                  ["Main attribute", ATTRS[ATTR_ORDER[this.ai]].name, () => this.stepAttr(-1), () => this.stepAttr(1)]];
+    rows.forEach(([label, val, prev, next], i) => {
+      const y = 262 + i * 100, sel = this.row === i;
+      rrect(170, y - 30, 660, 84, 12, sel ? "#2a2c38" : "#1c1e26", sel ? C.gold : null, 2);
+      text(label, 500, y - 16, { size: 24, color: C.grey, center: true });
+      text(val, 500, y + 20, { size: 42, color: C.orange, center: true, display: true });
+      text("◀", 215, y + 12, { size: 50, center: true }); hit(175, y - 28, 80, 80, () => { this.row = i; prev(); });
+      text("▶", 785, y + 12, { size: 50, center: true }); hit(745, y - 28, 80, 80, () => { this.row = i; next(); });
+      hit(255, y - 28, 490, 80, () => { this.row = i; });
+    });
+    const sh = POS_SHAPE[this.pos];
+    text(S.STATS.map(k => `${S.LABEL[k].slice(0, 3).toUpperCase()} ${40 + sh[k]}`).join("   "), 500, 440, { size: 26, center: true });
+    text(ATTRS[ATTR_ORDER[this.ai]].desc, 500, 474, { size: 25, color: C.grey, center: true, weight: 500 });
+    text("You start with $100, a Point Guard and a Big Man. Win tournaments to move up.", 500, 512, { size: 24, color: C.grey, center: true, weight: 500 });
     rrect(390, 560, 220, 56, 10, C.gold); text("START CAREER", 500, 588, { size: 30, color: "#1a1406", center: true, display: true });
     hit(390, 560, 220, 56, () => this.start());
-    this.footer("◀ ▶ change attribute  ·  Enter to start  ·  Esc back");
+    this.footer("▲▼ pick row  ·  ◀ ▶ change  ·  Enter to start  ·  Esc back");
   }
 }
 
@@ -1006,7 +1130,8 @@ class HubScreen extends Screen {
   constructor() {
     super();
     this.menu = new Menu([
-      ["Hit the Courts", () => App.switch(new CourtScreen())],
+      ["Play", () => App.switch(new CourtScreen())],
+      [() => `Player Market  ${fmtTime(this.c.marketLeft())}`, () => App.switch(new MarketScreen())],
       ["Crew", () => App.switch(new CrewScreen())],
       ["Train Stats", () => App.switch(new TrainScreen())],
       ["Attribute Shop", () => App.switch(new AttrScreen())],
@@ -1016,60 +1141,148 @@ class HubScreen extends Screen {
     ]);
   }
   key(k) { this.menu.key(k); }
+  update() { if (this.c.refreshMarket()) App.save(); }
   draw() {
     this.header(); const c = this.c;
-    this.menu.draw(290, 150, 58, 40);
-    rrect(540, 110, 430, 470, 10, "#181a22", C.grey, 1.5);
-    text("THE ROAD TO THE THRONE", 755, 136, { size: 30, color: C.gold, center: true, display: true });
+    this.menu.draw(280, 140, 54, 38);
+    if (!c.market.seen) { rrect(420, 170, 48, 22, 6, C.red); text("NEW", 444, 181, { size: 20, center: true, display: true }); }
+    rrect(540, 100, 430, 500, 10, "#181a22", C.grey, 1.5);
+    text("THE ROAD TO THE THRONE", 755, 126, { size: 30, color: C.gold, center: true, display: true });
     TIERS.forEach((t, i) => {
-      const y = 170 + i * 76;
+      const y = 158 + i * 72;
       const done = i < c.tier || (i === TIERS.length - 1 && c.champion), here = i === c.tier && !c.champion;
       const col = done ? C.green : here ? C.white : C.grey;
-      text(t.court, 564, y, { size: 32, color: col });
-      text(done ? "DONE" : here ? "YOU ARE HERE" : "LOCKED", 946, y + 4, { size: 20, color: col, right: true });
-      if (here) text(`Boss: ${t.crews[2]} · ${c.fame >= t.bossFame ? "open!" : `needs ${t.bossFame} fame`}`, 564, y + 30, { size: 22, color: C.grey, weight: 500 });
+      text(t.court, 564, y, { size: 30, color: col });
+      text(done ? "WON" : here ? "YOU ARE HERE" : "LOCKED", 946, y + 4, { size: 20, color: col, right: true });
+      text(t.tourney, 564, y + 28, { size: 22, color: C.grey, weight: 500 });
+      if (here && c.tourney) text(`In progress: ${ROUNDS[c.tourney.round]}`, 946, y + 30, { size: 20, color: C.gold, right: true });
     });
-    if (c.champion) text(`You are the ${KING}!`, 755, 555, { size: 30, color: C.gold, center: true });
+    const sc = c.scouting();
+    if (sc >= 0.15) {
+      rrect(556, 516, 398, 76, 8, "#3a1d1d", C.red, 1.5);
+      text(`SCOUTED ${Math.round(sc * 100)}%`, 574, 532, { size: 26, color: "#ff8a7a", display: true });
+      text("You rose fast. Teams guard you tighter", 574, 558, { size: 20, color: C.grey, weight: 500 });
+      text("and learn your favorite dribble move.", 574, 576, { size: 20, color: C.grey, weight: 500 });
+    } else text(`Tournament titles: ${c.titles}  ·  Games played: ${c.games}`, 755, 560, { size: 22, color: C.grey, center: true, weight: 500 });
+    if (c.champion) text(`You are the ${KING}!`, 755, 500, { size: 28, color: C.gold, center: true });
     this.footer("Progress saves automatically in this browser");
   }
 }
+function fmtTime(ms) { const s = Math.ceil(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
 
-// ---------------------------------------------------------------- courts / wager
+// ---------------------------------------------------------------- play: tournaments + pickup games
 class CourtScreen extends Screen {
   constructor() { super(); this.ci = this.c.tier; this.sel = 0; this.msg = ""; }
+  options() {
+    const c = this.c, out = [];
+    if (this.ci === c.tier && !c.champion) {
+      const g = c.tourney && c.tourney.tier === this.ci ? c.tourneyGame() : null;
+      out.push({ kind: "tourney", game: g });
+    }
+    for (const crew of c.crewsFor(this.ci)) out.push({ kind: "pickup", game: crew });
+    return out;
+  }
   pick(i) {
-    this.sel = i; const crew = this.c.crewsFor(this.ci)[i];
-    if (crew.boss && !this.c.bossUnlocked(this.ci)) { this.msg = `Earn ${TIERS[this.ci].bossFame} fame to challenge the boss.`; return; }
-    App.switch(new WagerScreen(this.ci, crew));
+    const c = this.c, o = this.options()[i]; this.sel = i;
+    if (!o) return;
+    if (o.kind === "tourney") { if (!o.game) { c.enterTourney(); App.save(); } App.switch(new WagerScreen(this.ci, c.tourneyGame())); }
+    else App.switch(new WagerScreen(this.ci, o.game));
   }
   key(k) {
+    const n = this.options().length;
     if (K.back(k)) App.switch(new HubScreen());
-    else if (K.left(k)) this.ci = Math.max(0, this.ci - 1);
-    else if (K.right(k)) this.ci = Math.min(this.c.tier, this.ci + 1);
-    else if (K.up(k)) this.sel = (this.sel + 2) % 3;
-    else if (K.down(k)) this.sel = (this.sel + 1) % 3;
+    else if (K.left(k)) { this.ci = Math.max(0, this.ci - 1); this.sel = 0; }
+    else if (K.right(k)) { this.ci = Math.min(this.c.tier, this.ci + 1); this.sel = 0; }
+    else if (K.up(k)) this.sel = (this.sel - 1 + n) % n;
+    else if (K.down(k)) this.sel = (this.sel + 1) % n;
     else if (K.ok(k)) this.pick(this.sel);
   }
   draw() {
     const c = this.c; drawCourt(this.ci);
-    rrect(120, 84, 760, 516, 12, "rgba(16,17,22,0.9)", C.grey, 1.5);
+    rrect(110, 84, 780, 530, 12, "rgba(16,17,22,0.92)", C.grey, 1.5);
     this.backButton(() => App.switch(new HubScreen()));
-    text(TIERS[this.ci].court, 500, 124, { size: 46, color: C.gold, center: true, display: true });
-    if (this.ci > 0) { text("◀", 190, 124, { size: 50, center: true }); hit(160, 100, 60, 50, () => { this.ci--; }); }
-    if (this.ci < c.tier) { text("▶", 810, 124, { size: 50, center: true }); hit(780, 100, 60, 50, () => { this.ci++; }); }
-    text(`Your lineup OVR ${teamOverall(c.lineup())}`, 500, 164, { size: 24, color: C.grey, center: true });
-    c.crewsFor(this.ci).forEach((crew, i) => {
-      const y = 190 + i * 112, sel = i === this.sel, locked = crew.boss && !c.bossUnlocked(this.ci);
-      rrect(160, y, 680, 98, 10, sel ? "#3a3c4b" : "#23242c", sel ? C.gold : null, 2);
-      text((crew.boss ? "BOSS: " : "") + crew.name, 178, y + 12, { size: 36, color: crew.boss ? C.red : C.white });
-      text(`OVR ${crew.ovr}`, 822, y + 12, { size: 32, right: true });
-      const tag = locked ? `LOCKED · ${TIERS[this.ci].bossFame} fame` : crew.beaten ? "BEATEN" : "";
-      text(tag, 822, y + 48, { size: 22, color: locked ? C.grey : C.green, right: true });
-      text(crew.players.map(p => `${p.name} (${overall(p)})`).join(",  "), 178, y + 54, { size: 23, color: C.grey, weight: 500 });
-      hit(160, y, 680, 98, () => this.pick(i));
+    text(TIERS[this.ci].court, 500, 118, { size: 44, color: C.gold, center: true, display: true });
+    if (this.ci > 0) { text("◀", 190, 118, { size: 50, center: true }); hit(160, 94, 60, 50, () => { this.ci--; this.sel = 0; }); }
+    if (this.ci < c.tier) { text("▶", 810, 118, { size: 50, center: true }); hit(780, 94, 60, 50, () => { this.ci++; this.sel = 0; }); }
+    text(`Your lineup OVR ${teamOverall(c.lineup())}  ·  crowd ${c.crowdSize()}`, 500, 156, { size: 24, color: C.grey, center: true });
+    let y = 180;
+    this.options().forEach((o, i) => {
+      const sel = i === this.sel;
+      if (o.kind === "tourney") {
+        const h = 170;
+        rrect(140, y, 720, h, 12, sel ? "#3d2f14" : "#2a2214", sel ? C.gold : "#6b5520", 2);
+        text(TIERS[this.ci].tourney, 162, y + 12, { size: 38, color: C.gold, display: true });
+        text(this.ci < TIERS.length - 1 ? `Win 3 games to advance to ${TIERS[this.ci + 1].court}` : `Win it to become ${KING}`, 162, y + 48, { size: 24, color: C.white, weight: 500 });
+        const t = c.tourney, games = bracket(this.ci, t ? t.seed : c.entries + 1);
+        ROUNDS.forEach((rn, r) => {
+          const x = 162 + r * 232, done = t && r < t.round, now = t && r === t.round;
+          rrect(x, y + 84, 220, 70, 8, now ? "#4a3a18" : "#1e1a12", now ? C.gold : null, 1.5);
+          text(rn.toUpperCase(), x + 12, y + 92, { size: 20, color: done ? C.green : now ? C.gold : C.grey, display: true });
+          text(t ? games[r].name : "???", x + 12, y + 116, { size: 24, color: t ? C.white : C.grey });
+          text(t ? `OVR ${games[r].ovr}${done ? "  ✓" : ""}` : "", x + 12, y + 136, { size: 20, color: done ? C.green : C.grey, weight: 500 });
+        });
+        text(o.game ? `▶ PLAY ${ROUNDS[t.round].toUpperCase()}` : "▶ ENTER", 838, y + 16, { size: 26, color: C.gold, right: true, display: true });
+        hit(140, y, 720, h, () => this.pick(i));
+        y += h + 14;
+      } else {
+        const g = o.game, h = 84;
+        rrect(140, y, 720, h, 10, sel ? "#3a3c4b" : "#23242c", sel ? C.gold : null, 2);
+        text(`Pickup: ${g.name}`, 162, y + 10, { size: 32 });
+        text(`OVR ${g.ovr}`, 838, y + 12, { size: 30, right: true });
+        text(g.players.map(p => `${p.pos} ${p.name} (${overall(p)})`).join(",  "), 162, y + 48, { size: 22, color: C.grey, weight: 500 });
+        hit(140, y, 720, h, () => this.pick(i));
+        y += h + 10;
+      }
     });
-    if (this.msg) text(this.msg, 500, 575, { size: 26, color: C.red, center: true });
-    this.footer("◀ ▶ change court  ·  pick a crew to play");
+    if (this.ci < c.tier) text("Already won here. Pickup games are for cash and fame.", 500, 590, { size: 22, color: C.grey, center: true, weight: 500 });
+    this.footer("◀ ▶ change court  ·  ▲▼ pick  ·  Enter to play  ·  Tournaments move you up; pickup games don't");
+  }
+}
+
+// ---------------------------------------------------------------- player market
+class MarketScreen extends Screen {
+  constructor() { super(); this.i = 0; this.msg = ""; this.c.refreshMarket(); this.c.market.seen = true; App.save(); }
+  buy(o) { const [ok, msg] = this.c.buyOffer(o); this.msg = msg; if (ok) App.save(); }
+  update() { if (this.c.refreshMarket()) { this.c.market.seen = true; this.msg = "New players just hit the market!"; App.save(); } }
+  key(k) {
+    const offers = this.c.marketOffers();
+    if (K.back(k)) App.switch(new HubScreen());
+    else if (K.up(k) || K.left(k)) this.i = (this.i - 1 + offers.length) % offers.length;
+    else if (K.down(k) || K.right(k)) this.i = (this.i + 1) % offers.length;
+    else if (K.ok(k) && offers[this.i]) this.buy(offers[this.i]);
+  }
+  draw() {
+    this.header("Player Market"); this.backButton(() => App.switch(new HubScreen()));
+    const c = this.c, offers = c.marketOffers();
+    text(`New players in ${fmtTime(c.marketLeft())}`, 500, 150, { size: 30, color: C.gold, center: true, display: true });
+    text("More fame and a better team bring more players and rarer ones.", 500, 180, { size: 23, color: C.grey, center: true, weight: 500 });
+    offers.forEach((o, n) => {
+      const x = 60 + n * 222, y = 210, w = 210, h = 330, sel = n === this.i, p = o.player, r = o.rarity;
+      rrect(x, y, w, h, 12, o.sold ? "#16171c" : "#20222c", sel ? C.gold : r.color, sel ? 3 : 2);
+      text(r.name.toUpperCase(), x + w / 2, y + 22, { size: 26, color: r.color, center: true, display: true });
+      text(p.name, x + w / 2, y + 56, { size: 30, center: true });
+      text(`${POS_NAMES[p.pos]}  ·  #${p.number}`, x + w / 2, y + 84, { size: 21, color: C.grey, center: true, weight: 500 });
+      text(`OVR ${overall(p)}`, x + w / 2, y + 122, { size: 44, color: r.color, center: true, display: true });
+      S.STATS.forEach((k, j) => {
+        const yy = y + 152 + j * 24;
+        text(S.LABEL[k].slice(0, 3).toUpperCase(), x + 16, yy, { size: 20, color: C.grey });
+        rrect(x + 58, yy + 3, 110, 9, 4, "#30323e"); rrect(x + 58, yy + 3, 110 * p.stats[k] / 99, 9, 4, r.color);
+        text(p.stats[k], x + w - 14, yy, { size: 20, right: true });
+      });
+      text(attrLabel(p), x + w / 2, y + 280, { size: 19, color: C.grey, center: true, weight: 500 });
+      if (o.sold) text("SIGNED", x + w / 2, y + 308, { size: 28, color: C.green, center: true, display: true });
+      else { rrect(x + 30, y + 294, w - 60, 30, 8, "#264a2e"); text(`Sign · $${o.price}`, x + w / 2, y + 309, { size: 24, color: C.green, center: true }); }
+      hit(x, y, w, h, () => { this.i = n; if (!o.sold) this.buy(o); });
+    });
+    for (let n = offers.length; n < 4; n++) {
+      const x = 60 + n * 222;
+      rrect(x, 210, 210, 330, 12, null, "#34363f", 1.5);
+      text("No player", x + 105, 360, { size: 26, color: "#50535f", center: true });
+      text("Earn more fame", x + 105, 388, { size: 20, color: "#50535f", center: true, weight: 500 });
+    }
+    text(`Crew ${c.crew.length}/${S.CREW_MAX}`, 500, 566, { size: 24, color: C.grey, center: true });
+    if (this.msg) text(this.msg, 500, 604, { size: 26, center: true });
+    this.footer("◀ ▶ pick  ·  Enter to sign  ·  The market refreshes every 5 minutes");
   }
 }
 
@@ -1180,7 +1393,9 @@ function drawPerson(m, a, highlight) {
   if (highlight) { const pulse = 1.5 + 1.5 * Math.sin(m.elapsed * 8); ellipse(x, y + 1, 20 + pulse, 9 + pulse / 2, null, "rgba(255,255,255,0.9)", 2); }
 
   ctx.save();
+  const sz = POS_SIZE[a.p.pos] || 1;
   ctx.translate(x, y - up + P.crouch);
+  ctx.scale(sz, sz);
   if (a.stun > 0) ctx.rotate(Math.sin(m.elapsed * 24) * 0.18);
   else if (P.lean) ctx.transform(1, 0, -P.lean / 40, 1, 0, 0);   // lean into the move
   ctx.lineCap = "round"; ctx.lineJoin = "round";
@@ -1238,7 +1453,7 @@ function drawPerson(m, a, highlight) {
     text(a.moveTag.text, x, y - up - 74 - (1 - k) * 14, { size: 22, color: a.team === 0 ? C.gold : "#ffb3aa", center: true, display: true });
     ctx.globalAlpha = 1;
   }
-  if (P.ball) return { x: x + P.ball[0] - (P.lean || 0) * P.ball[1] / 40, y: y - up + P.crouch + P.ball[1] };
+  if (P.ball) return { x: x + (P.ball[0] - (P.lean || 0) * P.ball[1] / 40) * sz, y: y - up + P.crouch + P.ball[1] * sz };
   return null;
 }
 
@@ -1319,7 +1534,8 @@ function drawCrowd(crowd, t, excite) {
 class MatchScreen extends Screen {
   constructor(ci, crew, bet = 0, mult = 1) {
     super(); Object.assign(this, { ci, crew, bet, mult, paused: false, doneT: 0 });
-    this.match = new Match(this.c.lineup(), crew.players, new Rng(), true);
+    this.scout = this.c.scouting();
+    this.match = new Match(this.c.lineup(), crew.players, new Rng(), true, S.GAME_TO, { scout: this.scout, favMove: this.c.favoriteMove() });
     this.crowdN = this.c.crowdSize();
     this.crowd = makeCrowd(this.crowdN, crew.id + ":" + this.c.fame);
     this.parts = []; this.pops = []; this.excite = 0.15; this.shake = 0; this.flash = 0; this.freeze = null; this.lastBounce = 0;
@@ -1426,6 +1642,7 @@ class MatchScreen extends Screen {
     text(`${m.score[1]}  ${this.crew.name.toUpperCase()}`, 690, 23, { size: 30, color: C.team[1], center: true, display: true });
     text(`${TIERS[this.ci].court} · crowd ${this.crowdN}`, 16, 14, { size: 22, color: C.grey });
     text(`Shot ${Math.max(0, Math.ceil(m.shotClock))}`, S.W - 16, 12, { size: 26, right: true });
+    if (this.scout >= 0.15) text(`SCOUTED ${Math.round(this.scout * 100)}%`, S.W - 16, 50, { size: 20, color: "#ff8a7a", right: true, display: true });
     if (m.needsClear) text(`${m.offense === 0 ? "YOU" : "THEY"} MUST CLEAR IT PAST THE ARC`, 500, 62, { size: 28, color: C.gold, center: true });
     [...m.messages].reverse().forEach(([msg], i) => text(msg, 500, 600 - i * 28, { size: i === 0 ? 32 : 24, center: true }));
     const ca = m.controlled, cb = m.ball;
@@ -1440,7 +1657,7 @@ class MatchScreen extends Screen {
     if (m.phase === "check") text("CHECK BALL", 500, 380, { size: 40, center: true, display: true });
     if (m.phase === "over") { const won = m.winner === 0; text(won ? "YOU WIN!" : "YOU LOSE", 500, 330, { size: 80, color: won ? C.green : C.red, center: true, display: true }); }
     if (!isTouch) {
-      text("WASD move · SHIFT sprint · hold SPACE, let go in the green · sprint at an open rim to DUNK · J pass · K move/steal · Q switch · M sound", 500, S.H - 16, { size: 20, center: true, weight: 500 });
+      text("WASD move · SHIFT sprint · SPACE shoot · J pass · K move (S back, S+A/D side) / steal · Q switch · M sound", 500, S.H - 16, { size: 20, center: true, weight: 500 });
     }
     if (this.paused) {
       rrect(290, 240, 420, 200, 12, "rgba(16,17,22,0.95)", C.grey, 1.5);
@@ -1455,41 +1672,36 @@ class MatchScreen extends Screen {
 class ResultScreen extends Screen {
   constructor(ci, crew, match, bet, mult, forfeit) {
     super(); const c = this.c;
-    Object.assign(this, { crew, match, bet, forfeit, msg: "" });
+    Object.assign(this, { ci, crew, match, bet, forfeit });
     this.won = !forfeit && match.winner === 0;
-    this.r = c.applyResult(ci, crew.id, crew.boss, this.won, Math.max(0, match.score[0] - match.score[1]), bet, mult);
+    this.r = c.applyResult(crew, this.won, Math.max(0, match.score[0] - match.score[1]), bet, mult, match.moveUse);
     this.myPts = match.mainGuy.points;
-    this.recruited = new Set();
-    this.buildMenu(); App.save();
-  }
-  buildMenu() {
-    const c = this.c, items = [];
-    if (this.won) for (const p of this.crew.players) if (!this.recruited.has(p)) items.push([`Recruit ${p.name}  OVR ${overall(p)}  $${c.recruitCost(p)}`, () => this.recruit(p)]);
+    const items = [];
+    if (this.r.nextRound) items.push([`Play the ${ROUNDS[c.tourney.round]}`, () => App.switch(new WagerScreen(ci, c.tourneyGame()))]);
     items.push(["Back to the Hub", () => App.switch(new HubScreen())]);
     this.menu = new Menu(items);
-  }
-  recruit(p) {
-    const c = this.c;
-    if (c.crew.length >= S.CREW_MAX) this.msg = "Crew is full. Release someone first.";
-    else if (c.recruit(p)) { this.msg = `${p.name} joined your crew!`; this.recruited.add(p); this.buildMenu(); App.save(); }
-    else this.msg = `Not enough cash ($${c.recruitCost(p)}).`;
+    App.save();
   }
   key(k) { this.menu.key(k); }
   draw() {
-    this.header(); const m = this.match, c = this.c;
-    text(this.forfeit ? "FORFEIT" : this.won ? "VICTORY" : "DEFEAT", 500, 122, { size: 76, color: this.won ? C.green : C.red, center: true, display: true });
-    text(`${m.score[0]} - ${m.score[1]}  vs  ${this.crew.name}`, 500, 178, { size: 36, center: true });
+    this.header(); const m = this.match, c = this.c, r = this.r;
+    const title = r.champ ? "CHAMPIONS!" : this.forfeit ? "FORFEIT" : this.won ? "VICTORY" : r.eliminated ? "ELIMINATED" : "DEFEAT";
+    text(title, 500, 122, { size: 76, color: this.won ? (r.champ ? C.gold : C.green) : C.red, center: true, display: true });
+    const where = this.crew.mode === "tourney" ? `${TIERS[this.crew.court].tourney} · ${ROUNDS[this.crew.round]}` : "Pickup game";
+    text(`${m.score[0]} - ${m.score[1]}  vs  ${this.crew.name}  ·  ${where}`, 500, 178, { size: 32, center: true });
     text(`You scored ${this.myPts}`, 500, 212, { size: 28, color: C.grey, center: true });
-    const lines = [this.r.fame >= 0 ? `+${this.r.fame} fame` : `${this.r.fame} fame`, `+$${this.r.cash}`];
-    if (this.r.tips) lines.push(`+$${this.r.tips} crowd tips`);
-    if (this.bet) lines.push(this.won ? `Bet paid $${this.r.betWin}!` : `Lost your $${this.bet} bet`);
-    text(lines.join("     "), 500, 254, { size: 34, color: this.r.fame < 0 ? "#ff9a8a" : C.gold, center: true });
-    if (this.r.fame < 0) text("Losses cost more fame the more famous you are.", 500, 290, { size: 22, color: C.grey, center: true, weight: 500 });
-    if (this.r.tierUp) text(`FAME UP! You're now ${c.title}. ${TIERS[c.tier].court} unlocked!`, 500, 298, { size: 34, color: C.gold, center: true });
-    if (this.r.crowned) text(`YOU ARE THE ${KING.toUpperCase()}!`, 500, 298, { size: 40, color: C.gold, center: true, display: true });
-    if (this.won) text(`Recruit one of them? (crew ${c.crew.length}/${S.CREW_MAX})`, 500, 345, { size: 26, color: C.grey, center: true });
-    this.menu.draw(500, 390, 46, 32);
-    if (this.msg) text(this.msg, 500, 610, { size: 26, center: true });
+    const lines = [r.fame >= 0 ? `+${r.fame} fame` : `${r.fame} fame`, `+$${r.cash}`];
+    if (r.tips) lines.push(`+$${r.tips} crowd tips`);
+    if (this.bet) lines.push(this.won ? `Bet paid $${r.betWin}!` : `Lost your $${this.bet} bet`);
+    text(lines.join("     "), 500, 254, { size: 34, color: r.fame < 0 ? "#ff9a8a" : C.gold, center: true });
+    let y = 300;
+    if (r.fame < 0) { text("Losses cost more fame the more famous you are.", 500, y, { size: 22, color: C.grey, center: true, weight: 500 }); y += 34; }
+    if (r.eliminated) { text("You're out of the tournament. Enter again from Play.", 500, y, { size: 26, color: C.white, center: true }); y += 36; }
+    if (r.nextRound) { text(`On to the ${ROUNDS[c.tourney.round]}!`, 500, y, { size: 32, color: C.gold, center: true, display: true }); y += 40; }
+    if (r.tierUp) { text(`You won the ${TIERS[this.crew.court].tourney}! ${TIERS[c.tier].court} unlocked.`, 500, y, { size: 30, color: C.gold, center: true }); y += 38; }
+    if (r.crowned) { text(`YOU ARE THE ${KING.toUpperCase()}!`, 500, y, { size: 40, color: C.gold, center: true, display: true }); y += 44; }
+    if (r.tierUp && c.scouting() >= 0.15) { text(`You moved up fast. Teams are scouting you (${Math.round(c.scouting() * 100)}%).`, 500, y, { size: 24, color: "#ff8a7a", center: true }); y += 34; }
+    this.menu.draw(500, Math.max(420, y + 30), 48, 34);
   }
 }
 
@@ -1514,12 +1726,12 @@ class CrewScreen extends Screen {
   draw() {
     this.header("Your Crew"); this.backButton(() => App.switch(new HubScreen()));
     const c = this.c, me = c.me;
-    text(`YOU  #${me.number} ${me.name}  OVR ${overall(me)}`, 80, 150, { size: 28, color: C.gold });
+    text(`YOU  ${me.pos}  #${me.number} ${me.name}  OVR ${overall(me)}`, 80, 150, { size: 28, color: C.gold });
     text(`${statLine(me)}   ${attrLabel(me)}`, 80, 176, { size: 22, color: C.grey, weight: 500 });
     c.crew.forEach((p, i) => {
       const y = 214 + i * 62, sel = i === this.i, starter = c.starters.includes(i);
       rrect(60, y - 6, 700, 56, 8, sel ? "#34364a" : null, sel ? C.gold : null, 1.5);
-      text(`#${p.number} ${p.name}  OVR ${overall(p)}${starter ? "  · STARTER" : ""}`, 80, y, { size: 28, color: starter ? C.green : C.white });
+      text(`${p.pos}  #${p.number} ${p.name}  OVR ${overall(p)}${starter ? "  · STARTER" : ""}`, 80, y, { size: 28, color: starter ? C.green : C.white });
       text(`${statLine(p)}   ${attrLabel(p)}`, 80, y + 26, { size: 22, color: C.grey, weight: 500 });
       hit(60, y - 6, 700, 56, () => { this.i = i; });
       if (sel) {
@@ -1740,5 +1952,5 @@ window.claude?.hot?.snapshot?.(() => ({ career: App.career ? JSON.parse(JSON.str
 const boot = () => window.claude?.hot?.ready ? window.claude.hot.ready(start) : start(window.claude?.hot?.data ?? {});
 (document.fonts && document.fonts.load ? Promise.all([document.fonts.load('20px Bungee'), document.fonts.load('700 20px "Barlow Semi Condensed"'), document.fonts.load('500 20px "Barlow Semi Condensed"')]).catch(() => {}) : Promise.resolve()).then(boot, boot);
 // Test hook (used only by automated checks)
-window.__SK = { App, Match, Career, Luck, Rng, crewPlayers, overall, blankInputs, MatchScreen, HubScreen, CourtScreen, AttrScreen, SlotScreen, ResultScreen };
+window.__SK = { MarketScreen, bracket, App, Match, Career, Luck, Rng, crewPlayers, overall, blankInputs, MatchScreen, HubScreen, CourtScreen, AttrScreen, SlotScreen, ResultScreen };
 </script>
