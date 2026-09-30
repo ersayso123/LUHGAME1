@@ -232,7 +232,16 @@ class Actor {
   maxSpeed() { let s = this.baseSpeed(); if (this.sprinting && this.stamina > 0.02) s *= S.SPRINT; if (this.burst > 0) s *= 1.2; return s; }
   get onFire() { return this.streak >= 2; }
 }
-const blankInputs = () => ({ move: [0, 0], shootPressed: false, shootDown: false, passPressed: false, movePressed: false, switchPressed: false, sprint: false });
+const blankInputs = () => ({ move: [0, 0], shootPressed: false, shootDown: false, passPressed: false, movePressed: false, switchPressed: false, sprint: false, coachAccept: false, coachIgnore: false });
+
+// Coach's play calls: accept (E) or ignore (X). Run it and score to calm your nerves.
+const PLAYS = [
+  { id: "post", name: "Feed the post", desc: "Get it inside to your big and let them score.", check: (m, sh, info) => sh.team === 0 && (sh.p.pos === "C" || sh.p.pos === "PF") && sh !== m.mainGuy },
+  { id: "three", name: "Space the floor", desc: "Hit a shot from outside the arc.", check: (m, sh, info) => info.points === 2 },
+  { id: "rim", name: "Attack the rim", desc: "Finish with a layup or a dunk.", check: (m, sh, info) => info.kind === "layup" || info.kind === "dunk" },
+  { id: "swing", name: "Swing it", desc: "Make 2 passes, then score.", check: (m, sh, info) => m.poss.passes >= 2 },
+  { id: "iso", name: "Iso your star", desc: "Clear out. You take the shot.", check: (m, sh, info) => sh === m.mainGuy },
+];
 
 class Match {
   constructor(teamA, teamB, rng, human = true, gameTo = S.GAME_TO, opts = {}) {
@@ -240,7 +249,10 @@ class Match {
     this.scout = opts.scout || 0;            // 0..1: how well the other team has studied you
     this.favMove = opts.favMove || null;     // your most-used dribble move; scouted teams see it coming
     this.moveUse = {};
-    this.box = { pts: 0, fga: 0, fgm: 0, greens: 0, ankles: 0, to: 0 };   // your main player's stat line (the scout reads this)
+    this.box = { pts: 0, fga: 0, fgm: 0, greens: 0, ankles: 0, to: 0, plays: 0 };   // your main player's stat line (the scout reads this)
+    // hostile crowd: pressure builds (0..1) and rattles you; only in loud gyms
+    this.pressureOn = !!opts.pressure; this.pressureBase = opts.pressure || 0; this.pressure = this.pressureBase;
+    this.coach = null; this.coachCool = 4; this.poss = { passes: 0 };
     this.actors = [...teamA.map((p, i) => new Actor(p, 0, i)), ...teamB.map((p, i) => new Actor(p, 1, i))];
     this.ball = new Ball(); this.score = [0, 0]; this.winner = null; this.messages = [];
     this.meter = null; this.elapsed = 0; this.controlled = this.team(0)[0];
@@ -261,8 +273,10 @@ class Match {
     this.team(1 - team).forEach((d, i) => { const sp = spots[i]; const [ux, uy] = norm(S.HOOP[0] - sp[0], S.HOOP[1] - sp[1]); d.x = sp[0] + ux * 40; d.y = sp[1] + uy * 40; d.fx = -ux; d.fy = -uy; d.stun = 0; d.spot = null; });
     this.ball.setHeld(this.team(team)[0]);
     if (this.human) this.controlled = this.team(0)[0];
+    if (team === 0) this.startPossession(); else this.endPossession(false);
   }
   turnover(t, clear = true) {
+    if (t === 1) this.endPossession(false); else this.startPossession();
     this.offense = t; this.needsClear = clear; this.shotClock = S.SHOT_CLOCK; this.meter = null;
     for (const a of this.actors) { a.holdT = 0; a.spot = null; }
     if (this.human && t === 1) this.controlled = this.mainGuy;
@@ -279,6 +293,15 @@ class Match {
       if (this.phase !== "live") a.moveAmt = Math.max(0, a.moveAmt - dt * 4);
     }
     this.fx.swish = Math.max(0, this.fx.swish - dt); this.fx.shake = Math.max(0, this.fx.shake - dt);
+    if (this.pressureOn && this.phase !== "over") {
+      const clutch = Math.max(...this.score) >= this.gameTo - 2 ? 0.2 : 0;
+      this.pressure += (Math.min(1, this.pressureBase + clutch) - this.pressure) * Math.min(1, dt * 0.08);
+    }
+    this.coachCool = Math.max(0, this.coachCool - dt);
+    if (this.coach && this.coach.state === "offer") {
+      if (inp && inp.coachAccept) { this.coach.state = "active"; this.say(`Running: ${this.coach.play.name}`, 1.4); this.nerves(-0.05); }
+      else if ((inp && inp.coachIgnore) || (this.coach.t -= dt) <= 0) { this.coach = null; this.coachCool = 6; }
+    }
     for (const m of this.messages) m[1] -= dt;
     this.messages = this.messages.filter(m => m[1] > 0);
     if (this.phase === "over") return;
@@ -412,10 +435,29 @@ class Match {
     return it;
   }
   // The green zone shrinks the farther out you shoot and the worse your Shooting rating is.
+  get rattled() { return this.pressureOn && this.pressure >= 0.7; }
+  nerves(d) { if (this.pressureOn) this.pressure = clamp(this.pressure + d, 0, 1); }
+  // ---- coach plays
+  startPossession() {
+    this.poss = { passes: 0 };
+    if (!this.human || this.coach || this.coachCool > 0 || this.rng.random() > 0.45) return;
+    const play = this.rng.choice(PLAYS);
+    this.coach = { play, state: "offer", t: 5 };
+  }
+  endPossession(made, sh, info) {
+    const c = this.coach;
+    if (!c || c.state !== "active") { if (c && c.state === "offer") this.coach = null; return; }
+    if (made && sh.team === 0 && c.play.check(this, sh, info)) {
+      this.box.plays++; this.nerves(-0.3); this.say("PLAY RAN! Coach is fired up", 1.6);
+      this.events.push({ type: "play", ok: true, name: c.play.name });
+    } else { this.nerves(0.08); this.say("The play broke down", 1.2); this.events.push({ type: "play", ok: false }); }
+    this.coach = null; this.coachCool = 8;
+  }
   meterWindow(a) {
     const t = clamp((dist(a.pos, S.HOOP) - 60) / (S.ARC + 90 - 60), 0, 1);
     const skill = 0.4 + a.p.stats.shooting / 99 * 0.9;            // 40 shooting ≈ 0.76x, 80 ≈ 1.13x
-    return (S.WIN_NEAR + (S.WIN_FAR - S.WIN_NEAR) * t) * skill + a.eff("meter") + (a.stepBackT > 0 ? 0.015 : 0) + (a.onFire ? 0.012 : 0);
+    const nervous = this.pressureOn && a.team === 0 ? (this.pressure >= 0.7 ? 0.7 : this.pressure >= 0.5 ? 0.86 : 1) : 1;
+    return (S.WIN_NEAR + (S.WIN_FAR - S.WIN_NEAR) * t) * skill * nervous + a.eff("meter") + (a.stepBackT > 0 ? 0.015 : 0) + (a.onFire ? 0.012 : 0);
   }
   meterQuality(a, m) { const w = this.meterWindow(a), off = Math.abs(m - S.METER_SWEET); return off <= w ? 1 - 0.5 * off / w : Math.max(-1, -(off - w) / 0.25); }
   pickPassTarget(a, dir) {
@@ -452,6 +494,10 @@ class Match {
     }
     return clamp(base, 0.02, 0.95);
   }
+  playFits(a, kind, pts) {
+    const c = this.coach; if (!c || c.state !== "active" || a.team !== 0) return false;
+    return c.play.check(this, a, { kind, points: pts });
+  }
   takeShot(a, kind, quality = 0, green = false) {
     const d = dist(a.pos, S.HOOP), pts = kind === "jumper" ? shotPoints(a.pos) : 1;
     if (a === this.mainGuy) { this.box.fga++; if (green) this.box.greens++; }
@@ -472,7 +518,7 @@ class Match {
         }
       }
     }
-    const made = green || this.rng.random() < this.makeChance(a, kind, quality);
+    const made = green || this.rng.random() < this.makeChance(a, kind, quality) + (this.playFits(a, kind, pts) ? 0.06 : 0);
     const dur = kind === "dunk" ? 0.28 : kind === "layup" ? 0.4 : 0.38 + d / 900;
     this.ball.startShot(a, S.HOOP, dur, made, pts, kind === "dunk");
     this.ball.green = green; this.ball.kind = kind;
@@ -486,7 +532,7 @@ class Match {
     const [dd, dfd] = this.nearestOpp(a);
     if (dfd && dd < 60 && dfd.stun <= 0 && !dfd.anim) dfd.setAnim("jump", 0.45);
   }
-  passBall(a, target) { a.holdT = 0; a.setAnim("pass", 0.3); this.ball.startPass(a, target, S.PASS_SPEED * (1 + a.eff("pass"))); }
+  passBall(a, target) { if (a.team === 0) this.poss.passes++; a.holdT = 0; a.setAnim("pass", 0.3); this.ball.startPass(a, target, S.PASS_SPEED * (1 + a.eff("pass"))); }
   // Dribble moves follow the direction held when K is pressed (screen directions; the hoop is up).
   //   side only → crossover that way · up + side → crossover drive · down → step back
   //   up only → hesi-go · nothing → hesitation
@@ -531,6 +577,7 @@ class Match {
         dfd.stun = mv.stun; dfd.vx *= 0.2; dfd.vy *= 0.2;
         this.events.push({ type: "ankles", x: dfd.x, y: dfd.y, team: a.team });
         if (a === this.mainGuy) this.box.ankles++;
+        if (a.team === 0) this.nerves(-0.1);
       } else if (read) {
         dfd.moveTag = { text: "READ IT!", t: 0.8 };
         this.say(type === "stepback" ? `${a.p.name} stepped back on ${dfd.p.name}!` : type === "hesi" ? `${a.p.name} froze ${dfd.p.name}!` : `${a.p.name} broke ${dfd.p.name}'s ankles!`);
@@ -542,7 +589,7 @@ class Match {
     if (dist(a.pos, h.pos) > S.STEAL_RANGE) { a.cool = 0.4; return; }
     a.cool = 0.9; a.setAnim("reach", 0.3);
     const ch = S.STEAL_BASE + (a.p.stats.defense - h.p.stats.handles) / 250 + a.eff("steal");
-    if (this.rng.random() < clamp(ch, 0.03, 0.6)) { if (h === this.mainGuy) this.box.to++; this.ball.setHeld(a); this.turnover(a.team); this.say(`Stolen by ${a.p.name}!`); this.events.push({ type: "steal", x: a.x, y: a.y, team: a.team }); }
+    if (this.rng.random() < clamp(ch, 0.03, 0.6)) { if (h === this.mainGuy) this.box.to++; if (h.team === 0) this.nerves(0.15); this.ball.setHeld(a); this.turnover(a.team); this.say(`Stolen by ${a.p.name}!`); this.events.push({ type: "steal", x: a.x, y: a.y, team: a.team }); }
     else a.stun = 0.2;
   }
   updateBall(dt) {
@@ -555,7 +602,7 @@ class Match {
         if (dist([b.x, b.y], dfd.pos) < 16) {
           b.checked.add(dfd);
           const ch = 0.28 * dfd.p.stats.defense / 80 - b.passer.eff("pass") * 0.8 + dfd.eff("steal");
-          if (this.rng.random() < clamp(ch, 0.02, 0.7)) { if (b.passer === this.mainGuy) this.box.to++; b.setHeld(dfd); this.turnover(dfd.team); this.say(`Picked off by ${dfd.p.name}!`); return; }
+          if (this.rng.random() < clamp(ch, 0.02, 0.7)) { if (b.passer === this.mainGuy) this.box.to++; if (b.passer.team === 0) this.nerves(0.15); b.setHeld(dfd); this.turnover(dfd.team); this.say(`Picked off by ${dfd.p.name}!`); return; }
         }
       }
       if (dist([b.x, b.y], b.receiver.pos) < 16) b.setHeld(b.receiver);
@@ -574,6 +621,8 @@ class Match {
       const wasHot = sh.onFire;
       if (b.swish) sh.streak++;
       this.events.push({ type: "make", kind: b.kind, green: b.green, swish: b.swish, points: b.points, team: sh.team, fire: sh.onFire, newFire: sh.onFire && !wasHot, name: sh.p.name });
+      if (sh.team === 0) { this.nerves(b.green ? -0.25 : b.kind === "dunk" ? -0.2 : -0.12); this.endPossession(true, sh, { kind: b.kind, points: b.points }); }
+      else this.nerves(0.12);
       if (sh.onFire && !wasHot) this.say(`${sh.p.name} is ON FIRE!`, 2);
       if (this.score[sh.team] >= this.gameTo) { this.phase = "over"; this.winner = sh.team; return; }
       this.offense = sh.team; this.phase = "scored"; this.phaseT = 0.6;
@@ -581,6 +630,7 @@ class Match {
       if (sh.onFire) this.say(`${sh.p.name} cooled off`, 1.2);
       sh.streak = 0;
       this.events.push({ type: "miss", team: sh.team });
+      if (sh.team === 0) this.nerves(0.07);
       this.fx.shake = Math.max(this.fx.shake, 0.12);
       const ang = this.rng.uniform(0.15 * Math.PI, 0.85 * Math.PI), spd = this.rng.uniform(90, 220);
       b.setLoose(S.HOOP[0], S.HOOP[1] + 6, Math.cos(ang) * spd, Math.sin(ang) * spd, 6, 0.12, this.rng.uniform(170, 260));
@@ -607,6 +657,22 @@ class Match {
 const AI = (() => {
   const OFF = [[250, 190], [750, 190], [330, 360], [670, 360], [500, 420], [430, 170], [570, 170], [190, 110], [810, 110]];
   const DEEP = [[270, 400], [730, 400], [500, 480], [170, 230], [830, 230]];
+  // Where each role likes to play. Bigs live in the paint unless an attribute lets them stretch the floor.
+  const SPOTS = {
+    big: [[445, 150], [555, 150], [425, 205], [575, 205], [500, 250], [470, 120], [530, 120]],
+    guard: [[500, 430], [330, 400], [670, 400], [250, 300], [750, 300]],
+    wing: [[160, 110], [840, 110], [240, 250], [760, 250], [330, 380], [670, 380]],
+    stretch: [[160, 110], [840, 110], [250, 300], [750, 300], [450, 160], [550, 160]],
+  };
+  const STRETCH = ["sharpshooter", "playmaker", "speedster"];
+  function role(a) {
+    const pos = a.p.pos || "SF";
+    if (pos === "C" || pos === "PF") {
+      const has = k => (a.p.main === k && a.p.mainLvl > 0) || (a.p.sec === k && a.p.secLvl > 0);
+      return STRETCH.some(has) ? "stretch" : "big";
+    }
+    return pos === "PG" || pos === "SG" ? "guard" : "wing";
+  }
   const I = (o = {}) => ({ move: [0, 0], action: null, target: null, quality: 0, kind: null, green: false, moveType: null, ...o });
   function toward(a, pt, slow = 18) { const dx = pt[0] - a.x, dy = pt[1] - a.y, d = Math.hypot(dx, dy); if (d < 4) return [0, 0]; const k = Math.min(1, d / slow); return [dx / d * k, dy / d * k]; }
   // AI "hits the green" about as often as a player of that skill would; otherwise a mistimed release.
@@ -631,15 +697,21 @@ const AI = (() => {
       if (kind === "dunk") return I({ action: "shoot", kind });
       if (kind === "layup" && (nd > 22 || r() < 0.6)) return I({ action: "shoot", kind });
       if (d <= S.LAYUP && nd > 30) return I({ action: "shoot", kind: "layup" });
-      const desperate = a.holdT > 3.5 || m.shotClock < 2, open = nd > 38 && d < S.ARC + 70;
-      const bias = a.p.stats.shooting / 99 + a.eff("deep") * 4;
+      const rl = role(a);
+      const desperate = a.holdT > 3.5 || m.shotClock < 2;
+      const range = rl === "big" ? S.ARC - 20 : S.ARC + 70;       // a traditional big only shoots inside the arc
+      const open = nd > 38 && d < range;
+      const bias = a.p.stats.shooting / 99 + a.eff("deep") * 4 + (rl === "guard" ? 0.1 : 0);
       if (desperate || (open && r() < 0.3 + 0.35 * bias)) return jumper(m, a);
+      // a big catching it outside works back toward the rim (post up)
+      if (rl === "big" && d > 150) { a.spot = clampCourt(S.HOOP[0] + (a.x - S.HOOP[0]) * 0.25, S.HOOP[1] + 70); return I({ move: toward(a, a.spot) }); }
     }
     const mates = m.team(a.team).filter(t => t !== a);
     const best = mates.reduce((p, q) => m.openness(q) > m.openness(p) ? q : p);
     if (m.openness(best) > nd + 35 && r() < 0.35 + a.eff("pass")) return I({ action: "pass", target: best });
     if (m.needsClear && a.holdT > 2.5 && r() < 0.3) return I({ action: "pass", target: best });
-    if (dfd && nd < 45 && a.cool <= 0 && r() < 0.3 + a.eff("cross")) {
+    const handle = { guard: 0.38, wing: 0.28, stretch: 0.2, big: 0.08 }[role(a)];
+    if (dfd && nd < 45 && a.cool <= 0 && r() < handle + a.eff("cross")) {
       const side = dfd.x < a.x ? 1 : -1;                              // go away from the defender
       const nearArc = d > S.ARC - 40 && d < S.ARC + 60;
       const roll = r();
@@ -655,7 +727,7 @@ const AI = (() => {
   function offBall(m, a, dt) {
     a.spotT -= dt;
     if (!a.spot || a.spotT <= 0) {
-      const spots = m.needsClear ? DEEP : OFF;
+      const spots = m.needsClear ? DEEP : SPOTS[role(a)];
       const taken = m.team(a.team).filter(t => t !== a && t.spot).map(t => t.spot);
       const opts = spots.filter(s => taken.every(t => dist(s, t) > 120));
       a.spot = m.rng.choice(opts.length ? opts : spots); a.spotT = m.rng.uniform(1.5, 3.5);
@@ -666,7 +738,11 @@ const AI = (() => {
     const man = m.team(1 - a.team)[a.slot], b = m.ball, onBall = b.state === "held" && b.holder === man;
     const sc = a.team === 1 ? m.scout : 0;
     const tight = onBall ? 26 - 6 * sc : 55 - 18 * sc, [ux, uy] = norm(S.HOOP[0] - man.x, S.HOOP[1] - man.y);
-    const it = I({ move: toward(a, [man.x + ux * tight, man.y + uy * tight], 10) });
+    let gp = [man.x + ux * tight, man.y + uy * tight];
+    if (role(a) === "big" && !onBall && beyondArc(man.pos)) {    // stay home in the paint
+      const k = 0.55; gp = [gp[0] + (S.HOOP[0] - gp[0]) * k, gp[1] + (S.HOOP[1] + 70 - gp[1]) * k];
+    }
+    const it = I({ move: toward(a, gp, 10) });
     if (onBall && a.cool <= 0 && dist(a.pos, man.pos) < S.STEAL_RANGE) {
       const rate = 0.6 * (a.p.stats.defense / 99 + a.eff("steal") * 3) * (1 + sc);
       if (m.rng.random() < rate * dt) it.action = "steal";
@@ -674,7 +750,8 @@ const AI = (() => {
     return it;
   }
   function rebound(m, a) {
-    const ang = Math.atan2(a.y - S.HOOP[1], a.x - S.HOOP[0]), r = a.team !== m.ball.shooter.team ? 60 : 80;
+    const rl = role(a), ang = Math.atan2(a.y - S.HOOP[1], a.x - S.HOOP[0]);
+    const r = rl === "big" || rl === "stretch" ? 45 : rl === "guard" ? 130 : a.team !== m.ball.shooter.team ? 60 : 80;
     const it = I({ move: toward(a, [S.HOOP[0] + Math.cos(ang) * r, S.HOOP[1] + Math.max(20, Math.sin(ang) * r)]) });
     if (m.ball.dur - m.ball.t < 0.15 && dist(a.pos, S.HOOP) < 100) it.action = "jump";
     return it;
@@ -699,7 +776,7 @@ const AI = (() => {
     if (b.state === "shot") return rebound(m, a);
     return a.team === m.offense ? offBall(m, a, dt) : defend(m, a, dt);
   }
-  return { decide };
+  return { decide, role };
 })();
 
 // =====================================================================
@@ -708,7 +785,7 @@ const AI = (() => {
 // The story: your last high school tournament (scouts watching), then your pro team's farm chain.
 // Opponents are rated above you on purpose: it's a grind.
 const TIERS = [
-  { name: "High School", title: "High School Senior", court: "Eastside High Blacktop", tourney: "Senior State Championship", base: 47, crews: ["Westview Wolves", "Central Tigers", "Northgate Eagles"] },
+  { name: "High School", title: "High School Senior", court: "Eastside High Gym", tourney: "Senior State Championship", base: 47, crews: ["Westview Wolves", "Central Tigers", "Northgate Eagles"] },
   { name: "Hustle League", title: "Hustler", court: "Eastside Rec Center Gym", tourney: "Hustle Classic", base: 50, crews: ["Late Night Runners", "Gym Rats", "The Grinders"] },
   { name: "Rec League", title: "Rec League Rookie", court: "Rusty Rim Park", tourney: "Rec League Cup", base: 54, crews: ["Corner Kids", "Rec League Rejects", "The Rust Kings"] },
   { name: "Minor League", title: "Minor Leaguer", court: "Southside Blacktop", tourney: "Minor League Showdown", base: 63, crews: ["Southside Swingers", "Block Party", "Blacktop Bullies"] },
@@ -735,7 +812,7 @@ function gradeOf(score) { return score >= 85 ? "A" : score >= 70 ? "B" : score >
 // One high school game, as the scout sees it (0-100)
 function scoutGameScore(won, margin, box) {
   const fg = box.fga ? box.fgm / box.fga : 0.45;
-  return clamp(Math.round(40 + (won ? 20 : -10) + 1.5 * margin + 1.5 * box.pts + 3 * box.greens + 2 * box.ankles + 40 * (fg - 0.45) - 4 * box.to), 0, 100);
+  return clamp(Math.round(40 + (won ? 20 : -10) + 1.5 * margin + 1.5 * box.pts + 3 * box.greens + 2 * box.ankles + 3 * (box.plays || 0) + 40 * (fg - 0.45) - 4 * box.to), 0, 100);
 }
 const KING = "King of the Courts";
 const ROUNDS = ["Quarterfinal", "Semifinal", "Final"];
@@ -869,7 +946,7 @@ function marketOdds(luck) { const w = RARITY.map(r => r.w * (1 + r.boost * luck)
 class Career {
   constructor(d) {
     Object.assign(this, { cash: 100, fame: 0, tier: 0, champion: false, starters: [0, 1], tourney: null, entries: 0, titles: 0, games: 0, market: null, moves: {},
-      stage: "hs", team: null, startTier: 0, gamesAtDraft: 0, hsLog: [], hsDone: false, hsChamp: false, draftGrade: null, gold: false, ladder: 2 }, d);
+      stage: "hs", team: null, startTier: 0, gamesAtDraft: 0, hsLog: [], hsDone: false, hsChamp: false, draftGrade: null, gold: false, ladder: 2, hustleLog: [], hustleChamp: false, hustlePending: false }, d);
     // older saves: give everyone a position
     if (!this.me.pos) this.me.pos = "SF";
     for (const p of this.crew) if (!p.pos) p.pos = guessPos(p);
@@ -895,14 +972,16 @@ class Career {
   get title() { return this.gold ? "Olympic Gold Medalist" : this.champion ? KING : TIERS[this.tier].title; }
   get lowestCourt() { return this.stage === "pro" ? 1 : 0; }
   // ---- the scout's verdict on your high school tournament
-  scoutReport() {
-    const games = this.hsLog, n = games.length || 1;
+  scoutReport(which = "hs") {
+    const hustle = which === "hustle";
+    const games = hustle ? this.hustleLog : this.hsLog, n = games.length || 1, champ = hustle ? this.hustleChamp : this.hsChamp;
     const avg = games.reduce((a, g) => a + g.score, 0) / n;
     const wins = games.filter(g => g.won).length;
-    const score = clamp(Math.round(avg + 5 * wins + (this.hsChamp ? 10 : 0)), 0, 100);
+    const score = clamp(Math.round(avg + 5 * wins + (champ ? 10 : 0)), 0, 100);
     const tot = games.reduce((t, g) => { for (const k in g.box) t[k] = (t[k] || 0) + g.box[k]; return t; }, {});
     const notes = [];
-    if (this.hsChamp) notes.push("Led the team to the state title.");
+    if (champ) notes.push(hustle ? "Won the Hustle Classic." : "Led the team to the state title.");
+    if (games.some(g => g.box.plays)) notes.push("Runs the coach's plays. Coachable.");
     if ((tot.greens || 0) >= 3) notes.push("Knockdown shooter. Hits the green under pressure.");
     if ((tot.ankles || 0) >= 2) notes.push("Handles for days. Defenders end up on the floor.");
     if (tot.fga && tot.fgm / tot.fga < 0.35) notes.push("Shot selection needs work.");
@@ -910,6 +989,14 @@ class Career {
     if ((tot.pts || 0) / n >= 6) notes.push("Can carry the scoring load.");
     if (!notes.length) notes.push(score >= 55 ? "Solid, but didn't stand out." : "Not ready yet. Needs to put in work.");
     return { games, avg: Math.round(avg), wins, score, grade: gradeOf(score), notes, tot };
+  }
+  // ---- after the Hustle Classic: A = Minor League, B/C = Rec League, D/F = stay and grind
+  hustleVerdict(rep) {
+    if (!this.hustlePending) return null;
+    const to = rep.grade === "A" ? 3 : (rep.grade === "B" || rep.grade === "C") ? 2 : HUSTLE;
+    this.tier = Math.max(this.tier, to);
+    this.hustlePending = false; this.hustleLog = []; this.hustleChamp = false;
+    return { tier: to, stayed: to === HUSTLE };
   }
   // ---- the scout's team signs you; your grade decides where you start in the chain
   recruit(rep) {
@@ -957,6 +1044,8 @@ class Career {
     this.games++;
     const hs = crew.mode === "tourney" && this.stage === "hs";
     if (hs && box) { r.scout = scoutGameScore(won, margin, box); this.hsLog.push({ round: crew.round, opp: crew.name, won, margin, score: r.scout, box: { ...box } }); }
+    const hustleT = crew.mode === "tourney" && ci === HUSTLE && this.stage === "pro";
+    if (hustleT && box) { r.scout = scoutGameScore(won, margin, box); this.hustleLog.push({ round: crew.round, opp: crew.name, won, margin, score: r.scout, box: { ...box } }); }
     for (const [k, v] of Object.entries(moveUse)) this.moves[k] = (this.moves[k] || 0) + v;
     // the qualifier series: best of 3
     if (hs && crew.round === -1) {
@@ -980,6 +1069,9 @@ class Career {
         else if (hs) {   // state champions: the scout has seen enough
           r.champ = true; this.titles++; this.tourney = null; this.hsChamp = true; this.hsDone = true; r.hsDone = true;
           r.fame += 30; r.cash += 150;
+        } else if (hustleT) {   // Hustle Classic champs: the scout decides where you go
+          r.champ = true; this.titles++; this.tourney = null; this.hustleChamp = true; this.hustlePending = true; r.hustleDone = true;
+          r.fame += 20;
         } else {   // won the whole tournament
           r.champ = true; this.titles++; this.tourney = null;
           r.fame += 40 + 10 * ci; r.cash += 250 + 150 * ci;
@@ -990,7 +1082,7 @@ class Career {
       }
     } else {
       r.fame = -this.fameLoss(); r.cash = 10;
-      if (crew.mode === "tourney") { this.tourney = null; r.eliminated = true; if (hs) { this.hsDone = true; r.hsDone = true; } }
+      if (crew.mode === "tourney") { this.tourney = null; r.eliminated = true; if (hs) { this.hsDone = true; r.hsDone = true; } if (hustleT) { this.hustlePending = true; r.hustleDone = true; } }
     }
     if (ci === HUSTLE) { r.cash = 0; r.tips = 0; r.hustle = true; }   // nobody pays you in the Hustle League
     if (hs) { r.cash = 0; r.tips = 0; r.betWin = 0; }                 // amateurs: no money in high school
@@ -1055,8 +1147,8 @@ class Career {
   }
   toggleStarter(i) { if (!this.starters.includes(i)) this.starters = [this.starters[this.starters.length - 1], i]; }
   toJSON() {
-    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder } = this;
-    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder };
+    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending } = this;
+    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending };
   }
 }
 
@@ -1122,8 +1214,8 @@ function circle(x, y, r, fill, stroke, lw = 1) {
 function line(x1, y1, x2, y2, color, w) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.strokeStyle = color; ctx.lineWidth = w; ctx.stroke(); }
 
 const THEMES = [
-  // Eastside High Blacktop: school maroon and gold
-  { asphalt: "#3a3d47", surround: "#2e5a36", line: "#f2d16b", paint: "#7a1f2b", fence: "#8a8a8a" },
+  // Eastside High gym: school maroon and gold, packed bleachers
+  { indoor: "gym", asphalt: "#d6a468", plank: "#c08d55", surround: "#3a2328", line: "#f2d16b", paint: "#7a1f2b", fence: "#5a2630", banner: "EASTSIDE HIGH" },
   // Hustle League: an old rec-center gym (wood floor, bleachers, cinder-block walls)
   { indoor: "gym", asphalt: "#c89258", plank: "#b27d47", surround: "#4a4038", line: "#f4f1ea", paint: "#2f5fa8", fence: "#6b5238", banner: "HUSTLE LEAGUE" },
   { cracks: true, asphalt: "#4e5056", surround: "#3e693a", line: "#e1e1d7", paint: "#965032", fence: "#787878" },
@@ -1223,6 +1315,18 @@ const Sound = {
   steal() { this.tone(700, 0.08, "square", 0.05, 900); },
   whoosh(big) { this.noise(big ? 0.22 : 0.16, "bandpass", big ? 1400 : 1900, 1.2, big ? 0.16 : 0.11, 0.02); this.tone(big ? 90 : 120, 0.09, "sine", 0.14, 60); },
   cheer(size, big) { const g = Math.min(0.32, 0.03 + size / 140 * 0.22) * (big ? 1.4 : 1); this.noise(big ? 1.8 : 1.1, "bandpass", 1100, 0.45, g, 0.18); this.noise(big ? 1.6 : 1.0, "bandpass", 2400, 0.6, g * 0.5, 0.2); },
+  boo(level) {   // a low, wavering crowd boo
+    if (!this.on || !this.ctx) return;
+    const c = this.ctx, t = c.currentTime, g = this.out(), f = c.createBiquadFilter();
+    f.type = "lowpass"; f.frequency.value = 420; f.connect(g);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.05 + 0.1 * level, t + 0.25); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.6);
+    for (const [fq, det] of [[118, 0], [131, 4], [104, -5], [146, 7]]) {
+      const o = c.createOscillator(), lfo = c.createOscillator(), lg = c.createGain();
+      o.type = "sawtooth"; o.frequency.value = fq; o.detune.value = det * 10; lfo.frequency.value = 4 + Math.random() * 2; lg.gain.value = 6;
+      lfo.connect(lg); lg.connect(o.frequency); o.connect(f); o.start(t); lfo.start(t); o.stop(t + 1.7); lfo.stop(t + 1.7);
+    }
+    this.noise(1.4, "bandpass", 700, 0.6, 0.05 + 0.08 * level, 0.3);
+  },
   groan(size) { const g = Math.min(0.15, 0.02 + size / 140 * 0.1); this.noise(0.8, "lowpass", 500, 0.7, g, 0.15); },
 };
 
@@ -1382,6 +1486,7 @@ class HubScreen extends Screen {
   update(dt) {
     if (this.msgT) this.msgT = Math.max(0, this.msgT - dt);
     if (this.c.stage === "hs" && this.c.hsDone) { App.switch(new ScoutReportScreen()); return; }   // report not seen yet
+    if (this.c.hustlePending) { App.switch(new ScoutReportScreen("hustle")); return; }
     if (this.c.refreshMarket()) App.save();
   }
   tileInfo(id) {
@@ -1516,7 +1621,7 @@ class CourtScreen extends Screen {
         rrect(140, y, 720, h, 12, sel ? "#3d2f14" : "#2a2214", sel ? C.gold : "#6b5520", 2);
         text(TIERS[this.ci].tourney, 162, y + 12, { size: 38, color: C.gold, display: true });
         const blurb = c.stage === "hs" ? "Scouts are watching. Win 2 of 3 to qualify, then one loss ends it."
-          : this.ci === HUSTLE ? "No crowd, no prize money. Win it for a spot in the Rec League."
+          : this.ci === HUSTLE ? "A scout grades every game: great = Minor League, good = Rec, bad = stay."
           : this.ci === OLYMPICS ? "The best teams in the country. Win it for the gold medal."
           : this.ci === THRONE ? `Win it to become ${KING} and go to the Olympics`
           : `Win 3 games to move up to the ${TIERS[this.ci + 1].name}`;
@@ -1862,18 +1967,21 @@ function drawActors(m, controlled) {
 }
 
 // Fans stand along the fences. More fame = more people show up.
-function makeCrowd(size, seed) {
+function makeCrowd(size, seed, split = false) {
   const rng = new Rng(seed), slots = [];
   for (const side of [-1, 1]) for (let row = 0; row < 3; row++) for (let y = 96; y <= 640; y += 25) {
     const x = side < 0 ? 58 - row * 22 : 942 + row * 22;
     slots.push({ x: x + rng.uniform(-3, 3), y: y + row * 8 + rng.uniform(-3, 3), side, rank: row * 1000 + Math.abs(y - 360) + rng.uniform(0, 60) });
   }
   slots.sort((p, q) => p.rank - q.rank);
-  return slots.slice(0, size).map(sl => ({ ...sl, skin: rng.choice(SKINS), shirt: rng.choice(["#e04a3a", "#2f7de0", "#f5c83c", "#3ecf7a", "#f2f2f2", "#9b59b6", "#ff8a3d", "#222"]), hair: rng.choice(HAIRS), ph: rng.uniform(0, 6.28), hype: rng.uniform(0.6, 1.2) }))
+  const ours = ["#3c82eb", "#2f6ccf", "#dfe9ff", "#3c82eb"], theirs = ["#d7413c", "#b52f2b", "#ffe2dc", "#d7413c"];
+  const anyShirt = ["#e04a3a", "#2f7de0", "#f5c83c", "#3ecf7a", "#f2f2f2", "#9b59b6", "#ff8a3d", "#222"];
+  return slots.slice(0, size).map(sl => ({ ...sl, home: split && sl.side > 0, skin: rng.choice(SKINS), shirt: rng.choice(split ? (sl.side < 0 ? ours : theirs) : anyShirt), hair: rng.choice(HAIRS), ph: rng.uniform(0, 6.28), hype: rng.uniform(0.6, 1.2) }))
     .sort((p, q) => p.y - q.y);
 }
-function drawCrowd(crowd, t, excite) {
+function drawCrowd(crowd, t, exciteOurs, exciteHome = exciteOurs) {
   for (const f of crowd) {
+    const excite = f.home ? exciteHome : exciteOurs;
     const jump = Math.max(0, Math.sin(t * 9 * f.hype + f.ph)) * 7 * excite, bob = Math.sin(t * 2 + f.ph) * 0.8;
     const x = f.x, y = f.y - jump + bob;
     ellipse(f.x, f.y + 9, 6, 2.5, "rgba(0,0,0,0.35)");
@@ -1906,10 +2014,14 @@ class MatchScreen extends Screen {
   constructor(ci, crew, bet = 0, mult = 1) {
     super(); Object.assign(this, { ci, crew, bet, mult, paused: false, doneT: 0 });
     this.scout = this.c.scouting();
-    this.match = new Match(this.c.lineup(), crew.players, new Rng(), true, S.GAME_TO, { scout: this.scout, favMove: this.c.favoriteMove() });
-    this.crowdN = ci === HUSTLE ? 0 : this.c.crowdSize();
-    this.crowd = makeCrowd(this.crowdN, crew.id + ":" + this.c.fame);
-    this.scoutWatching = crew.mode === "tourney" && this.c.stage === "hs";
+    // high school: the whole school shows up, and half of them want you to lose
+    this.hsGym = ci === 0;
+    const pressure = this.hsGym ? 0.3 + 0.1 * Math.max(0, crew.round || 0) - (crew.round === -1 ? 0.05 : 0) : 0;
+    this.match = new Match(this.c.lineup(), crew.players, new Rng(), true, S.GAME_TO, { scout: this.scout, favMove: this.c.favoriteMove(), pressure });
+    this.crowdN = ci === HUSTLE ? 0 : this.hsGym ? 140 : this.c.crowdSize();
+    this.crowd = makeCrowd(this.crowdN, crew.id + ":" + this.c.fame, this.hsGym);
+    this.exciteHome = 0.15; this.booT = 3;
+    this.scoutWatching = crew.mode === "tourney" && (this.c.stage === "hs" || ci === HUSTLE);
     this.parts = []; this.pops = []; this.rings = []; this.excite = 0.15; this.shake = 0; this.flash = 0; this.freeze = null; this.lastBounce = 0;
   }
   burst(x, y, n, colors, speed = 160, up = 60) {
@@ -1940,9 +2052,11 @@ class MatchScreen extends Screen {
         this.pop(`+${e.points}`, hx + 50, hy + 10, mine ? C.team[0] : C.team[1], 46, 0.9);
         if (e.newFire) { Sound.fire(); this.pop("ON FIRE!", 500, 330, "#ff7a1a", 70, 1.6); this.shake = Math.max(this.shake, 0.3); }
         const big = e.kind === "dunk" || e.green || e.newFire || e.points === 2;
-        if (mine) { this.excite = Math.min(1.4, this.excite + (big ? 1.2 : 0.7)); Sound.cheer(crowd, big); }
+        if (mine) { this.excite = Math.min(1.4, this.excite + (big ? 1.2 : 0.7)); Sound.cheer(this.hsGym ? crowd / 2 : crowd, big); if (this.hsGym) Sound.boo(0.4); }
+        else if (this.hsGym) { this.exciteHome = Math.min(1.5, this.exciteHome + 1.2); Sound.cheer(crowd, true); this.shake = Math.max(this.shake, 0.25); }
         else { this.excite = Math.min(1, this.excite + 0.3); Sound.groan(crowd); }
-      } else if (e.type === "miss") { Sound.clank(); if (e.team === 0) this.pop("CLANK", hx, hy + 40, C.grey, 30, 0.7); }
+      } else if (e.type === "play") { if (e.ok) { Sound.green(); this.pop("PLAY RAN!", 500, 300, C.green, 50, 1.2); this.excite = Math.min(1.4, this.excite + 0.8); }
+      } else if (e.type === "miss") { Sound.clank(); if (this.hsGym && e.team === 0) { Sound.boo(m.pressure); this.exciteHome = Math.min(1.5, this.exciteHome + 0.6); } if (e.team === 0) this.pop("CLANK", hx, hy + 40, C.grey, 30, 0.7); }
       else if (e.type === "ankles") { Sound.ankles(); this.shake = Math.max(this.shake, 0.22); this.pop("ANKLES!", e.x, e.y - 70, C.gold, 40, 0.9); this.burst(e.x, e.y, 10, [C.gold, "#fff"], 90, 60); if (e.team === 0) { this.excite = Math.min(1.4, this.excite + 0.8); Sound.cheer(crowd, false); } }
       else if (e.type === "block") { Sound.clank(); this.shake = Math.max(this.shake, 0.2); this.pop("REJECTED!", e.x, e.y - 90, C.red, 44); }
       else if (e.type === "steal") { Sound.steal(); }
@@ -1984,17 +2098,57 @@ class MatchScreen extends Screen {
     // embers rise off players who are on fire
     for (const a of m.actors) if (a.onFire && Math.random() < dt * 25) this.parts.push({ x: a.x + (Math.random() - 0.5) * 20, y: a.y - Math.random() * 30, vx: (Math.random() - 0.5) * 30, vy: -60 - Math.random() * 60, life: 0.7, max: 0.7, col: Math.random() < 0.5 ? "#ff7a1a" : "#ffd23c", r: 1.5 + Math.random() * 2, g: -20 });
     this.excite = Math.max(0.12, this.excite - dt * 0.6);
+    this.exciteHome = Math.max(this.hsGym ? 0.25 : 0.12, this.exciteHome - dt * 0.6);
+    // the home crowd boos while you have the ball, louder the more rattled you are
+    if (this.hsGym && m.phase === "live" && m.offense === 0) {
+      this.booT -= dt;
+      if (this.booT <= 0) { Sound.boo(m.pressure); this.exciteHome = Math.max(this.exciteHome, 0.5 + m.pressure); this.booT = 3.5 - 2 * m.pressure + Math.random(); }
+    }
     this.shake = Math.max(0, this.shake - dt); this.flash = Math.max(0, this.flash - dt);
     if (this.freeze) { this.freeze.t -= dt; if (this.freeze.t <= 0) this.freeze = null; }
     if (this.match.phase === "over") { this.doneT += dt; if (this.doneT > 1.8) this.finish(); }
   }
+  drawPressure(m) {
+    if (m.rattled) {   // red, pulsing edges
+      const k = 0.25 + 0.15 * Math.sin(m.elapsed * 6);
+      const g = ctx.createRadialGradient(500, 350, 260, 500, 350, 620); g.addColorStop(0, "rgba(180,0,0,0)"); g.addColorStop(1, `rgba(180,0,0,${k})`);
+      ctx.fillStyle = g; ctx.fillRect(0, 0, S.W, S.H);
+    }
+    const x = 16, y = 52;   // crowd noise gauge
+    rrect(x, y, 170, 34, 8, "rgba(10,10,14,0.8)");
+    text("CROWD NOISE", x + 10, y + 5, { size: 17, color: C.grey, display: true });
+    rrect(x + 10, y + 22, 150, 7, 3.5, "#2a2c36");
+    const col = m.pressure >= 0.7 ? C.red : m.pressure >= 0.5 ? C.orange : C.gold;
+    rrect(x + 10, y + 22, 150 * m.pressure, 7, 3.5, col);
+    if (m.rattled) text("RATTLED", x + 160, y + 5, { size: 17, color: C.red, right: true, display: true });
+  }
+  drawCoach(m) {
+    const c = m.coach; if (!c) return;
+    if (c.state === "offer") {
+      const x = 300, y = 96, w = 400, h = 104;
+      rrect(x, y, w, h, 12, "rgba(16,17,22,0.94)", C.gold, 2);
+      text("COACH", x + 16, y + 10, { size: 20, color: C.gold, display: true });
+      text(`"${c.play.name}!"`, x + 90, y + 8, { size: 28, color: C.white });
+      text(c.play.desc, x + 16, y + 42, { size: 22, color: C.grey, weight: 500 });
+      rrect(x + 16, y + 66, 170, 28, 7, "#264a2e"); text("[E] Run it", x + 101, y + 80, { size: 22, color: C.green, center: true });
+      rrect(x + 200, y + 66, 120, 28, 7, "#2a2c36"); text("[X] Ignore", x + 260, y + 80, { size: 22, color: C.grey, center: true });
+      rrect(x + 336, y + 76, 48 * (c.t / 5), 6, 3, C.gold);
+      hit(x + 16, y + 66, 170, 28, () => { App.edges.coachAccept = true; });
+      hit(x + 200, y + 66, 120, 28, () => { App.edges.coachIgnore = true; });
+    } else {
+      rrect(300, 96, 400, 30, 8, "rgba(38,74,46,0.9)");
+      const extra = c.play.id === "swing" ? `  (${m.poss.passes}/2 passes)` : "";
+      text(`PLAY: ${c.play.name}${extra}`, 500, 111, { size: 22, color: C.white, center: true });
+    }
+  }
   draw() {
     const m = this.match;
-    const sk = this.shake > 0 ? this.shake * 14 : 0;
+    const noise = m.pressureOn && m.phase !== "over" ? m.pressure * m.pressure * 7 : 0;
+    const sk = (this.shake > 0 ? this.shake * 14 : 0) + noise;
     ctx.save();
     if (sk) ctx.translate((Math.random() - 0.5) * sk, (Math.random() - 0.5) * sk);
     drawCourt(this.ci);
-    drawCrowd(this.crowd, m.elapsed, this.excite);
+    drawCrowd(this.crowd, m.elapsed, this.excite, this.exciteHome);
     if (this.scoutWatching) drawScout(84, 340, m.elapsed);
     drawActors(m, true);
     for (const q of this.parts) circle(q.x, q.y, q.r * Math.max(0.3, q.life / q.max), q.col);
@@ -2002,7 +2156,8 @@ class MatchScreen extends Screen {
     // shot meter: fills while you hold, then freezes for a moment where you let go
     const a = m.controlled;
     if (m.meter !== null || this.freeze) {
-      const x = a.x + 26, y = a.y - 70, h = 64, w = m.meterWindow(a);
+      const jit = m.rattled ? (Math.random() - 0.5) * 6 : 0;
+      const x = a.x + 26 + jit, y = a.y - 70 + jit, h = 64, w = m.meterWindow(a);
       const lo = S.METER_SWEET - w, hi = S.METER_SWEET + w;
       const val = m.meter !== null ? Math.min(1, m.meter) : (m.lastRelease != null ? m.lastRelease : 0);
       const green = this.freeze && this.freeze.green;
@@ -2025,6 +2180,8 @@ class MatchScreen extends Screen {
     }
     ctx.restore();
     if (this.flash > 0) { ctx.fillStyle = `rgba(125,255,154,${this.flash * 0.35})`; ctx.fillRect(0, 0, S.W, S.H); }
+    if (m.pressureOn) this.drawPressure(m);
+    this.drawCoach(m);
     ctx.fillStyle = "#0f0f14"; ctx.fillRect(0, 0, S.W, 44);
     text(`YOU  ${m.score[0]}`, 330, 23, { size: 34, color: C.team[0], center: true, display: true });
     text(`first to ${m.gameTo}`, 500, 23, { size: 24, color: C.grey, center: true });
@@ -2047,7 +2204,7 @@ class MatchScreen extends Screen {
     if (m.phase === "check") text("CHECK BALL", 500, 380, { size: 40, center: true, display: true });
     if (m.phase === "over") { const won = m.winner === 0; text(won ? "YOU WIN!" : "YOU LOSE", 500, 330, { size: 80, color: won ? C.green : C.red, center: true, display: true }); }
     if (!isTouch) {
-      text("WASD move · SHIFT sprint · SPACE shoot · J pass · K move (S step back, S+A/D back-diagonal) / steal · Q switch · M sound", 500, S.H - 16, { size: 20, center: true, weight: 500 });
+      text("WASD move · SHIFT sprint · SPACE shoot · J pass · K move / steal · Q switch · E/X coach · M sound", 500, S.H - 16, { size: 20, center: true, weight: 500 });
     }
     if (this.paused) {
       rrect(290, 240, 420, 200, 12, "rgba(16,17,22,0.95)", C.grey, 1.5);
@@ -2068,6 +2225,7 @@ class ResultScreen extends Screen {
     this.myPts = match.mainGuy.points;
     const r = this.r, items = [];
     if (r.hsDone) items.push(["See the scout's report →", () => App.switch(new ScoutReportScreen())]);
+    else if (r.hustleDone) items.push(["See the scout's report →", () => App.switch(new ScoutReportScreen("hustle"))]);
     else {
       if (r.nextRound) items.push([`Play ${roundLabel(c.tourneyGame())}`, () => startGame(ci, c.tourneyGame())]);
       // auto-advance: straight into the next park's tournament
@@ -2101,7 +2259,7 @@ class ResultScreen extends Screen {
     if (r.scout != null) { text(`Scout grade this game: ${r.scout} (${gradeOf(r.scout)})`, 500, y, { size: 30, color: C.gold, center: true, display: true }); y += 40; }
     if (r.hsDone && r.champ) { text("State champions! The scout is writing the report.", 500, y, { size: 28, color: C.gold, center: true }); y += 38; }
     else if (r.hsDone) { text("High school is over. The scout has seen enough.", 500, y, { size: 26, color: C.white, center: true }); y += 36; }
-    if (r.tierUp && this.crew.court === HUSTLE) { text("You hustled your way into the Rec League!", 500, y, { size: 30, color: C.gold, center: true, display: true }); y += 40; }
+    if (r.hustleDone) { text(r.champ ? "Hustle Classic champs! The scout is writing the report." : "Tournament's over. The scout has seen enough.", 500, y, { size: 26, color: C.gold, center: true }); y += 36; }
     else if (r.tierUp) { text(`You won the ${TIERS[this.crew.court].tourney}! Next stop: ${TIERS[c.tier].court} (${TIERS[c.tier].name}).`, 500, y, { size: 28, color: C.gold, center: true }); y += 38; }
     if (r.crowned) { text(`YOU ARE THE ${KING.toUpperCase()}!`, 500, y, { size: 40, color: C.gold, center: true, display: true }); y += 44; }
     if (r.gold) { text("OLYMPIC GOLD MEDAL!", 500, y, { size: 48, color: C.gold, center: true, display: true }); y += 50; text("You beat the best in the country.", 500, y, { size: 26, center: true }); y += 36; }
@@ -2113,16 +2271,19 @@ class ResultScreen extends Screen {
 // ---------------------------------------------------------------- the scout's report and your draft
 const GRADE_COLORS = { A: "#5ad26e", B: "#5096f0", C: "#f5c83c", D: "#eb8228", F: "#e15046" };
 class ScoutReportScreen extends Screen {
-  constructor() {
-    super(); const c = this.c;
-    this.rep = c.scoutReport();
-    this.deal = c.recruit(this.rep);      // only signs once
-    if (!this.deal) this.deal = { team: c.team, tier: c.tier, bonus: 0, walkOn: false, extra: null };
+  constructor(which = "hs") {
+    super(); const c = this.c; this.which = which;
+    this.rep = c.scoutReport(which);
+    if (which === "hustle") this.verdict = c.hustleVerdict(this.rep) || { tier: c.tier, stayed: c.tier === HUSTLE };
+    else {
+      this.deal = c.recruit(this.rep);      // only signs once
+      if (!this.deal) this.deal = { team: c.team, tier: c.tier, bonus: 0, walkOn: false, extra: null };
+    }
     App.save();
   }
   key(k) { if (K.ok(k)) App.switch(new HubScreen()); }
   draw() {
-    const rep = this.rep, d = this.deal;
+    const rep = this.rep, d = this.deal || {};
     ctx.fillStyle = C.bg; ctx.fillRect(0, 0, S.W, S.H);
     // clipboard
     rrect(80, 28, 840, 600, 16, "#e9e1cf");
@@ -2145,6 +2306,20 @@ class ScoutReportScreen extends Screen {
     // the deal
     y = Math.max(y + 12, 470);
     rrect(110, y, 780, 118, 12, "#1b1d25");
+    if (this.which === "hustle") {
+      const v = this.verdict;
+      if (v.stayed) {
+        text("Back to the grind.", 500, y + 26, { size: 36, color: "#ff8a7a", center: true, display: true });
+        text("You stay in the Hustle League. Enter the Hustle Classic again when you're ready.", 500, y + 64, { size: 24, center: true });
+      } else {
+        text(v.tier === 3 ? "Straight to the Minor League!" : "Called up to the Rec League!", 500, y + 26, { size: 36, color: C.gold, center: true, display: true });
+        text(`The ${this.c.team} want you at ${TIERS[v.tier].court}.`, 500, y + 64, { size: 24, center: true });
+      }
+      text("A = Minor League  ·  B or C = Rec League  ·  D or F = stay", 500, y + 94, { size: 20, color: C.grey, center: true, weight: 500 });
+      rrect(380, 644, 240, 46, 10, C.gold); text("CONTINUE", 500, 667, { size: 24, color: "#1a1406", center: true, display: true });
+      hit(380, 644, 240, 46, () => App.switch(new HubScreen()));
+      return;
+    }
     text(`The ${d.team} signed you!`, 500, y + 26, { size: 36, color: C.gold, center: true, display: true });
     const start = `You start in the ${TIERS[d.tier].name} at ${TIERS[d.tier].court}${d.walkOn ? " as a walk-on" : ""}.`;
     text(start, 500, y + 62, { size: 26, center: true });
@@ -2364,6 +2539,8 @@ window.addEventListener("keydown", e => {
     if (k === "j") App.edges.passPressed = true;
     if (k === "k") App.edges.movePressed = true;
     if (k === "q") App.edges.switchPressed = true;
+    if (k === "e") App.edges.coachAccept = true;
+    if (k === "x") App.edges.coachIgnore = true;
     if (!(App.screen instanceof MatchScreen) || ["Escape", "p", "P", "f", "F"].includes(e.key)) App.screen.key(e.key);
   }
   App.keys.add(k);
