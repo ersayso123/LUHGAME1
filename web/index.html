@@ -708,7 +708,15 @@ const TIERS = [
   { name: "The Throne", title: "Pro Star", court: "The Throne", tourney: "Throne Tournament", base: 88, crews: ["Crown Chasers", "Royal Court", "The Last King"] },
   { name: "The Olympics", title: "Olympian", court: "Olympic Arena", tourney: "Olympic Basketball", base: 92, crews: ["Team Texas", "Team New York", "The Dream Team"] },
 ];
-const THRONE = 6, OLYMPICS = 7;
+const THRONE = 6, OLYMPICS = 7, HUSTLE = 1;
+const QUAL_POOL = ["Southview Spartans", "Riverside Raiders", "Oak Hill Owls", "Maplewood Mavericks"];
+// High school starts with a best-of-3 qualifier series (win 2 to make the quarterfinals)
+function qualifierGame(seed, q) {
+  const rng = new Rng(`Q|${seed}`), name = rng.choice(QUAL_POOL), players = makeCrew(rng, TIERS[0].base - 2);
+  const n = q.w + q.l + 1;
+  return { id: `Q${seed}:${n}`, court: 0, name, players, boss: false, ovr: teamOverall(players), mode: "tourney", round: -1, series: { ...q, game: n } };
+}
+function roundLabel(g) { return g.round === -1 ? `Qualifier Game ${g.series ? g.series.game : 1}` : ROUNDS[g.round]; }
 const OLY_POOL = ["Team California", "Team Texas", "Team New York", "Team Florida", "Team Illinois", "Team Georgia", "Team Ohio", "Team Washington"];
 const HS_POOL = ["Lincoln Lions", "Roosevelt Rams", "Kennedy Cougars", "Jefferson Jets", "Madison Mustangs", "Hamilton Hornets", "Franklin Falcons", "Washington Warriors"];
 const FRANCHISES = ["Metro Kings", "Harbor Hawks", "Capital Crowns", "Skyline Sharks", "Iron City Titans", "Bay Blaze", "Northside Knights", "Desert Suns"];
@@ -902,8 +910,16 @@ class Career {
   crewsFor(ci) {
     return [0, 1].map(k => { const players = crewPlayers(ci, k); return { id: `${ci}:${k}`, court: ci, name: TIERS[ci].crews[k], players, boss: false, ovr: teamOverall(players), mode: "pickup" }; });
   }
-  enterTourney() { this.entries++; this.tourney = { tier: this.tier, seed: this.entries, round: 0 }; }
-  tourneyGame() { const t = this.tourney; return t ? bracket(t.tier, t.seed)[t.round] : null; }
+  enterTourney() {
+    this.entries++;
+    this.tourney = { tier: this.tier, seed: this.entries, round: 0 };
+    if (this.tier === 0) { this.tourney.round = -1; this.tourney.qual = { w: 0, l: 0 }; }
+  }
+  tourneyGame() {
+    const t = this.tourney; if (!t) return null;
+    return t.round === -1 ? qualifierGame(t.seed, t.qual) : bracket(t.tier, t.seed)[t.round];
+  }
+  get locked() { return this.stage === "hs"; }   // everything but Play waits until high school is over
   lineup() { return [this.me, ...this.starters.map(i => this.crew[i])]; }
   secUnlocked() { return this.tier >= S.SEC_UNLOCK || this.champion; }
   crowdSize() { return clamp(Math.round(3 + this.fame * 0.18), 3, 140); }
@@ -926,6 +942,18 @@ class Career {
     const hs = crew.mode === "tourney" && this.stage === "hs";
     if (hs && box) { r.scout = scoutGameScore(won, margin, box); this.hsLog.push({ round: crew.round, opp: crew.name, won, margin, score: r.scout, box: { ...box } }); }
     for (const [k, v] of Object.entries(moveUse)) this.moves[k] = (this.moves[k] || 0) + v;
+    // the qualifier series: best of 3
+    if (hs && crew.round === -1) {
+      const q = this.tourney.qual;
+      if (won) q.w++; else q.l++;
+      r.fame = won ? 5 : 0;
+      if (q.w >= 2) { this.tourney.round = 0; r.qualified = true; r.nextRound = true; }
+      else if (q.l >= 2) { this.tourney = null; r.missedCut = true; r.eliminated = true; this.hsDone = true; r.hsDone = true; }
+      else r.nextRound = true;
+      r.series = { ...q };
+      this.fame = Math.max(0, this.fame + r.fame);
+      return r;
+    }
     if (won) {
       r.fame = (crew.mode === "tourney" ? 12 : 10) + 6 * ci + Math.floor(margin / 2);
       r.cash = (crew.mode === "tourney" ? 60 : 50) + (crew.mode === "tourney" ? 40 : 50) * ci;
@@ -948,6 +976,8 @@ class Career {
       r.fame = -this.fameLoss(); r.cash = 10;
       if (crew.mode === "tourney") { this.tourney = null; r.eliminated = true; if (hs) { this.hsDone = true; r.hsDone = true; } }
     }
+    if (ci === HUSTLE) { r.cash = 0; r.tips = 0; r.hustle = true; }   // nobody pays you in the Hustle League
+    if (hs) { r.cash = 0; r.tips = 0; r.betWin = 0; }                 // amateurs: no money in high school
     this.fame = Math.max(0, this.fame + r.fame); this.cash += r.cash + r.betWin + r.tips;
     return r;
   }
@@ -1310,24 +1340,27 @@ class HubScreen extends Screen {
     super();
     this.menu = new Menu([
       ["Play", () => App.switch(new CourtScreen())],
-      [() => `Player Market  ${fmtTime(this.c.marketLeft())}`, () => App.switch(new MarketScreen())],
-      ["Crew", () => App.switch(new CrewScreen())],
-      ["Train Stats", () => App.switch(new TrainScreen())],
-      ["Attribute Shop", () => App.switch(new AttrScreen())],
-      ["Luck Machine", () => App.switch(new SlotScreen())],
-      ["Mystery Baller", () => App.switch(new MysteryScreen())],
+      [() => this.c.locked ? "Player Market  (locked)" : `Player Market  ${fmtTime(this.c.marketLeft())}`, () => this.open(() => new MarketScreen())],
+      [() => this.c.locked ? "Crew  (locked)" : "Crew", () => this.open(() => new CrewScreen())],
+      [() => this.c.locked ? "Train Stats  (locked)" : "Train Stats", () => this.open(() => new TrainScreen())],
+      [() => this.c.locked ? "Attribute Shop  (locked)" : "Attribute Shop", () => this.open(() => new AttrScreen())],
+      [() => this.c.locked ? "Luck Machine  (locked)" : "Luck Machine", () => this.open(() => new SlotScreen())],
+      [() => this.c.locked ? "Mystery Baller  (locked)" : "Mystery Baller", () => this.open(() => new MysteryScreen())],
       ["Quit to Title", () => { App.save(); App.switch(new TitleScreen()); }],
     ]);
   }
+  open(make) { if (this.c.locked) { this.msg = "Locked until high school is over. Go play!"; this.msgT = 2.5; return; } App.switch(make()); }
   key(k) { this.menu.key(k); }
-  update() {
+  update(dt) {
+    if (this.msgT) this.msgT = Math.max(0, this.msgT - dt);
     if (this.c.stage === "hs" && this.c.hsDone) { App.switch(new ScoutReportScreen()); return; }   // report not seen yet
     if (this.c.refreshMarket()) App.save();
   }
   draw() {
     this.header(); const c = this.c;
     this.menu.draw(280, 140, 54, 38);
-    if (!c.market.seen) { rrect(420, 170, 48, 22, 6, C.red); text("NEW", 444, 181, { size: 20, center: true, display: true }); }
+    if (!c.market.seen && !c.locked) { rrect(420, 170, 48, 22, 6, C.red); text("NEW", 444, 181, { size: 20, center: true, display: true }); }
+    if (this.msgT) text(this.msg, 280, 580, { size: 24, color: C.gold, center: true });
     rrect(540, 100, 430, 500, 10, "#181a22", C.grey, 1.5);
     text("THE ROAD TO GOLD", 755, 126, { size: 30, color: C.gold, center: true, display: true });
     TIERS.forEach((t, i) => {
@@ -1339,7 +1372,7 @@ class HubScreen extends Screen {
       text(t.name, 564, y, { size: 26, color: col });
       text(status, 946, y + 3, { size: 17, color: col, right: true });
       text(`${t.court} · ${t.tourney}`, 564, y + 22, { size: 17, color: C.grey, weight: 500 });
-      if (here && c.tourney) text(`${ROUNDS[c.tourney.round]} next`, 946, y + 22, { size: 17, color: C.gold, right: true });
+      if (here && c.tourney) text(c.tourney.round === -1 ? `Qualifier ${c.tourney.qual.w}-${c.tourney.qual.l}` : `${ROUNDS[c.tourney.round]} next`, 946, y + 22, { size: 17, color: C.gold, right: true });
     });
     const sc = c.scouting();
     if (sc >= 0.15) {
@@ -1367,14 +1400,14 @@ class CourtScreen extends Screen {
       const g = c.tourney && c.tourney.tier === this.ci ? c.tourneyGame() : null;
       out.push({ kind: "tourney", game: g });
     }
-    for (const crew of c.crewsFor(this.ci)) out.push({ kind: "pickup", game: crew });
+    if (c.stage !== "hs") for (const crew of c.crewsFor(this.ci)) out.push({ kind: "pickup", game: crew });   // no pickup games in high school
     return out;
   }
   pick(i) {
     const c = this.c, o = this.options()[i]; this.sel = i;
     if (!o) return;
-    if (o.kind === "tourney") { if (!o.game) { c.enterTourney(); App.save(); } App.switch(new WagerScreen(this.ci, c.tourneyGame())); }
-    else App.switch(new WagerScreen(this.ci, o.game));
+    if (o.kind === "tourney") { if (!o.game) { c.enterTourney(); App.save(); } startGame(this.ci, c.tourneyGame()); }
+    else startGame(this.ci, o.game);
   }
   key(k) {
     const n = this.options().length;
@@ -1392,7 +1425,7 @@ class CourtScreen extends Screen {
     text(TIERS[this.ci].court, 500, 118, { size: 44, color: C.gold, center: true, display: true });
     if (this.ci > this.minCourt) { text("◀", 190, 118, { size: 50, center: true }); hit(160, 94, 60, 50, () => { this.ci--; this.sel = 0; }); }
     if (this.ci < c.tier) { text("▶", 810, 118, { size: 50, center: true }); hit(780, 94, 60, 50, () => { this.ci++; this.sel = 0; }); }
-    text(`Your lineup OVR ${teamOverall(c.lineup())}  ·  crowd ${c.crowdSize()}`, 500, 156, { size: 24, color: C.grey, center: true });
+    text(`Your lineup OVR ${teamOverall(c.lineup())}  ·  ${this.ci === HUSTLE ? "empty gym, nobody watching" : `crowd ${c.crowdSize()}`}`, 500, 156, { size: 24, color: C.grey, center: true });
     let y = 180;
     this.options().forEach((o, i) => {
       const sel = i === this.sel;
@@ -1400,26 +1433,31 @@ class CourtScreen extends Screen {
         const h = 170;
         rrect(140, y, 720, h, 12, sel ? "#3d2f14" : "#2a2214", sel ? C.gold : "#6b5520", 2);
         text(TIERS[this.ci].tourney, 162, y + 12, { size: 38, color: C.gold, display: true });
-        const blurb = c.stage === "hs" ? "Scouts are watching. One shot: lose and high school is over."
+        const blurb = c.stage === "hs" ? "Scouts are watching. Win 2 of 3 to qualify, then one loss ends it."
+          : this.ci === HUSTLE ? "No crowd, no prize money. Win it for a spot in the Rec League."
           : this.ci === OLYMPICS ? "The best teams in the country. Win it for the gold medal."
           : this.ci === THRONE ? `Win it to become ${KING} and go to the Olympics`
           : `Win 3 games to move up to the ${TIERS[this.ci + 1].name}`;
         text(blurb, 162, y + 48, { size: 24, color: c.stage === "hs" ? C.gold : C.white, weight: 500 });
         const t = c.tourney, games = bracket(this.ci, t ? t.seed : c.entries + 1);
+        if (this.ci === 0) {   // qualifier series status
+          const q = t && t.qual ? t.qual : { w: 0, l: 0 }, done = t && t.round >= 0;
+          text(done ? "QUALIFIED ✓" : `QUALIFIER (best of 3): ${q.w}-${q.l}`, 838, y + 50, { size: 20, color: done ? C.green : C.gold, right: true, display: true });
+        }
         ROUNDS.forEach((rn, r) => {
-          const x = 162 + r * 232, done = t && r < t.round, now = t && r === t.round;
+          const x = 162 + r * 232, done = t && t.round >= 0 && r < t.round, now = t && r === t.round;
           rrect(x, y + 84, 220, 70, 8, now ? "#4a3a18" : "#1e1a12", now ? C.gold : null, 1.5);
           text(rn.toUpperCase(), x + 12, y + 92, { size: 20, color: done ? C.green : now ? C.gold : C.grey, display: true });
           text(t ? games[r].name : "???", x + 12, y + 116, { size: 24, color: t ? C.white : C.grey });
           text(t ? `OVR ${games[r].ovr}${done ? "  ✓" : ""}` : "", x + 12, y + 136, { size: 20, color: done ? C.green : C.grey, weight: 500 });
         });
-        text(o.game ? `▶ PLAY ${ROUNDS[t.round].toUpperCase()}` : "▶ ENTER", 838, y + 16, { size: 26, color: C.gold, right: true, display: true });
+        text(o.game ? `▶ PLAY ${roundLabel(o.game).toUpperCase()}` : "▶ ENTER", 838, y + 16, { size: 26, color: C.gold, right: true, display: true });
         hit(140, y, 720, h, () => this.pick(i));
         y += h + 14;
       } else {
         const g = o.game, h = 84;
         rrect(140, y, 720, h, 10, sel ? "#3a3c4b" : "#23242c", sel ? C.gold : null, 2);
-        text(`Pickup: ${g.name}`, 162, y + 10, { size: 32 });
+        text(`Pickup: ${g.name}${this.ci === HUSTLE ? "  (bets only)" : ""}`, 162, y + 10, { size: 32 });
         text(`OVR ${g.ovr}`, 838, y + 12, { size: 30, right: true });
         text(g.players.map(p => `${p.pos} ${p.name} (${overall(p)})`).join(",  "), 162, y + 48, { size: 22, color: C.grey, weight: 500 });
         hit(140, y, 720, h, () => this.pick(i));
@@ -1490,6 +1528,12 @@ class MarketScreen extends Screen {
     if (this.msg) text(this.msg, 500, 606, { size: 26, center: true });
     this.footer("◀ ▶ pick  ·  Enter to sign  ·  The market refreshes every 5 minutes");
   }
+}
+
+// High school games go straight to tip-off (no betting); everything else offers a side bet first.
+function startGame(ci, game) {
+  if (App.career.stage === "hs") App.switch(new MatchScreen(ci, game, 0, 1));
+  else App.switch(new WagerScreen(ci, game));
 }
 
 class WagerScreen extends Screen {
@@ -1758,7 +1802,7 @@ class MatchScreen extends Screen {
     super(); Object.assign(this, { ci, crew, bet, mult, paused: false, doneT: 0 });
     this.scout = this.c.scouting();
     this.match = new Match(this.c.lineup(), crew.players, new Rng(), true, S.GAME_TO, { scout: this.scout, favMove: this.c.favoriteMove() });
-    this.crowdN = this.c.crowdSize();
+    this.crowdN = ci === HUSTLE ? 0 : this.c.crowdSize();
     this.crowd = makeCrowd(this.crowdN, crew.id + ":" + this.c.fame);
     this.scoutWatching = crew.mode === "tourney" && this.c.stage === "hs";
     this.parts = []; this.pops = []; this.excite = 0.15; this.shake = 0; this.flash = 0; this.freeze = null; this.lastBounce = 0;
@@ -1875,7 +1919,7 @@ class MatchScreen extends Screen {
     text(`YOU  ${m.score[0]}`, 330, 23, { size: 34, color: C.team[0], center: true, display: true });
     text(`first to ${m.gameTo}`, 500, 23, { size: 24, color: C.grey, center: true });
     text(`${m.score[1]}  ${this.crew.name.toUpperCase()}`, 690, 23, { size: 30, color: C.team[1], center: true, display: true });
-    text(`${TIERS[this.ci].court} · crowd ${this.crowdN}`, 16, 14, { size: 22, color: C.grey });
+    text(`${TIERS[this.ci].court} · ${this.crowdN ? `crowd ${this.crowdN}` : "empty gym"}`, 16, 14, { size: 22, color: C.grey });
     text(`Shot ${Math.max(0, Math.ceil(m.shotClock))}`, S.W - 16, 12, { size: 26, right: true });
     if (this.scoutWatching) text("SCOUT WATCHING", S.W - 16, 50, { size: 20, color: C.gold, right: true, display: true });
     if (this.scout >= 0.15) text(`SCOUTED ${Math.round(this.scout * 100)}%`, S.W - 16, 50, { size: 20, color: "#ff8a7a", right: true, display: true });
@@ -1915,9 +1959,9 @@ class ResultScreen extends Screen {
     const r = this.r, items = [];
     if (r.hsDone) items.push(["See the scout's report →", () => App.switch(new ScoutReportScreen())]);
     else {
-      if (r.nextRound) items.push([`Play the ${ROUNDS[c.tourney.round]}`, () => App.switch(new WagerScreen(ci, c.tourneyGame()))]);
+      if (r.nextRound) items.push([`Play ${roundLabel(c.tourneyGame())}`, () => startGame(ci, c.tourneyGame())]);
       // auto-advance: straight into the next park's tournament
-      if (r.tierUp) items.push([`On to ${TIERS[c.tier].court} →`, () => { c.enterTourney(); App.save(); App.switch(new WagerScreen(c.tier, c.tourneyGame())); }]);
+      if (r.tierUp) items.push([`On to ${TIERS[c.tier].court} →`, () => { c.enterTourney(); App.save(); startGame(c.tier, c.tourneyGame()); }]);
       items.push(["Back to the Hub", () => App.switch(new HubScreen())]);
     }
     this.menu = new Menu(items);
@@ -1928,21 +1972,27 @@ class ResultScreen extends Screen {
     this.header(); const m = this.match, c = this.c, r = this.r;
     const title = r.champ ? "CHAMPIONS!" : this.forfeit ? "FORFEIT" : this.won ? "VICTORY" : r.eliminated ? "ELIMINATED" : "DEFEAT";
     text(title, 500, 122, { size: 76, color: this.won ? (r.champ ? C.gold : C.green) : C.red, center: true, display: true });
-    const where = this.crew.mode === "tourney" ? `${TIERS[this.crew.court].tourney} · ${ROUNDS[this.crew.round]}` : "Pickup game";
+    const where = this.crew.mode === "tourney" ? `${TIERS[this.crew.court].tourney} · ${roundLabel(this.crew)}` : "Pickup game";
     text(`${m.score[0]} - ${m.score[1]}  vs  ${this.crew.name}  ·  ${where}`, 500, 178, { size: 32, center: true });
     text(`You scored ${this.myPts}`, 500, 212, { size: 28, color: C.grey, center: true });
-    const lines = [r.fame >= 0 ? `+${r.fame} fame` : `${r.fame} fame`, `+$${r.cash}`];
+    const lines = [r.fame >= 0 ? `+${r.fame} fame` : `${r.fame} fame`];
+    if (r.cash) lines.push(`+$${r.cash}`);
     if (r.tips) lines.push(`+$${r.tips} crowd tips`);
     if (this.bet) lines.push(this.won ? `Bet paid $${r.betWin}!` : `Lost your $${this.bet} bet`);
     text(lines.join("     "), 500, 254, { size: 34, color: r.fame < 0 ? "#ff9a8a" : C.gold, center: true });
     let y = 300;
     if (r.fame < 0) { text("Losses cost more fame the more famous you are.", 500, y, { size: 22, color: C.grey, center: true, weight: 500 }); y += 34; }
     if (r.eliminated && !r.hsDone) { text("You're out of the tournament. Enter again from Play.", 500, y, { size: 26, color: C.white, center: true }); y += 36; }
-    if (r.nextRound) { text(`On to the ${ROUNDS[c.tourney.round]}!`, 500, y, { size: 32, color: C.gold, center: true, display: true }); y += 40; }
+    if (r.series && !r.qualified && !r.missedCut) { text(`Qualifier series: ${r.series.w}-${r.series.l}`, 500, y, { size: 30, color: C.gold, center: true, display: true }); y += 38; }
+    if (r.qualified) { text(`Qualified ${r.series.w}-${r.series.l}! On to the Quarterfinal.`, 500, y, { size: 30, color: C.green, center: true, display: true }); y += 38; }
+    else if (r.missedCut) { text(`Lost the qualifier ${r.series.w}-${r.series.l}. You didn't make the bracket.`, 500, y, { size: 28, color: C.red, center: true }); y += 36; }
+    else if (r.nextRound && c.tourney && c.tourney.round >= 0) { text(`On to the ${ROUNDS[c.tourney.round]}!`, 500, y, { size: 32, color: C.gold, center: true, display: true }); y += 40; }
+    if (r.hustle) { text("Hustle League: no prize money. Only your bets pay.", 500, y, { size: 22, color: C.grey, center: true, weight: 500 }); y += 30; }
     if (r.scout != null) { text(`Scout grade this game: ${r.scout} (${gradeOf(r.scout)})`, 500, y, { size: 30, color: C.gold, center: true, display: true }); y += 40; }
     if (r.hsDone && r.champ) { text("State champions! The scout is writing the report.", 500, y, { size: 28, color: C.gold, center: true }); y += 38; }
     else if (r.hsDone) { text("High school is over. The scout has seen enough.", 500, y, { size: 26, color: C.white, center: true }); y += 36; }
-    if (r.tierUp) { text(`You won the ${TIERS[this.crew.court].tourney}! Next stop: ${TIERS[c.tier].court} (${TIERS[c.tier].name}).`, 500, y, { size: 28, color: C.gold, center: true }); y += 38; }
+    if (r.tierUp && this.crew.court === HUSTLE) { text("You hustled your way into the Rec League!", 500, y, { size: 30, color: C.gold, center: true, display: true }); y += 40; }
+    else if (r.tierUp) { text(`You won the ${TIERS[this.crew.court].tourney}! Next stop: ${TIERS[c.tier].court} (${TIERS[c.tier].name}).`, 500, y, { size: 28, color: C.gold, center: true }); y += 38; }
     if (r.crowned) { text(`YOU ARE THE ${KING.toUpperCase()}!`, 500, y, { size: 40, color: C.gold, center: true, display: true }); y += 44; }
     if (r.gold) { text("OLYMPIC GOLD MEDAL!", 500, y, { size: 48, color: C.gold, center: true, display: true }); y += 50; text("You beat the best in the country.", 500, y, { size: 26, center: true }); y += 36; }
     if (r.tierUp && c.scouting() >= 0.15) { text(`You moved up fast. Teams are scouting you (${Math.round(c.scouting() * 100)}%).`, 500, y, { size: 24, color: "#ff8a7a", center: true }); y += 34; }
@@ -1975,11 +2025,11 @@ class ScoutReportScreen extends Screen {
     const cols = ["Round", "Opponent", "Result", "PTS", "FG", "GRN", "TO", "Grade"], xs = [120, 250, 470, 560, 610, 670, 720, 770];
     cols.forEach((h, i) => text(h, xs[i], 150, { size: 20, color: "#6a6a6a", display: true }));
     rep.games.forEach((g, n) => {
-      const y = 178 + n * 30, b = g.box;
-      [ROUNDS[g.round], g.opp, g.won ? `W +${g.margin}` : `L ${g.margin}`, b.pts, `${b.fgm}/${b.fga}`, b.greens, b.to, `${g.score}`]
+      const y = 178 + n * 28, b = g.box;
+      [g.round === -1 ? "Qualifier" : ROUNDS[g.round], g.opp, g.won ? `W +${g.margin}` : `L ${g.margin}`, b.pts, `${b.fgm}/${b.fga}`, b.greens, b.to, `${g.score}`]
         .forEach((v, i) => text(v, xs[i], y, { size: 24, color: i === 2 ? (g.won ? "#2e8b45" : "#b3362c") : "#2a2a2a" }));
     });
-    let y = 290;
+    let y = Math.max(290, 178 + rep.games.length * 30 + 16);
     text("Scout's notes", 120, y, { size: 24, color: "#6a6a6a", display: true }); y += 30;
     for (const n of rep.notes) { text("• " + n, 130, y, { size: 26, color: "#2a2a2a" }); y += 32; }
     // the deal
