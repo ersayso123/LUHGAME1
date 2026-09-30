@@ -699,17 +699,21 @@ const AI = (() => {
 // The story: your last high school tournament (scouts watching), then your pro team's farm chain.
 // Opponents are rated above you on purpose: it's a grind.
 const TIERS = [
-  { name: "High School", title: "High School Senior", court: "Eastside High Blacktop", tourney: "Senior State Championship", base: 45, crews: ["Westview Wolves", "Central Tigers", "Northgate Eagles"] },
-  { name: "Rec League", title: "Rec League Rookie", court: "Rusty Rim Park", tourney: "Rec League Cup", base: 52, crews: ["Corner Kids", "Rec League Rejects", "The Rust Kings"] },
-  { name: "Minor League", title: "Minor Leaguer", court: "Southside Blacktop", tourney: "Minor League Showdown", base: 61, crews: ["Southside Swingers", "Block Party", "Blacktop Bullies"] },
-  { name: "Semi-Pro", title: "Semi-Pro", court: "Pier Courts", tourney: "Semi-Pro Invitational", base: 70, crews: ["Salt Water Squad", "Dock Boyz", "The Tide"] },
-  { name: "Pro League", title: "Pro", court: "Downtown Cage", tourney: "Pro League Finals", base: 79, crews: ["Chain Link Gang", "Night Shift", "Cage Kings"] },
+  { name: "High School", title: "High School Senior", court: "Eastside High Blacktop", tourney: "Senior State Championship", base: 47, crews: ["Westview Wolves", "Central Tigers", "Northgate Eagles"] },
+  { name: "Hustle League", title: "Hustler", court: "Eastside Rec Center Gym", tourney: "Hustle Classic", base: 50, crews: ["Late Night Runners", "Gym Rats", "The Grinders"] },
+  { name: "Rec League", title: "Rec League Rookie", court: "Rusty Rim Park", tourney: "Rec League Cup", base: 54, crews: ["Corner Kids", "Rec League Rejects", "The Rust Kings"] },
+  { name: "Minor League", title: "Minor Leaguer", court: "Southside Blacktop", tourney: "Minor League Showdown", base: 63, crews: ["Southside Swingers", "Block Party", "Blacktop Bullies"] },
+  { name: "Semi-Pro", title: "Semi-Pro", court: "Pier Courts", tourney: "Semi-Pro Invitational", base: 72, crews: ["Salt Water Squad", "Dock Boyz", "The Tide"] },
+  { name: "Pro League", title: "Pro", court: "Downtown Cage", tourney: "Pro League Finals", base: 81, crews: ["Chain Link Gang", "Night Shift", "Cage Kings"] },
   { name: "The Throne", title: "Pro Star", court: "The Throne", tourney: "Throne Tournament", base: 88, crews: ["Crown Chasers", "Royal Court", "The Last King"] },
+  { name: "The Olympics", title: "Olympian", court: "Olympic Arena", tourney: "Olympic Basketball", base: 92, crews: ["Team Texas", "Team New York", "The Dream Team"] },
 ];
+const THRONE = 6, OLYMPICS = 7;
+const OLY_POOL = ["Team California", "Team Texas", "Team New York", "Team Florida", "Team Illinois", "Team Georgia", "Team Ohio", "Team Washington"];
 const HS_POOL = ["Lincoln Lions", "Roosevelt Rams", "Kennedy Cougars", "Jefferson Jets", "Madison Mustangs", "Hamilton Hornets", "Franklin Falcons", "Washington Warriors"];
 const FRANCHISES = ["Metro Kings", "Harbor Hawks", "Capital Crowns", "Skyline Sharks", "Iron City Titans", "Bay Blaze", "Northside Knights", "Desert Suns"];
 // What the scout's grade gets you
-const DRAFT = { A: { tier: 3, bonus: 600, note: "a Rare teammate" }, B: { tier: 2, bonus: 300 }, C: { tier: 1, bonus: 120 }, D: { tier: 1, bonus: 0, walkOn: true }, F: { tier: 1, bonus: 0, walkOn: true } };
+const DRAFT = { A: { tier: 4, bonus: 600, note: "a Rare teammate" }, B: { tier: 3, bonus: 300 }, C: { tier: 2, bonus: 120 }, D: { tier: 1, bonus: 40 }, F: { tier: 1, bonus: 0, walkOn: true } };
 function gradeOf(score) { return score >= 85 ? "A" : score >= 70 ? "B" : score >= 55 ? "C" : score >= 45 ? "D" : "F"; }
 // One high school game, as the scout sees it (0-100)
 function scoutGameScore(won, margin, box) {
@@ -753,11 +757,19 @@ function generatePlayer(rng, base, pos) {
   return p;
 }
 // A crew is a guard, a wing and a big.
-function makeCrew(rng, base) { return [rng.choice(["PG", "SG"]), rng.choice(["SF", "SG", "PF"]), rng.choice(["C", "PF"])].map(pos => generatePlayer(rng, base, pos)); }
+// Each crew member lands close to the level's rating (attribute levels would otherwise push top crews past 99).
+function settleOverall(p, target) {
+  for (let pass = 0; pass < 4; pass++) { const diff = target - overall(p); if (!diff) break; for (const k of S.STATS) p.stats[k] = clamp(p.stats[k] + diff, 20, S.STAT_MAX); }
+  return p;
+}
+function makeCrew(rng, base) {
+  return [rng.choice(["PG", "SG"]), rng.choice(["SF", "SG", "PF"]), rng.choice(["C", "PF"])]
+    .map(pos => settleOverall(generatePlayer(rng, base, pos), Math.min(99, base + rng.randint(-2, 2))));
+}
 function crewPlayers(ci, k) { return makeCrew(new Rng(`${TIERS[ci].court}|${TIERS[ci].crews[k]}`), TIERS[ci].base + ROUND_OFFSETS[k]); }
 // Tournament bracket for one entry: two random crews, then that court's champions in the final.
 function bracket(tier, seed) {
-  const rng = new Rng(`T|${tier}|${seed}`), pool = [...(tier === 0 ? HS_POOL : TEAM_POOL)];
+  const rng = new Rng(`T|${tier}|${seed}`), pool = [...(tier === 0 ? HS_POOL : tier === OLYMPICS ? OLY_POOL : TEAM_POOL)];
   return ROUNDS.map((round, r) => {
     const name = r === 2 ? TIERS[tier].crews[2] : pool.splice(rng.randint(0, pool.length - 1), 1)[0];
     const players = makeCrew(rng, TIERS[tier].base + ROUND_OFFSETS[r]);
@@ -833,15 +845,21 @@ function marketOdds(luck) { const w = RARITY.map(r => r.w * (1 + r.boost * luck)
 class Career {
   constructor(d) {
     Object.assign(this, { cash: 100, fame: 0, tier: 0, champion: false, starters: [0, 1], tourney: null, entries: 0, titles: 0, games: 0, market: null, moves: {},
-      stage: "hs", team: null, startTier: 0, gamesAtDraft: 0, hsLog: [], hsDone: false, hsChamp: false, draftGrade: null }, d);
+      stage: "hs", team: null, startTier: 0, gamesAtDraft: 0, hsLog: [], hsDone: false, hsChamp: false, draftGrade: null, gold: false, ladder: 2 }, d);
     // older saves: give everyone a position
     if (!this.me.pos) this.me.pos = "SF";
     for (const p of this.crew) if (!p.pos) p.pos = guessPos(p);
     // saves from before story mode: they were already on the park ladder, so they're pros
     if (d && !d.stage) {
-      this.tier = (d.tier || 0) + 1; this.stage = "pro"; this.startTier = 1; this.team = new Rng(this.me.name).choice(FRANCHISES);
-      if (this.tourney) this.tourney.tier += 1;
+      this.tier = (d.tier || 0) + 2; this.stage = "pro"; this.startTier = 2; this.team = new Rng(this.me.name).choice(FRANCHISES);
+      if (this.tourney) this.tourney.tier += 2;
+    } else if (d && d.stage && !d.ladder) {
+      // story saves from before the Hustle League was added: everything from Rec League up moves up one
+      if (this.tier >= 1) this.tier++;
+      if (this.startTier >= 1) this.startTier++;
+      if (this.tourney && this.tourney.tier >= 1) this.tourney.tier++;
     }
+    this.ladder = 2;
   }
   static fresh(name, main, pos = "SF") {
     const rng = new Rng();
@@ -850,7 +868,7 @@ class Career {
     // every new baller starts with a point guard and a big man
     return new Career({ stage: "hs", me, crew: [generatePlayer(rng, 33, "PG"), generatePlayer(rng, 33, "C")] });
   }
-  get title() { return this.champion ? KING : TIERS[this.tier].title; }
+  get title() { return this.gold ? "Olympic Gold Medalist" : this.champion ? KING : TIERS[this.tier].title; }
   get lowestCourt() { return this.stage === "pro" ? 1 : 0; }
   // ---- the scout's verdict on your high school tournament
   scoutReport() {
@@ -921,8 +939,9 @@ class Career {
         } else {   // won the whole tournament
           r.champ = true; this.titles++; this.tourney = null;
           r.fame += 40 + 10 * ci; r.cash += 250 + 150 * ci;
-          if (ci === this.tier && this.tier < TIERS.length - 1) { this.tier++; r.tierUp = true; }
-          else if (ci === TIERS.length - 1 && !this.champion) { this.champion = true; r.crowned = true; }
+          if (ci === THRONE && !this.champion) { this.champion = true; r.crowned = true; }     // King of the Courts…
+          if (ci === OLYMPICS) { if (!this.gold) { this.gold = true; r.gold = true; } }         // …then Olympic gold
+          else if (ci === this.tier && this.tier < TIERS.length - 1) { this.tier++; r.tierUp = true; }
         }
       }
     } else {
@@ -990,8 +1009,8 @@ class Career {
   }
   toggleStarter(i) { if (!this.starters.includes(i)) this.starters = [this.starters[this.starters.length - 1], i]; }
   toJSON() {
-    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade } = this;
-    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade };
+    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder } = this;
+    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder };
   }
 }
 
@@ -1058,27 +1077,60 @@ function line(x1, y1, x2, y2, color, w) { ctx.beginPath(); ctx.moveTo(x1, y1); c
 const THEMES = [
   // Eastside High Blacktop: school maroon and gold
   { asphalt: "#3a3d47", surround: "#2e5a36", line: "#f2d16b", paint: "#7a1f2b", fence: "#8a8a8a" },
-  { asphalt: "#4e5056", surround: "#3e693a", line: "#e1e1d7", paint: "#965032", fence: "#787878" },
+  // Hustle League: an old rec-center gym (wood floor, bleachers, cinder-block walls)
+  { indoor: "gym", asphalt: "#c89258", plank: "#b27d47", surround: "#4a4038", line: "#f4f1ea", paint: "#2f5fa8", fence: "#6b5238", banner: "HUSTLE LEAGUE" },
+  { cracks: true, asphalt: "#4e5056", surround: "#3e693a", line: "#e1e1d7", paint: "#965032", fence: "#787878" },
   { asphalt: "#2c2e34", surround: "#78766e", line: "#f0f0f0", paint: "#325aa0", fence: "#5a5a5f" },
   { asphalt: "#38566e", surround: "#967650", line: "#f5f5eb", paint: "#1e8c96", fence: "#c8c8be" },
   { asphalt: "#26262c", surround: "#70382c", line: "#e6e6e6", paint: "#be3232", fence: "#46464b" },
   { asphalt: "#3a2452", surround: "#281e12", line: "#f5cd5a", paint: "#6e3c96", fence: "#c8a03c" },
+  // Olympic Arena: polished blue floor under the lights
+  { indoor: "arena", asphalt: "#1d4f9e", plank: "#1a478f", surround: "#0b1022", line: "#ffffff", paint: "#e9eef8", paintLine: "#1d4f9e", fence: "#1c2748", banner: "OLYMPIC BASKETBALL" },
 ];
 function drawCourt(tier) {
   const th = THEMES[Math.min(tier, THEMES.length - 1)], [hx, hy] = S.HOOP, r = S.ARC;
   ctx.fillStyle = th.surround; ctx.fillRect(0, 0, S.W, S.H);
-  ctx.strokeStyle = th.fence; ctx.lineWidth = 3; ctx.strokeRect(S.CL - 28, S.CT - 28, S.CR - S.CL + 56, S.CB - S.CT + 56);
-  for (let x = S.CL - 28; x <= S.CR + 28; x += 80) { circle(x, S.CT - 28, 5, th.fence); circle(x, S.CB + 28, 5, th.fence); }
-  ctx.fillStyle = th.asphalt; ctx.fillRect(S.CL, S.CT, S.CR - S.CL, S.CB - S.CT);
-  if (tier === 1) {
+  if (th.indoor) {
+    if (th.indoor === "gym") {   // cinder-block walls
+      ctx.strokeStyle = "rgba(0,0,0,0.18)"; ctx.lineWidth = 1;
+      for (let y = 0; y < S.H; y += 18) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(S.W, y); ctx.stroke();
+        for (let x = (y / 18) % 2 ? 0 : 20; x < S.W; x += 40) { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + 18); ctx.stroke(); } }
+    } else {                       // arena: spotlights in the dark
+      for (const [lx, ly] of [[250, 120], [750, 120], [500, 420]]) {
+        const g = ctx.createRadialGradient(lx, ly, 10, lx, ly, 420); g.addColorStop(0, "rgba(120,160,255,0.22)"); g.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = g; ctx.fillRect(0, 0, S.W, S.H);
+      }
+    }
+    // bleachers down both sides
+    for (const [x0, x1] of [[0, 78], [922, S.W]]) {
+      ctx.fillStyle = th.fence; ctx.fillRect(x0, 60, x1 - x0, 590);
+      ctx.strokeStyle = "rgba(0,0,0,0.35)"; ctx.lineWidth = 2;
+      for (let x = x0 + 12; x < x1; x += 22) { ctx.beginPath(); ctx.moveTo(x, 60); ctx.lineTo(x, 650); ctx.stroke(); }
+    }
+    // floor with planks and the league's name painted on it
+    ctx.fillStyle = th.asphalt; ctx.fillRect(S.CL - 16, S.CT - 10, S.CR - S.CL + 32, S.CB - S.CT + 26);
+    ctx.strokeStyle = th.plank; ctx.lineWidth = 1;
+    for (let x = S.CL - 16; x < S.CR + 16; x += 14) { ctx.beginPath(); ctx.moveTo(x, S.CT - 10); ctx.lineTo(x, S.CB + 16); ctx.stroke(); }
+    const sheen = ctx.createLinearGradient(0, S.CT, 0, S.CB); sheen.addColorStop(0, "rgba(255,255,255,0.10)"); sheen.addColorStop(0.5, "rgba(255,255,255,0)"); sheen.addColorStop(1, "rgba(255,255,255,0.06)");
+    ctx.fillStyle = sheen; ctx.fillRect(S.CL - 16, S.CT - 10, S.CR - S.CL + 32, S.CB - S.CT + 26);
+    ctx.save(); ctx.globalAlpha = 0.16;
+    text(th.banner, 500, 560, { size: 64, color: th.line, center: true, display: true });
+    ctx.restore();
+  } else {
+    ctx.strokeStyle = th.fence; ctx.lineWidth = 3; ctx.strokeRect(S.CL - 28, S.CT - 28, S.CR - S.CL + 56, S.CB - S.CT + 56);
+    for (let x = S.CL - 28; x <= S.CR + 28; x += 80) { circle(x, S.CT - 28, 5, th.fence); circle(x, S.CB + 28, 5, th.fence); }
+    ctx.fillStyle = th.asphalt; ctx.fillRect(S.CL, S.CT, S.CR - S.CL, S.CB - S.CT);
+  }
+  if (th.cracks) {
     ctx.strokeStyle = "#3c3e44"; ctx.lineWidth = 2;
     for (const pts of [[[180, 520], [230, 540], [260, 600]], [[760, 470], [800, 430], [850, 450]], [[600, 580], [640, 560], [700, 600]]]) {
       ctx.beginPath(); ctx.moveTo(...pts[0]); for (const p of pts.slice(1)) ctx.lineTo(...p); ctx.stroke();
     }
   }
   ctx.fillStyle = th.paint; ctx.fillRect(hx - S.PAINT_HW, S.CT, S.PAINT_HW * 2, S.PAINT_D);
-  ctx.strokeStyle = th.line; ctx.lineWidth = 3;
+  ctx.strokeStyle = th.paintLine || th.line; ctx.lineWidth = 3;
   ctx.strokeRect(hx - S.PAINT_HW, S.CT, S.PAINT_HW * 2, S.PAINT_D);
+  ctx.strokeStyle = th.line;
   circle(hx, S.CT + S.PAINT_D, 60, null, th.line, 3);
   ctx.beginPath(); ctx.arc(hx, hy, r, 0, Math.PI); ctx.strokeStyle = th.line; ctx.lineWidth = 3; ctx.stroke();
   line(hx - r, S.CT, hx - r, hy, th.line, 3); line(hx + r, S.CT, hx + r, hy, th.line, 3);
@@ -1199,10 +1251,10 @@ class TitleScreen extends Screen {
     if (saved) items.unshift(["Continue", () => { App.career = saved; App.switch(new HubScreen()); }]);
     this.menu = new Menu(items);
     const rng = new Rng();
-    this.demo = new Match(crewPlayers(1, 0), crewPlayers(1, 1), rng, false);
+    this.demo = new Match(crewPlayers(2, 0), crewPlayers(2, 1), rng, false);
   }
   key(k) { this.menu.key(k); }
-  update(dt) { this.demo.update(dt); if (this.demo.phase === "over") this.demo = new Match(crewPlayers(1, 0), crewPlayers(1, 1), new Rng(), false); }
+  update(dt) { this.demo.update(dt); if (this.demo.phase === "over") this.demo = new Match(crewPlayers(2, 0), crewPlayers(2, 1), new Rng(), false); }
   draw() {
     drawCourt(0); drawActors(this.demo);
     ctx.fillStyle = "rgba(10,10,14,0.78)"; ctx.fillRect(0, 0, S.W, S.H);
@@ -1277,29 +1329,29 @@ class HubScreen extends Screen {
     this.menu.draw(280, 140, 54, 38);
     if (!c.market.seen) { rrect(420, 170, 48, 22, 6, C.red); text("NEW", 444, 181, { size: 20, center: true, display: true }); }
     rrect(540, 100, 430, 500, 10, "#181a22", C.grey, 1.5);
-    text("THE ROAD TO THE THRONE", 755, 126, { size: 30, color: C.gold, center: true, display: true });
+    text("THE ROAD TO GOLD", 755, 126, { size: 30, color: C.gold, center: true, display: true });
     TIERS.forEach((t, i) => {
-      const y = 152 + i * 60;
-      const here = i === c.tier && !c.champion;
-      const done = i < c.tier || (i === TIERS.length - 1 && c.champion);
-      const status = here ? "YOU ARE HERE" : !done ? "LOCKED" : i === 0 ? "GRADUATED" : c.stage === "pro" && i < c.startTier ? "SKIPPED" : "WON";
+      const y = 144 + i * 48;
+      const here = i === c.tier && !c.gold;
+      const done = i < c.tier || (i === OLYMPICS && c.gold);
+      const status = here ? "YOU ARE HERE" : !done ? "LOCKED" : i === 0 ? "GRADUATED" : i === OLYMPICS ? "GOLD" : c.stage === "pro" && i < c.startTier ? "SKIPPED" : "WON";
       const col = here ? C.white : done ? (status === "SKIPPED" ? C.grey : C.green) : "#5c5f6b";
-      text(t.name, 564, y, { size: 28, color: col });
-      text(status, 946, y + 4, { size: 18, color: col, right: true });
-      text(`${t.court} · ${t.tourney}`, 564, y + 26, { size: 19, color: C.grey, weight: 500 });
-      if (here && c.tourney) text(`${ROUNDS[c.tourney.round]} next`, 946, y + 26, { size: 18, color: C.gold, right: true });
+      text(t.name, 564, y, { size: 26, color: col });
+      text(status, 946, y + 3, { size: 17, color: col, right: true });
+      text(`${t.court} · ${t.tourney}`, 564, y + 22, { size: 17, color: C.grey, weight: 500 });
+      if (here && c.tourney) text(`${ROUNDS[c.tourney.round]} next`, 946, y + 22, { size: 17, color: C.gold, right: true });
     });
     const sc = c.scouting();
     if (sc >= 0.15) {
-      rrect(556, 516, 398, 76, 8, "#3a1d1d", C.red, 1.5);
-      text(`SCOUTED ${Math.round(sc * 100)}%`, 574, 532, { size: 26, color: "#ff8a7a", display: true });
-      text("You rose fast. Teams guard you tighter", 574, 558, { size: 20, color: C.grey, weight: 500 });
-      text("and learn your favorite dribble move.", 574, 576, { size: 20, color: C.grey, weight: 500 });
+      rrect(556, 528, 398, 64, 8, "#3a1d1d", C.red, 1.5);
+      text(`SCOUTED ${Math.round(sc * 100)}%`, 574, 538, { size: 24, color: "#ff8a7a", display: true });
+      text("You rose fast. Teams guard you tighter and read your moves.", 574, 566, { size: 18, color: C.grey, weight: 500 });
     } else if (c.stage === "hs") {
-      text("SCOUTS ARE WATCHING", 755, 530, { size: 24, color: C.gold, center: true, display: true });
-      text("Your last high school tournament decides your draft.", 755, 562, { size: 20, color: C.grey, center: true, weight: 500 });
-    } else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    if (c.champion) text(`You are the ${KING}!`, 755, 500, { size: 28, color: C.gold, center: true });
+      text("SCOUTS ARE WATCHING", 755, 540, { size: 24, color: C.gold, center: true, display: true });
+      text("Your last high school tournament decides your draft.", 755, 570, { size: 20, color: C.grey, center: true, weight: 500 });
+    } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
+    else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
+    else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
     this.footer("Progress saves automatically in this browser");
   }
 }
@@ -1311,7 +1363,7 @@ class CourtScreen extends Screen {
   get minCourt() { return this.c.lowestCourt; }
   options() {
     const c = this.c, out = [];
-    if (this.ci === c.tier && !c.champion) {
+    if (this.ci === c.tier && !c.gold) {
       const g = c.tourney && c.tourney.tier === this.ci ? c.tourneyGame() : null;
       out.push({ kind: "tourney", game: g });
     }
@@ -1349,7 +1401,9 @@ class CourtScreen extends Screen {
         rrect(140, y, 720, h, 12, sel ? "#3d2f14" : "#2a2214", sel ? C.gold : "#6b5520", 2);
         text(TIERS[this.ci].tourney, 162, y + 12, { size: 38, color: C.gold, display: true });
         const blurb = c.stage === "hs" ? "Scouts are watching. One shot: lose and high school is over."
-          : this.ci < TIERS.length - 1 ? `Win 3 games to move up to the ${TIERS[this.ci + 1].name}` : `Win it to become ${KING}`;
+          : this.ci === OLYMPICS ? "The best teams in the country. Win it for the gold medal."
+          : this.ci === THRONE ? `Win it to become ${KING} and go to the Olympics`
+          : `Win 3 games to move up to the ${TIERS[this.ci + 1].name}`;
         text(blurb, 162, y + 48, { size: 24, color: c.stage === "hs" ? C.gold : C.white, weight: 500 });
         const t = c.tourney, games = bracket(this.ci, t ? t.seed : c.entries + 1);
         ROUNDS.forEach((rn, r) => {
@@ -1890,6 +1944,7 @@ class ResultScreen extends Screen {
     else if (r.hsDone) { text("High school is over. The scout has seen enough.", 500, y, { size: 26, color: C.white, center: true }); y += 36; }
     if (r.tierUp) { text(`You won the ${TIERS[this.crew.court].tourney}! Next stop: ${TIERS[c.tier].court} (${TIERS[c.tier].name}).`, 500, y, { size: 28, color: C.gold, center: true }); y += 38; }
     if (r.crowned) { text(`YOU ARE THE ${KING.toUpperCase()}!`, 500, y, { size: 40, color: C.gold, center: true, display: true }); y += 44; }
+    if (r.gold) { text("OLYMPIC GOLD MEDAL!", 500, y, { size: 48, color: C.gold, center: true, display: true }); y += 50; text("You beat the best in the country.", 500, y, { size: 26, center: true }); y += 36; }
     if (r.tierUp && c.scouting() >= 0.15) { text(`You moved up fast. Teams are scouting you (${Math.round(c.scouting() * 100)}%).`, 500, y, { size: 24, color: "#ff8a7a", center: true }); y += 34; }
     this.menu.draw(500, Math.max(420, y + 30), 48, 34);
   }
