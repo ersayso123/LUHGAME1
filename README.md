@@ -4,6 +4,10 @@ A top-down **3v3 streetball** career game. You start as a nobody at a cracked-up
 
 ## How to run
 
+**Windows, easiest:** double-click **`PLAY.bat`**. It installs what the game needs the first time, then starts it.
+
+**Or from a terminal:**
+
 You need [Python 3.10+](https://www.python.org/downloads/).
 
 ```bash
