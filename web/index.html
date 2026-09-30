@@ -258,13 +258,19 @@ class Match {
     this.bench = opts.bench || { 0: [], 1: [] }; this.subsLeft = [1, 1];
     this.injuriesOn = !!opts.injuries; this.injured = []; this.played = new Set(teamA);
     this.actors = [...teamA.map((p, i) => new Actor(p, 0, i)), ...teamB.map((p, i) => new Actor(p, 1, i))];
+    // Class gap: a team rated well above the other dominates (steals, boards, contests, shooting). Grows faster than the gap.
+    const gap = teamOverall(teamA) - teamOverall(teamB), g = Math.sign(gap) * Math.min(1.5, Math.pow(Math.max(0, Math.abs(gap) - 4) / 12, 1.3));   // small gaps barely matter
+    this.edgeK = [g, -g];
     this.ball = new Ball(); this.score = [0, 0]; this.winner = null; this.messages = [];
     this.meter = null; this.elapsed = 0; this.controlled = this.team(0)[0];
     this.fx = { swish: 0, shake: 0 };
     this.events = [];   // things the screen shows and plays sounds for (makes, misses, greens, ankle breaks)
     this.setupCheck(0);
+    if (human && gap <= -8) this.say(`They're ${-gap} OVR better. Protect the ball!`, 2.6);
+    else if (human && gap >= 8) this.say(`You're ${gap} OVR better. Take over!`, 2.2);
   }
   team(t) { return this.actors.filter(a => a.team === t); }
+  edge(a) { return this.edgeK[a.team]; }   // + when a's team is the better one
   get mainGuy() { return this.team(0)[0]; }
   say(text, secs = 1.6) { this.messages.push([text, secs]); this.messages = this.messages.slice(-3); }
   nearestOpp(a, pos) { pos = pos || a.pos; let best = null, bd = 1e9; for (const o of this.team(1 - a.team)) { const d = dist(o.pos, pos); if (d < bd) { bd = d; best = o; } } return [bd, best]; }
@@ -488,7 +494,8 @@ class Match {
     const t = clamp((dist(a.pos, S.HOOP) - 60) / (S.ARC + 90 - 60), 0, 1);
     const skill = 0.4 + a.p.stats.shooting / 99 * 0.9;            // 40 shooting ≈ 0.76x, 80 ≈ 1.13x
     const nervous = this.pressureOn && a.team === 0 ? (this.pressure >= 0.7 ? 0.7 : this.pressure >= 0.5 ? 0.86 : 1) : 1;
-    return (S.WIN_NEAR + (S.WIN_FAR - S.WIN_NEAR) * t) * skill * nervous + a.eff("meter") + (a.stepBackT > 0 ? 0.015 : 0) + (a.onFire ? 0.012 : 0);
+    const cls = Math.max(0.7, 1 + 0.15 * this.edge(a));   // outclassed: the green gets tighter
+    return (S.WIN_NEAR + (S.WIN_FAR - S.WIN_NEAR) * t) * skill * nervous * cls + a.eff("meter") + (a.stepBackT > 0 ? 0.015 : 0) + (a.onFire ? 0.012 : 0);
   }
   meterQuality(a, m) { const w = this.meterWindow(a), off = Math.abs(m - S.METER_SWEET); return off <= w ? 1 - 0.5 * off / w : Math.max(-1, -(off - w) / 0.25); }
   pickPassTarget(a, dir) {
@@ -509,7 +516,7 @@ class Match {
     const [dd, dfd] = this.nearestOpp(a);
     if (!dfd || dd >= 70) return 0;
     const scouted = a.team === 0 ? 1 + 0.5 * this.scout : coachOn(this, "lockdown") ? 1.25 : 1;
-    return (1 - dd / 70) * (0.12 + dfd.p.stats.defense / 99 * 0.2 + dfd.eff("contest")) * scouted;
+    return (1 - dd / 70) * (0.12 + dfd.p.stats.defense / 99 * 0.2 + dfd.eff("contest")) * scouted * Math.max(0.4, 1 + 0.35 * this.edge(dfd));
   }
   // Chance to make a shot that is NOT a green release.
   makeChance(a, kind, quality = 0) {
@@ -523,6 +530,7 @@ class Match {
       // just missing the green barely hurts; a way-off release hurts a lot (but never guarantees a miss)
       base += (sh - 50) / 99 * 0.3 + quality * 0.18 - this.contest(a);
     }
+    base += 0.03 * this.edge(a);
     return clamp(base, 0.02, 0.95);
   }
   takeShot(a, kind, quality = 0, green = false) {
@@ -532,7 +540,7 @@ class Match {
       for (const dfd of this.team(1 - a.team)) {
         const dd = dist(dfd.pos, a.pos);
         if (dd < S.BLOCK_RANGE && dfd.stun <= 0) {
-          let ch = S.BLOCK_BASE * dfd.p.stats.defense / 70 * (dfd.jump > 0 ? 1.8 : 1) * (1 - 0.5 * dd / S.BLOCK_RANGE);
+          let ch = S.BLOCK_BASE * dfd.p.stats.defense / 70 * (dfd.jump > 0 ? 1.8 : 1) * (1 - 0.5 * dd / S.BLOCK_RANGE) * Math.max(0.4, 1 + 0.4 * this.edge(dfd));
           if (kind === "dunk") ch *= 0.3; if (pts === 2) ch *= 0.6;
           if (this.rng.random() < ch) {
             this.say(`BLOCKED by ${dfd.p.name}!`);
@@ -599,7 +607,7 @@ class Match {
     if (type === "stepback" || type === "sidestep") a.stepBackT = 0.9;
     const [dd, dfd] = this.nearestOpp(a);
     if (dfd && dd < 55 && dfd.stun <= 0) {
-      const ch = (0.25 + (a.p.stats.handles - dfd.p.stats.defense) / 200 + a.eff("cross")) * mv.odds;
+      const ch = (0.25 + (a.p.stats.handles - dfd.p.stats.defense) / 200 + a.eff("cross") + 0.08 * this.edge(a)) * mv.odds;
       if (this.rng.random() < clamp(ch, 0.04, 0.8)) {
         dfd.stun = mv.stun; dfd.vx *= 0.2; dfd.vy *= 0.2;
         this.events.push({ type: "ankles", x: dfd.x, y: dfd.y, team: a.team });
@@ -615,8 +623,8 @@ class Match {
     const h = this.ball.holder;
     if (dist(a.pos, h.pos) > S.STEAL_RANGE) { a.cool = 0.4; return; }
     a.cool = 0.9; a.setAnim("reach", 0.3);
-    const ch = S.STEAL_BASE + (a.p.stats.defense - h.p.stats.handles) / 250 + a.eff("steal");
-    if (this.rng.random() < clamp(ch, 0.03, 0.6)) { if (h === this.mainGuy) this.box.to++; if (h.team === 0) this.nerves(0.15); this.ball.setHeld(a); this.turnover(a.team); this.say(`Stolen by ${a.p.name}!`); this.events.push({ type: "steal", x: a.x, y: a.y, team: a.team }); }
+    const ch = S.STEAL_BASE + (a.p.stats.defense - h.p.stats.handles) / 250 + a.eff("steal") + 0.16 * this.edge(a);
+    if (this.rng.random() < clamp(ch, 0.02, 0.75)) { if (h === this.mainGuy) this.box.to++; if (h.team === 0) this.nerves(0.15); this.ball.setHeld(a); this.turnover(a.team); this.say(`Stolen by ${a.p.name}!`); this.events.push({ type: "steal", x: a.x, y: a.y, team: a.team }); }
     else a.stun = 0.2;
   }
   updateBall(dt) {
@@ -628,7 +636,7 @@ class Match {
         if (b.checked.has(dfd) || dfd.stun > 0) continue;
         if (dist([b.x, b.y], dfd.pos) < 16) {
           b.checked.add(dfd);
-          const ch = 0.28 * dfd.p.stats.defense / 80 - b.passer.eff("pass") * 0.8 + dfd.eff("steal");
+          const ch = 0.28 * dfd.p.stats.defense / 80 - b.passer.eff("pass") * 0.8 + dfd.eff("steal") + 0.12 * this.edge(dfd);
           if (this.rng.random() < clamp(ch, 0.02, 0.7)) { if (b.passer === this.mainGuy) this.box.to++; if (b.passer.team === 0) this.nerves(0.15); b.setHeld(dfd); this.turnover(dfd.team); this.say(`Picked off by ${dfd.p.name}!`); return; }
         }
       }
@@ -669,7 +677,7 @@ class Match {
       if (a.stun > 0) continue;
       const boost = a.team === 0 && (coachOn(this, "boxout") || coachOn(this, "crash"));
       const reach = S.GRAB + a.eff("reach") + (a.jump > 0 ? 6 : 0) + (boost ? 6 : 0);
-      if (dist(a.pos, [b.x, b.y]) <= reach) cands.push([a, Math.max(1, a.p.stats.rebounding * (1 + a.eff("rebound")) * (boost ? 1.6 : 1))]);
+      if (dist(a.pos, [b.x, b.y]) <= reach) cands.push([a, Math.max(1, a.p.stats.rebounding * (1 + a.eff("rebound")) * (boost ? 1.6 : 1) * Math.max(0.4, 1 + 0.35 * this.edge(a)))]);
     }
     if (!cands.length) return;
     const a = this.rng.choices(cands.map(c => c[0]), cands.map(c => c[1]));
@@ -707,7 +715,7 @@ const AI = (() => {
   // AI "hits the green" about as often as a player of that skill would; otherwise a mistimed release.
   function jumper(m, a) {
     const t = clamp((dist(a.pos, S.HOOP) - 60) / (S.ARC + 90 - 60), 0, 1);
-    const g = clamp((0.12 + (a.p.stats.shooting - 40) / 130 + a.eff("meter") * 3 - 0.1 * t) * (1 - m.contest(a) * 1.5), 0.03, 0.55);
+    const g = clamp((0.12 + (a.p.stats.shooting - 40) / 130 + a.eff("meter") * 3 - 0.1 * t) * (1 - m.contest(a) * 1.5) * Math.max(0.5, 1 + 0.25 * m.edge(a)), 0.03, 0.6);
     if (m.rng.random() < g) return I({ action: "shoot", kind: "jumper", green: true, quality: 1 });
     return I({ action: "shoot", kind: "jumper", quality: m.rng.uniform(-0.9, 0.2) });
   }
@@ -794,7 +802,7 @@ const AI = (() => {
     }
     const it = I({ move: toward(a, gp, 10) });
     if (onBall && a.cool <= 0 && dist(a.pos, man.pos) < S.STEAL_RANGE) {
-      const rate = 0.6 * (a.p.stats.defense / 99 + a.eff("steal") * 3) * (1 + sc) * (1 + lock);
+      const rate = 0.6 * (a.p.stats.defense / 99 + a.eff("steal") * 3) * (1 + sc) * (1 + lock) * Math.max(0.4, 1 + 0.9 * m.edge(a));   // better teams go for the ball more
       if (m.rng.random() < rate * dt) it.action = "steal";
     }
     return it;
@@ -851,7 +859,10 @@ const TIERS = [
 ];
 const THRONE = 6, OLYMPICS = 7, HUSTLE = 1;
 // Salary per game you play at your team's level (the Hustle League pays nothing)
-const SALARY = [0, 0, 30, 60, 110, 180, 280, 400];
+const SALARY = [0, 0, 15, 30, 60, 100, 160, 240];
+// Biggest bet a league will take (by the court you play at): the Hustle League is broke, the Throne is rich
+const BET_CAP = [0, 20, 40, 80, 150, 300, 500, 800];
+const BET_STEPS = [5, 10, 20, 40, 80, 150, 300, 500, 800];
 const QUAL_POOL = ["Southview Spartans", "Riverside Raiders", "Oak Hill Owls", "Maplewood Mavericks"];
 // High school starts with a best-of-3 qualifier series (win 2 to make the quarterfinals)
 function qualifierGame(seed, q) {
@@ -1304,9 +1315,9 @@ class Career {
     }
     if (won) {
       r.fame = (crew.mode === "tourney" ? 12 : 10) + 6 * ci + Math.floor(margin / 2);
-      r.cash = (crew.mode === "tourney" ? 60 : 50) + (crew.mode === "tourney" ? 40 : 50) * ci;
+      r.cash = crew.mode === "tourney" ? 30 + 25 * ci : 20 + 20 * ci;
       if (bet) r.betWin = Math.round(bet * mult);
-      r.tips = Math.round(this.crowdSize() * 0.5);
+      r.tips = Math.round(this.crowdSize() * 0.25);
       if (seriesWon) {
         if (this.tourney.round < FINAL_ROUND) { this.tourney.round++; this.tourney.series = { w: 0, l: 0 }; r.nextRound = true; }
         else if (hs) {   // state champions: the scout has seen enough
@@ -1317,14 +1328,14 @@ class Career {
           r.fame += 20;
         } else {   // won the whole tournament
           r.champ = true; this.titles++; this.tourney = null;
-          r.fame += 40 + 10 * ci; r.cash += 250 + 150 * ci;
+          r.fame += 40 + 10 * ci; r.cash += 120 + 90 * ci;
           if (ci === THRONE && !this.champion) { this.champion = true; r.crowned = true; }     // King of the Courts…
           if (ci === OLYMPICS) { if (!this.gold) { this.gold = true; r.gold = true; } }         // …then Olympic gold
           else if (ci === this.tier && this.tier < TIERS.length - 1) { this.tier++; r.tierUp = true; }
         }
       }
     } else {
-      r.fame = -this.fameLoss(); r.cash = 10;
+      r.fame = -this.fameLoss(); r.cash = 5;
       if (seriesLost) { this.tourney = null; r.eliminated = true; if (hs) { this.hsDone = true; r.hsDone = true; } if (hustleT) { this.hustlePending = true; r.hustleDone = true; } }
     }
     if (crew.mode === "tourney" && this.lastTourney && !this.tourney && !this.lastTourney.over) {   // the bracket is finished for you
@@ -1839,7 +1850,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 22 (brackets)");
+    this.footer("Progress saves automatically in this browser  ·  version 23 (class gap, bet caps)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -2008,8 +2019,9 @@ class WagerScreen extends Screen {
   constructor(ci, crew) {
     super(); this.ci = ci; this.crew = crew;
     const cash = this.c.cash;
-    this.bets = [0, ...[25, 50, 100, 250, 500, 1000].filter(b => b <= cash)];
-    if (cash > 0 && !this.bets.includes(cash)) this.bets.push(cash);
+    this.cap = BET_CAP[ci] || 0;
+    this.bets = [0, ...BET_STEPS.filter(b => b <= Math.min(cash, this.cap))];
+    if (cash > 0 && cash < this.cap && !this.bets.includes(cash)) this.bets.push(cash);   // all in
     this.i = 0; this.mine = this.c.lineupFor(crew); this.mult = Luck.wagerMult(teamOverall(this.mine), crew.ovr);
   }
   go() { const bet = this.bets[this.i]; if (Luck.placeBet(this.c, bet)) { App.save(); App.switch(new MatchScreen(this.ci, this.crew, bet, this.mult)); } }
@@ -2027,7 +2039,8 @@ class WagerScreen extends Screen {
     text(gap > 0 ? `They're ${gap} OVR better than you, so a win pays ${this.mult}x your bet.` : gap < 0 ? `You're ${-gap} OVR better, so a win only pays ${this.mult}x.` : `Even matchup: a win pays ${this.mult}x.`,
       500, 234, { size: 27, color: gap > 0 ? C.gold : C.grey, center: true, weight: 500 });
     text("Tougher opponents pay more. Lose and the bet is gone.", 500, 262, { size: 22, color: C.grey, center: true, weight: 500 });
-    const allIn = bet === c.cash && ![25, 50, 100, 250, 500, 1000].includes(bet);
+    const allIn = bet === c.cash && !BET_STEPS.includes(bet);
+    text(`${TIERS[this.ci].name} max bet: $${this.cap}`, 500, 290, { size: 22, color: C.grey, center: true, weight: 500 });
     text(bet === 0 ? "No bet" : allIn ? `ALL IN  $${bet}` : `$${bet}`, 500, 330, { size: 64, color: bet ? C.gold : C.white, center: true, display: true });
     text("◀", 250, 330, { size: 60, center: true }); hit(210, 295, 80, 70, () => { this.i = Math.max(0, this.i - 1); });
     text("▶", 750, 330, { size: 60, center: true }); hit(710, 295, 80, 70, () => { this.i = Math.min(this.bets.length - 1, this.i + 1); });
@@ -2955,10 +2968,11 @@ const symColor = s => s === "ETERNAL" ? rarityColor({ rainbow: true }) : s === "
 const rarColorName = n => n === "Eternal" ? rarityColor({ rainbow: true }) : n === "Mythic" ? rarityColor({ glow: true }) : RARITY_COLORS[n];
 
 class SlotScreen extends Screen {
+  get bets() { return BET_STEPS.filter(b => b <= Math.max(10, BET_CAP[this.c.tier])); }   // the machine takes league-sized bets
   constructor() { super(); Object.assign(this, { bi: 1, spinT: 0, result: null, reels: ["BALL", "CROWN", "CASH"], msg: "Pick a bet and spin.", rng: new Rng() }); }
   spin() {
     if (this.spinT > 0) return;
-    const bet = Luck.BETS[this.bi], res = Luck.playSlots(this.c, bet, this.rng);
+    const bet = this.bets[Math.min(this.bi, this.bets.length - 1)], res = Luck.playSlots(this.c, bet, this.rng);
     if (!res) { this.msg = "Not enough cash for that bet."; return; }
     this.result = [bet, ...res]; this.spinT = 1.2; App.save();
   }
@@ -2966,7 +2980,7 @@ class SlotScreen extends Screen {
     if (this.spinT > 0) return;
     if (K.back(k)) App.switch(new HubScreen());
     else if (K.left(k)) this.bi = Math.max(0, this.bi - 1);
-    else if (K.right(k)) this.bi = Math.min(Luck.BETS.length - 1, this.bi + 1);
+    else if (K.right(k)) this.bi = Math.min(this.bets.length - 1, this.bi + 1);
     else if (K.ok(k)) this.spin();
   }
   update(dt) {
@@ -2989,10 +3003,10 @@ class SlotScreen extends Screen {
       if (sym === "MYTHIC" || sym === "ETERNAL") ctx.restore();
       if (sym === "ETERNAL") shine(x, 165, 150, 150, 14);
     });
-    const bet = Luck.BETS[this.bi];
+    const bet = this.bets[Math.min(this.bi, this.bets.length - 1)];
     text(`Bet $${bet}`, 500, 360, { size: 50, center: true, display: true });
     text("◀", 330, 360, { size: 54, center: true }); hit(290, 330, 80, 60, () => { if (this.spinT <= 0) this.bi = Math.max(0, this.bi - 1); });
-    text("▶", 670, 360, { size: 54, center: true }); hit(630, 330, 80, 60, () => { if (this.spinT <= 0) this.bi = Math.min(Luck.BETS.length - 1, this.bi + 1); });
+    text("▶", 670, 360, { size: 54, center: true }); hit(630, 330, 80, 60, () => { if (this.spinT <= 0) this.bi = Math.min(this.bets.length - 1, this.bi + 1); });
     rrect(420, 395, 160, 52, 10, C.gold); text("SPIN", 500, 421, { size: 32, color: "#1a1406", center: true, display: true }); hit(420, 395, 160, 52, () => this.spin());
     text(this.msg, 500, 474, { size: 32, color: this.msg.startsWith("ETERNAL") ? rainbow(360, 460, 280, 28) : this.msg.startsWith("MYTHIC") ? symColor("MYTHIC") : this.msg.startsWith("WINNER") ? C.green : C.white, center: true });
     ["3 ETERNAL = 1000x  ·  3 MYTHIC = 100x  ·  3 CROWNS = 20x  ·  any 3 of a kind = 5x", "2 ETERNAL = 25x  ·  2 MYTHIC = 8x  ·  2 CASH or CROWNS = 2x  ·  other pair = bet back", "The machine wins over time. Don't bet what you need!"]
@@ -3104,5 +3118,5 @@ window.claude?.hot?.snapshot?.(() => ({ career: App.career ? JSON.parse(JSON.str
 const boot = () => window.claude?.hot?.ready ? window.claude.hot.ready(start) : start(window.claude?.hot?.data ?? {});
 (document.fonts && document.fonts.load ? Promise.all([document.fonts.load('20px Bungee'), document.fonts.load('700 20px "Barlow Semi Condensed"'), document.fonts.load('500 20px "Barlow Semi Condensed"')]).catch(() => {}) : Promise.resolve()).then(boot, boot);
 // Test hook (used only by automated checks)
-window.__SK = { BracketScreen, bracketView, makeField, CrewScreen, GymScreen, OffersScreen, ScoutReportScreen, scoutGameScore, TIERS, MarketScreen, bracket, App, Match, Career, Luck, Rng, crewPlayers, overall, blankInputs, MatchScreen, HubScreen, CourtScreen, AttrScreen, SlotScreen, ResultScreen };
+window.__SK = { WagerScreen, BracketScreen, bracketView, makeField, CrewScreen, GymScreen, OffersScreen, ScoutReportScreen, scoutGameScore, TIERS, MarketScreen, bracket, App, Match, Career, Luck, Rng, crewPlayers, overall, blankInputs, MatchScreen, HubScreen, CourtScreen, AttrScreen, SlotScreen, ResultScreen };
 </script>
