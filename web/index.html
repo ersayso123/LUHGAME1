@@ -761,6 +761,28 @@ function rarityColor(r, t = performance.now() / 1000) {
   if (r.glow) return `hsl(350, 100%, ${58 + Math.sin(t * 5) * 8}%)`;
   return r.color;
 }
+// Eternal look: a rainbow that flows across the shape, a moving shine and sparkles.
+function rainbow(x, y, w, h, t = performance.now() / 1000) {
+  const g = ctx.createLinearGradient(x, y, x + w, y + h);
+  for (let i = 0; i <= 6; i++) g.addColorStop(i / 6, `hsl(${(i * 60 + t * 140) % 360}, 100%, 66%)`);
+  return g;
+}
+function shine(x, y, w, h, r, t = performance.now() / 1000) {
+  ctx.save(); ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.clip();
+  const sx = x - 80 + ((t * 0.55) % 1.4) / 1.4 * (w + 160);
+  ctx.translate(sx, y + h / 2); ctx.rotate(0.38);
+  const g = ctx.createLinearGradient(-30, 0, 30, 0);
+  g.addColorStop(0, "rgba(255,255,255,0)"); g.addColorStop(0.5, "rgba(255,255,255,0.38)"); g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g; ctx.fillRect(-30, -h, 60, h * 2);
+  ctx.restore();
+  for (let i = 0; i < 7; i++) {        // sparkles twinkle at fixed spots
+    const k = Math.sin(t * 4 + i * 2.3); if (k < 0.3) continue;
+    const px = x + ((i * 97 + 31) % 100) / 100 * w, py = y + ((i * 61 + 17) % 100) / 100 * h, sz = 3 + k * 5;
+    ctx.fillStyle = `rgba(255,255,255,${k})`;
+    ctx.beginPath(); ctx.moveTo(px, py - sz); ctx.lineTo(px + sz * 0.25, py); ctx.lineTo(px, py + sz); ctx.lineTo(px - sz * 0.25, py); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(px - sz, py); ctx.lineTo(px, py + sz * 0.25); ctx.lineTo(px + sz, py); ctx.lineTo(px, py - sz * 0.25); ctx.closePath(); ctx.fill();
+  }
+}
 function marketOdds(luck) { const w = RARITY.map(r => r.w * (1 + r.boost * luck)), t = w.reduce((a, b) => a + b, 0); return RARITY.map((r, i) => [r, w[i] / t * 100]); }
 
 class Career {
@@ -1269,14 +1291,16 @@ class MarketScreen extends Screen {
     const odds = marketOdds(c.marketLuck());
     let ox = 500 - odds.length * 76;
     odds.forEach(([r, pct]) => {
-      text(r.name, ox + 76, 178, { size: 20, color: rarityColor(r), center: true, display: true });
+      text(r.name, ox + 76, 178, { size: 20, color: r.rainbow ? rainbow(ox + 40, 170, 72, 16) : rarityColor(r), center: true, display: true });
       text(pct >= 1 ? `${pct.toFixed(1)}%` : `${pct.toFixed(2)}%`, ox + 76, 198, { size: 21, color: C.white, center: true });
       ox += 152;
     });
     offers.forEach((o, n) => {
-      const x = 60 + n * 222, y = 214, w = 210, h = 330, sel = n === this.i, p = o.player, r = { ...o.rarity, color: rarityColor(o.rarity) };
-      if (o.rarity.glow && !o.sold) { ctx.save(); ctx.shadowColor = r.color; ctx.shadowBlur = 22 + Math.sin(performance.now() / 150) * 8; rrect(x, y, w, h, 12, "#20222c", r.color, 3); ctx.restore(); }
-      rrect(x, y, w, h, 12, o.sold ? "#16171c" : "#20222c", sel ? C.gold : r.color, sel ? 3 : 2);
+      const x = 60 + n * 222, y = 214, w = 210, h = 330, sel = n === this.i, p = o.player, eternal = !!o.rarity.rainbow;
+      const r = { ...o.rarity, color: eternal ? rainbow(x, y, w, h) : rarityColor(o.rarity) };
+      if (o.rarity.glow && !o.sold) { ctx.save(); ctx.shadowColor = rarityColor(o.rarity); ctx.shadowBlur = 22 + Math.sin(performance.now() / 150) * 8; rrect(x, y, w, h, 12, "#20222c", r.color, 3); ctx.restore(); }
+      rrect(x, y, w, h, 12, o.sold ? "#16171c" : "#20222c", sel && !eternal ? C.gold : r.color, eternal ? 5 : sel ? 3 : 2);
+      if (eternal && !o.sold) { ctx.save(); ctx.globalAlpha = 0.12; rrect(x, y, w, h, 12, rainbow(x, y + h, w, -h)); ctx.restore(); }
       text(r.name.toUpperCase(), x + w / 2, y + 22, { size: 26, color: r.color, center: true, display: true });
       text(p.name, x + w / 2, y + 56, { size: 30, center: true });
       text(`${POS_NAMES[p.pos]}  ·  #${p.number}`, x + w / 2, y + 84, { size: 21, color: C.grey, center: true, weight: 500 });
@@ -1289,6 +1313,7 @@ class MarketScreen extends Screen {
       });
       const al = attrLabel(p).replace(" (2nd)", "²");
       text(al, x + w / 2, y + 280, { size: al.length > 26 ? 16 : 19, color: C.grey, center: true, weight: 500 });
+      if (eternal && !o.sold) shine(x, y, w, h, 12);
       if (o.sold) text("SIGNED", x + w / 2, y + 308, { size: 28, color: C.green, center: true, display: true });
       else { rrect(x + 30, y + 294, w - 60, 30, 8, "#264a2e"); text(`Sign · $${o.price}`, x + w / 2, y + 309, { size: 24, color: C.green, center: true }); }
       hit(x, y, w, h, () => { this.i = n; if (!o.sold) this.buy(o); });
@@ -1863,16 +1888,18 @@ class SlotScreen extends Screen {
     this.reels.forEach((sym, i) => {
       const x = 260 + i * 170;
       rrect(x, 165, 150, 150, 14, "#262835", C.gold, 3);
+      if (sym === "ETERNAL") { rrect(x, 165, 150, 150, 14, "#262835", rainbow(x, 165, 150, 150), 4); ctx.save(); ctx.globalAlpha = 0.15; rrect(x, 165, 150, 150, 14, rainbow(x, 315, 150, -150)); ctx.restore(); }
       if (sym === "MYTHIC" || sym === "ETERNAL") { ctx.save(); ctx.shadowColor = symColor(sym); ctx.shadowBlur = 20; }
-      text(sym, x + 75, 240, { size: sym.length > 6 ? 30 : 36, color: symColor(sym), center: true, display: true });
+      text(sym, x + 75, 240, { size: sym.length > 6 ? 30 : 36, color: sym === "ETERNAL" ? rainbow(x + 10, 225, 130, 30) : symColor(sym), center: true, display: true });
       if (sym === "MYTHIC" || sym === "ETERNAL") ctx.restore();
+      if (sym === "ETERNAL") shine(x, 165, 150, 150, 14);
     });
     const bet = Luck.BETS[this.bi];
     text(`Bet $${bet}`, 500, 360, { size: 50, center: true, display: true });
     text("◀", 330, 360, { size: 54, center: true }); hit(290, 330, 80, 60, () => { if (this.spinT <= 0) this.bi = Math.max(0, this.bi - 1); });
     text("▶", 670, 360, { size: 54, center: true }); hit(630, 330, 80, 60, () => { if (this.spinT <= 0) this.bi = Math.min(Luck.BETS.length - 1, this.bi + 1); });
     rrect(420, 395, 160, 52, 10, C.gold); text("SPIN", 500, 421, { size: 32, color: "#1a1406", center: true, display: true }); hit(420, 395, 160, 52, () => this.spin());
-    text(this.msg, 500, 474, { size: 32, color: this.msg.startsWith("ETERNAL") ? symColor("ETERNAL") : this.msg.startsWith("MYTHIC") ? symColor("MYTHIC") : this.msg.startsWith("WINNER") ? C.green : C.white, center: true });
+    text(this.msg, 500, 474, { size: 32, color: this.msg.startsWith("ETERNAL") ? rainbow(360, 460, 280, 28) : this.msg.startsWith("MYTHIC") ? symColor("MYTHIC") : this.msg.startsWith("WINNER") ? C.green : C.white, center: true });
     ["3 ETERNAL = 1000x  ·  3 MYTHIC = 100x  ·  3 CROWNS = 20x  ·  any 3 of a kind = 5x", "2 ETERNAL = 25x  ·  2 MYTHIC = 8x  ·  2 CASH or CROWNS = 2x  ·  other pair = bet back", "The machine wins over time. Don't bet what you need!"]
       .forEach((p, i) => text(p, 500, 520 + i * 28, { size: 24, color: C.grey, center: true, weight: 500 }));
     this.footer("◀ ▶ bet  ·  Space spin");
@@ -1893,15 +1920,17 @@ class MysteryScreen extends Screen {
     this.header("Mystery Baller"); this.backButton(() => App.switch(new HubScreen()));
     const c = this.c, cost = Luck.mysteryCost(c.tier);
     text(`Pay $${cost} for a random baller. Could be a Legend… could be a Bum.`, 500, 168, { size: 30, center: true });
-    Luck.RARITIES.forEach(([name, pct], i) => text(`${name}: ${pct}%`, 290 + (i % 3) * 210, 220 + Math.floor(i / 3) * 40, { size: 30, color: rarColorName(name), center: true }));
+    Luck.RARITIES.forEach(([name, pct], i) => { const x = 290 + (i % 3) * 210, y = 220 + Math.floor(i / 3) * 40; text(`${name}: ${pct}%`, x, y, { size: 30, color: name === "Eternal" ? rainbow(x - 80, y - 10, 160, 20) : rarColorName(name), center: true }); });
     text(`Your best crew member is OVR ${Math.max(...c.crew.map(overall))}  ·  Crew ${c.crew.length}/${S.CREW_MAX}`, 500, 338, { size: 23, color: C.grey, center: true, weight: 500 });
     if (this.reveal) {
       const [rarity, p] = this.reveal;
       const rc = rarColorName(rarity), top = rarity === "Mythic" || rarity === "Eternal";
+      const et = rarity === "Eternal";
       if (top) { ctx.save(); ctx.shadowColor = rc; ctx.shadowBlur = 28; }
-      rrect(250, 364, 500, 180, 14, "#262835", rc, 4);
+      rrect(250, 364, 500, 180, 14, "#262835", et ? rainbow(250, 364, 500, 180) : rc, et ? 6 : 4);
       if (top) ctx.restore();
-      text(rarity.toUpperCase(), 500, 396, { size: 44, color: rc, center: true, display: true });
+      text(rarity.toUpperCase(), 500, 396, { size: 44, color: et ? rainbow(380, 380, 240, 30) : rc, center: true, display: true });
+      if (et) shine(250, 364, 500, 180, 14);
       text(`#${p.number} ${p.name}  OVR ${overall(p)}`, 500, 442, { size: 34, center: true });
       text(statLine(p), 500, 482, { size: 22, color: C.grey, center: true, weight: 500 });
       text(attrLabel(p), 500, 512, { size: 22, color: C.grey, center: true, weight: 500 });
