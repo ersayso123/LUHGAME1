@@ -4,6 +4,8 @@ A top-down **3v3 streetball** career game. You start as a nobody at a cracked-up
 
 ## How to run
 
+**No install:** open `web/index.html` in any browser. It's the same game converted to JavaScript, with touch buttons for phones.
+
 **Windows, easiest:** double-click **`PLAY.bat`**. It installs what the game needs the first time, then starts it.
 
 **Or from a terminal:**
