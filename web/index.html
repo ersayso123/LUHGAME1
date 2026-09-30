@@ -68,6 +68,7 @@ body {
     </div>
     <div class="mid"><button class="pb" id="b-pause">PAUSE</button></div>
     <div class="acts">
+      <button class="pb" id="b-sprint">SPRINT</button>
       <button class="pb" id="b-switch">SWITCH</button>
       <button class="pb" id="b-move">MOVE / STEAL</button>
       <button class="pb" id="b-pass">PASS</button>
@@ -86,7 +87,7 @@ const S = {
   CL: 100, CT: 60, CR: 900, CB: 640,
   HOOP: [500, 115], ARC: 250, PAINT_HW: 80, PAINT_D: 190, CHECK: [500, 450],
   GAME_TO: 11, SHOT_CLOCK: 10,
-  PR: 14, BASE_SPEED: 175, SPEED_PER: 2.0, PASS_SPEED: 720, ACCEL: 11,
+  PR: 14, BASE_SPEED: 165, SPEED_PER: 1.8, PASS_SPEED: 720, ACCEL: 11, SPRINT: 1.35, STAMINA_DRAIN: 0.42, STAMINA_REGEN: 0.22,
   METER_TIME: 0.7, METER_SWEET: 0.8, WIN_NEAR: 0.12, WIN_FAR: 0.04,
   DUNK_RANGE: 85, DUNK_BASE: 0.9, LAYUP: 95, LAYUP_BASE: 0.72,
   STEAL_RANGE: 36, STEAL_BASE: 0.16, BLOCK_RANGE: 36, BLOCK_BASE: 0.10, GRAB: 20,
@@ -214,7 +215,7 @@ class Ball {
 // =====================================================================
 class Actor {
   constructor(p, team, slot) {
-    Object.assign(this, { p, team, slot, x: 0, y: 0, vx: 0, vy: 0, dash: null, moveTag: null, stepBackT: 0, fx: 0, fy: -1, stun: 0, cool: 0, burst: 0, jump: 0, points: 0, think: 0, spot: null, spotT: 0, holdT: 0 });
+    Object.assign(this, { p, team, slot, x: 0, y: 0, vx: 0, vy: 0, dash: null, moveTag: null, stepBackT: 0, sprinting: false, stamina: 1, streak: 0, bounces: 0, fx: 0, fy: -1, stun: 0, cool: 0, burst: 0, jump: 0, points: 0, think: 0, spot: null, spotT: 0, holdT: 0 });
     // animation only (never affects the rules)
     const h = hashStr(p.name + p.number);
     this.look = { skin: SKINS[h % SKINS.length], hair: HAIRS[(h >>> 3) % HAIRS.length], style: (h >>> 6) % 4, shoe: SHOES[(h >>> 9) % SHOES.length] };
@@ -224,9 +225,11 @@ class Actor {
   animK(kind) { return this.anim && this.anim.kind === kind ? this.anim.t / this.anim.dur : -1; }
   get pos() { return [this.x, this.y]; }
   eff(k) { return effect(this.p, k); }
-  maxSpeed() { let s = (S.BASE_SPEED + this.p.stats.speed * S.SPEED_PER) * (1 + this.eff("speed")); if (this.burst > 0) s *= 1.35; return s; }
+  baseSpeed() { return (S.BASE_SPEED + this.p.stats.speed * S.SPEED_PER) * (1 + this.eff("speed")); }
+  maxSpeed() { let s = this.baseSpeed(); if (this.sprinting && this.stamina > 0.02) s *= S.SPRINT; if (this.burst > 0) s *= 1.2; return s; }
+  get onFire() { return this.streak >= 2; }
 }
-const blankInputs = () => ({ move: [0, 0], shootPressed: false, shootDown: false, passPressed: false, movePressed: false, switchPressed: false });
+const blankInputs = () => ({ move: [0, 0], shootPressed: false, shootDown: false, passPressed: false, movePressed: false, switchPressed: false, sprint: false });
 
 class Match {
   constructor(teamA, teamB, rng, human = true, gameTo = S.GAME_TO) {
@@ -235,6 +238,7 @@ class Match {
     this.ball = new Ball(); this.score = [0, 0]; this.winner = null; this.messages = [];
     this.meter = null; this.elapsed = 0; this.controlled = this.team(0)[0];
     this.fx = { swish: 0, shake: 0 };
+    this.events = [];   // things the screen shows and plays sounds for (makes, misses, greens, ankle breaks)
     this.setupCheck(0);
   }
   team(t) { return this.actors.filter(a => a.team === t); }
@@ -262,6 +266,8 @@ class Match {
       if (a.anim) { a.anim.t += dt; if (a.anim.t >= a.anim.dur) a.anim = null; }
       if (a.moveTag) { a.moveTag.t -= dt; if (a.moveTag.t <= 0) a.moveTag = null; }
       a.stepBackT = Math.max(0, (a.stepBackT || 0) - dt);
+      if (this.phase === "live" && a.sprinting && a.moveAmt > 0.3) { a.stamina = Math.max(0, a.stamina - S.STAMINA_DRAIN * dt); if (a.stamina <= 0) a.sprinting = false; }
+      else a.stamina = Math.min(1, a.stamina + S.STAMINA_REGEN * dt);
       a.dribble += dt * 9;
       if (this.phase !== "live") a.moveAmt = Math.max(0, a.moveAmt - dt * 4);
     }
@@ -281,7 +287,10 @@ class Match {
     for (const a of this.actors) {
       a.cool = Math.max(0, a.cool - dt); a.burst = Math.max(0, a.burst - dt); a.jump = Math.max(0, a.jump - dt);
       if (a.stun > 0) { a.stun -= dt; a.dash = null; a.vx *= 0.8; a.vy *= 0.8; continue; }
-      const it = (this.human && a === this.controlled) ? this.humanIntent(a, inp || blankInputs(), dt) : AI.decide(this, a, dt);
+      const mine = this.human && a === this.controlled;
+      if (mine) a.sprinting = !!(inp && inp.sprint) && a.stamina > 0.02;
+      const it = mine ? this.humanIntent(a, inp || blankInputs(), dt) : AI.decide(this, a, dt);
+      if (!mine && this.human && a.team === 0) a.sprinting = false;
       this.moveActor(a, it.move, dt);
       if (it.action) this.act(a, it);
       if (this.phase !== "live") return;
@@ -302,7 +311,7 @@ class Match {
     const k = 1 - Math.exp(-S.ACCEL * dt);
     if (a.dash) {
       a.vx = a.dash.vx; a.vy = a.dash.vy; a.dash.t -= dt;
-      if (a.dash.t <= 0) { a.dash = null; a.vx *= 0.75; a.vy *= 0.75; }
+      if (a.dash.t <= 0) { a.dash = null; a.vx *= 0.35; a.vy *= 0.35; }
       mx = my = 0;   // keep facing while dashing
     } else { a.vx += (mx * speed - a.vx) * k; a.vy += (my * speed - a.vy) * k; }
     const ox = a.x, oy = a.y;
@@ -336,8 +345,8 @@ class Match {
   dunkOpen(a) {
     const attr = canDunk(a.p), d = dist(a.pos, S.HOOP);
     if (d > S.DUNK_RANGE + (attr ? 25 : 0)) return false;
-    const sp = Math.hypot(a.vx, a.vy), need = attr ? 0.45 : 0.7;
-    if (sp < a.maxSpeed() * need) return false;
+    const sp = Math.hypot(a.vx, a.vy), need = attr ? 0.6 : 0.95;   // without Dunker you need to be at full speed or sprinting
+    if (sp < a.baseSpeed() * need) return false;
     const [hx, hy] = norm(S.HOOP[0] - a.x, S.HOOP[1] - a.y);
     if ((a.vx * hx + a.vy * hy) < sp * 0.5) return false;            // must be heading at the rim
     const clearR = attr ? 16 : 26;
@@ -368,6 +377,7 @@ class Match {
         this.meter += dt / S.METER_TIME;
         if (!inp.shootDown || this.meter >= 1) {
           const m = Math.min(this.meter, 1);
+          this.lastRelease = m;
           it.action = "shoot"; it.kind = "jumper";
           it.green = Math.abs(m - S.METER_SWEET) <= this.meterWindow(a);
           it.quality = this.meterQuality(a, m); this.meter = null;
@@ -388,7 +398,7 @@ class Match {
   meterWindow(a) {
     const t = clamp((dist(a.pos, S.HOOP) - 60) / (S.ARC + 90 - 60), 0, 1);
     const skill = 0.4 + a.p.stats.shooting / 99 * 0.9;            // 40 shooting ≈ 0.76x, 80 ≈ 1.13x
-    return (S.WIN_NEAR + (S.WIN_FAR - S.WIN_NEAR) * t) * skill + a.eff("meter") + (a.stepBackT > 0 ? 0.015 : 0);
+    return (S.WIN_NEAR + (S.WIN_FAR - S.WIN_NEAR) * t) * skill + a.eff("meter") + (a.stepBackT > 0 ? 0.015 : 0) + (a.onFire ? 0.012 : 0);
   }
   meterQuality(a, m) { const w = this.meterWindow(a), off = Math.abs(m - S.METER_SWEET); return off <= w ? 1 - 0.5 * off / w : Math.max(-1, -(off - w) / 0.25); }
   pickPassTarget(a, dir) {
@@ -433,6 +443,7 @@ class Match {
           if (kind === "dunk") ch *= 0.3; if (pts === 2) ch *= 0.6;
           if (this.rng.random() < ch) {
             this.say(`BLOCKED by ${dfd.p.name}!`);
+            this.events.push({ type: "block", x: a.x, y: a.y }); a.streak = 0;
             a.setAnim(kind === "layup" ? "layup" : "shoot", 0.3); dfd.setAnim("block", 0.5);
             const [ux, uy] = norm(a.x - S.HOOP[0], a.y - S.HOOP[1]);
             this.ball.setLoose(a.x, a.y, ux * 200 + this.rng.uniform(-80, 80), uy * 200 + this.rng.uniform(-80, 80), 25);
@@ -444,7 +455,10 @@ class Match {
     const made = green || this.rng.random() < this.makeChance(a, kind, quality);
     const dur = kind === "dunk" ? 0.28 : kind === "layup" ? 0.4 : 0.38 + d / 900;
     this.ball.startShot(a, S.HOOP, dur, made, pts, kind === "dunk");
-    this.ball.green = green;
+    this.ball.green = green; this.ball.kind = kind;
+    this.ball.swish = made && (green || (kind === "jumper" && this.rng.random() < 0.45));
+    this.ball.fire = a.onFire; this.ball.trail = [];
+    this.events.push({ type: "release", green, kind, team: a.team, human: this.human && a === this.controlled, x: a.x, y: a.y });
     a.setAnim(kind, kind === "dunk" ? 0.55 : kind === "layup" ? 0.5 : 0.5);
     if (kind === "dunk") this.say(made ? `${a.p.name} throws it down!` : "Dunk rattles out!");
     else if (green && a.team === 0) this.say("GREEN!", 1.0);
@@ -466,10 +480,10 @@ class Match {
     type = type || this.moveType(mx, my);
     const side = mx > 0.3 ? 1 : mx < -0.3 ? -1 : -a.hand;
     const MOVES = {   // dash direction, dash speed, dash time, ankle-break odds, stun time, label
-      cross: { v: [side, 0], sp: 380, t: 0.2, odds: 1.0, stun: 0.7, label: side > 0 ? "CROSSOVER ▶" : "◀ CROSSOVER" },
-      drive: { v: [side * 0.62, -0.78], sp: 430, t: 0.24, odds: 0.85, stun: 0.6, label: side > 0 ? "CROSS & DRIVE ↗" : "↖ CROSS & DRIVE" },
-      stepback: { v: norm(mx * 0.5, 1), sp: 360, t: 0.22, odds: 0.7, stun: 0.45, label: "STEP BACK" },
-      go: { v: [0, -1], sp: 400, t: 0.2, odds: 0.6, stun: 0.5, label: "HESI-GO" },
+      cross: { v: [side, 0], sp: 230, t: 0.12, odds: 1.0, stun: 0.7, label: side > 0 ? "CROSSOVER ▶" : "◀ CROSSOVER" },
+      drive: { v: [side * 0.62, -0.78], sp: 270, t: 0.14, odds: 0.85, stun: 0.6, label: side > 0 ? "CROSS & DRIVE ↗" : "↖ CROSS & DRIVE" },
+      stepback: { v: norm(mx * 0.4, 1), sp: 250, t: 0.16, odds: 0.7, stun: 0.45, label: "STEP BACK" },
+      go: { v: [0, -1], sp: 260, t: 0.12, odds: 0.6, stun: 0.5, label: "HESI-GO" },
       hesi: { v: [0, 0], sp: 0, t: 0, odds: 0.55, stun: 0.55, label: "HESI" },
     };
     const mv = MOVES[type];
@@ -486,6 +500,7 @@ class Match {
       const ch = (0.25 + (a.p.stats.handles - dfd.p.stats.defense) / 200 + a.eff("cross")) * mv.odds;
       if (this.rng.random() < clamp(ch, 0.04, 0.8)) {
         dfd.stun = mv.stun; dfd.vx *= 0.2; dfd.vy *= 0.2;
+        this.events.push({ type: "ankles", x: dfd.x, y: dfd.y, team: a.team });
         this.say(type === "stepback" ? `${a.p.name} stepped back on ${dfd.p.name}!` : type === "hesi" ? `${a.p.name} froze ${dfd.p.name}!` : `${a.p.name} broke ${dfd.p.name}'s ankles!`);
       }
     }
@@ -495,7 +510,7 @@ class Match {
     if (dist(a.pos, h.pos) > S.STEAL_RANGE) { a.cool = 0.4; return; }
     a.cool = 0.9; a.setAnim("reach", 0.3);
     const ch = S.STEAL_BASE + (a.p.stats.defense - h.p.stats.handles) / 250 + a.eff("steal");
-    if (this.rng.random() < clamp(ch, 0.03, 0.6)) { this.ball.setHeld(a); this.turnover(a.team); this.say(`Stolen by ${a.p.name}!`); }
+    if (this.rng.random() < clamp(ch, 0.03, 0.6)) { this.ball.setHeld(a); this.turnover(a.team); this.say(`Stolen by ${a.p.name}!`); this.events.push({ type: "steal", x: a.x, y: a.y, team: a.team }); }
     else a.stun = 0.2;
   }
   updateBall(dt) {
@@ -521,11 +536,19 @@ class Match {
       this.score[sh.team] += b.points; sh.points += b.points;
       this.say(`${sh.p.name} +${b.points}`);
       b.setDead(S.HOOP[0], S.HOOP[1]);
-      this.fx.swish = 0.6; if (b.dunk) this.fx.shake = 0.45;
+      this.fx.swish = b.swish ? 0.8 : 0.5; if (b.dunk) this.fx.shake = 0.45;
       sh.setAnim("celebrate", 1.1);
+      const wasHot = sh.onFire;
+      if (b.swish) sh.streak++;
+      this.events.push({ type: "make", kind: b.kind, green: b.green, swish: b.swish, points: b.points, team: sh.team, fire: sh.onFire, newFire: sh.onFire && !wasHot, name: sh.p.name });
+      if (sh.onFire && !wasHot) this.say(`${sh.p.name} is ON FIRE!`, 2);
       if (this.score[sh.team] >= this.gameTo) { this.phase = "over"; this.winner = sh.team; return; }
       this.offense = sh.team; this.phase = "scored"; this.phaseT = 0.6;
     } else {
+      if (sh.onFire) this.say(`${sh.p.name} cooled off`, 1.2);
+      sh.streak = 0;
+      this.events.push({ type: "miss", team: sh.team });
+      this.fx.shake = Math.max(this.fx.shake, 0.12);
       const ang = this.rng.uniform(0.15 * Math.PI, 0.85 * Math.PI), spd = this.rng.uniform(90, 220);
       b.setLoose(S.HOOP[0], S.HOOP[1] + 12, Math.cos(ang) * spd, Math.sin(ang) * spd, 30);
     }
@@ -629,6 +652,12 @@ const AI = (() => {
   }
   function decide(m, a, dt) {
     const b = m.ball;
+    a.sprinting = false;
+    if (a.stamina > 0.3) {
+      if (b.state === "held" && b.holder === a && !m.needsClear && dist(a.pos, S.HOOP) < 280 && m.openness(a) > 30) a.sprinting = true;
+      else if (b.state === "loose") a.sprinting = true;
+      else if (a.team !== m.offense && b.state !== "shot") { const man = m.team(1 - a.team)[a.slot]; if (dist(a.pos, man.pos) > 90) a.sprinting = true; }
+    }
     if (b.state === "held" && b.holder === a) return withBall(m, a, dt);
     a.holdT = 0;
     if (b.state === "pass" && b.receiver === a) return I({ move: toward(a, [b.x, b.y], 4) });
@@ -684,8 +713,12 @@ class Career {
   }
   lineup() { return [this.me, ...this.starters.map(i => this.crew[i])]; }
   secUnlocked() { return this.tier >= S.SEC_UNLOCK || this.champion; }
+  // How many people come out to watch you play.
+  crowdSize() { return clamp(Math.round(3 + this.fame * 0.18), 3, 140); }
+  // Fame lost on a loss: small when you're unknown, big when you're famous.
+  fameLoss() { return Math.min(this.fame, Math.round(2 + this.fame * 0.05)); }
   applyResult(ci, crewId, isBoss, won, margin = 0, bet = 0, mult = 1) {
-    const r = { fame: 0, cash: 0, betWin: 0, tierUp: false, crowned: false };
+    const r = { fame: 0, cash: 0, betWin: 0, tips: 0, tierUp: false, crowned: false };
     if (won) {
       r.fame = 12 + 6 * ci + Math.floor(margin / 2); r.cash = 60 + 40 * ci;
       if (isBoss) {
@@ -695,8 +728,9 @@ class Career {
       }
       if (!this.beaten.includes(crewId)) this.beaten.push(crewId);
       if (bet) r.betWin = Math.round(bet * mult);
-    } else { r.fame = 3; r.cash = 10; }
-    this.fame += r.fame; this.cash += r.cash + r.betWin;
+      r.tips = Math.round(this.crowdSize() * 0.5);
+    } else { r.fame = -this.fameLoss(); r.cash = 10; }
+    this.fame = Math.max(0, this.fame + r.fame); this.cash += r.cash + r.betWin + r.tips;
     return r;
   }
   statCost(v) { return Math.floor(10 + v * 1.5); }
@@ -822,11 +856,47 @@ function drawCourt(tier) {
 }
 
 // =====================================================================
+// Sound: small synthesized effects. Starts after the first key press or tap. M toggles.
+// =====================================================================
+const Sound = {
+  ctx: null, on: true,
+  wake() { try { if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)(); if (this.ctx.state === "suspended") this.ctx.resume(); } catch (e) { this.ctx = null; } },
+  out(gain, t0) { const g = this.ctx.createGain(); g.gain.value = 0; g.connect(this.ctx.destination); return g; },
+  tone(freq, dur, type = "sine", gain = 0.15, slideTo = null, delay = 0) {
+    if (!this.on || !this.ctx) return;
+    const c = this.ctx, t = c.currentTime + delay, o = c.createOscillator(), g = this.out();
+    o.type = type; o.frequency.setValueAtTime(freq, t); if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(gain, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); o.start(t); o.stop(t + dur + 0.05);
+  },
+  noise(dur, type, freq, q, gain, attack = 0.005, delay = 0) {
+    if (!this.on || !this.ctx) return;
+    const c = this.ctx, t = c.currentTime + delay, len = Math.ceil(c.sampleRate * dur), buf = c.createBuffer(1, len, c.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    const src = c.createBufferSource(), f = c.createBiquadFilter(), g = this.out();
+    src.buffer = buf; f.type = type; f.frequency.value = freq; f.Q.value = q;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(gain, t + attack); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f); f.connect(g); src.start(t); src.stop(t + dur + 0.05);
+  },
+  dribble() { this.tone(140, 0.07, "sine", 0.18, 70); },
+  swish() { this.noise(0.28, "bandpass", 4200, 0.9, 0.22, 0.02); },
+  rimIn() { this.tone(520, 0.12, "triangle", 0.07); this.noise(0.2, "bandpass", 3500, 0.8, 0.12, 0.01, 0.06); },
+  clank() { this.tone(390, 0.18, "square", 0.06); this.tone(610, 0.14, "triangle", 0.05, null, 0.02); },
+  dunk() { this.tone(110, 0.3, "sine", 0.5, 38); this.noise(0.25, "lowpass", 900, 1, 0.35); this.tone(300, 0.25, "square", 0.05, 180, 0.02); },
+  green() { this.tone(988, 0.12, "sine", 0.14); this.tone(1319, 0.16, "sine", 0.14, null, 0.08); this.tone(1976, 0.22, "sine", 0.09, null, 0.16); },
+  fire() { this.noise(0.9, "lowpass", 700, 0.7, 0.25, 0.08); this.tone(220, 0.6, "sawtooth", 0.04, 440); },
+  ankles() { this.noise(0.12, "highpass", 3000, 1, 0.12); this.tone(260, 0.2, "triangle", 0.06, 120, 0.03); },
+  steal() { this.tone(700, 0.08, "square", 0.05, 900); },
+  cheer(size, big) { const g = Math.min(0.32, 0.03 + size / 140 * 0.22) * (big ? 1.4 : 1); this.noise(big ? 1.8 : 1.1, "bandpass", 1100, 0.45, g, 0.18); this.noise(big ? 1.6 : 1.0, "bandpass", 2400, 0.6, g * 0.5, 0.2); },
+  groan(size) { const g = Math.min(0.15, 0.02 + size / 140 * 0.1); this.noise(0.8, "lowpass", 500, 0.7, g, 0.15); },
+};
+
+// =====================================================================
 // App, input and screens
 // =====================================================================
 const App = {
   career: null, screen: null, hits: [], keys: new Set(), edges: blankInputs(),
-  touch: { up: false, down: false, left: false, right: false, shoot: false },
+  touch: { up: false, down: false, left: false, right: false, shoot: false, sprint: false },
   switch(s) { this.screen = s; nameInput.hidden = !(s instanceof CreateScreen); if (!nameInput.hidden) setTimeout(() => nameInput.focus(), 0); pad.classList.toggle("show", isTouch && s instanceof MatchScreen); },
   save() { if (!this.career) return; try { localStorage.setItem(SAVE_KEY, JSON.stringify(this.career)); } catch (e) { /* storage unavailable: progress lasts this visit */ } },
   load() { try { const raw = localStorage.getItem(SAVE_KEY); return raw ? new Career(JSON.parse(raw)) : null; } catch (e) { return null; } },
@@ -1095,6 +1165,13 @@ function drawPerson(m, a, highlight) {
   const P = pose(m, a), look = a.look, team = a.team;
   const up = P.lift * 24, x = a.x, y = a.y;
   const front = a.fy > -0.2;          // facing the camera (down the screen) shows the face
+  if (a.onFire) {   // flames lick up around a player who's on fire
+    for (let i = 0; i < 7; i++) {
+      const t = m.elapsed * 7 + i * 1.7, fx = Math.sin(t * 1.3 + i) * 9, h = 18 + (Math.sin(t) * 0.5 + 0.5) * 22;
+      ctx.beginPath(); ctx.moveTo(x + fx - 5, y); ctx.quadraticCurveTo(x + fx * 1.4, y - h * 0.6, x + fx * 0.6, y - h); ctx.quadraticCurveTo(x + fx * 0.2, y - h * 0.5, x + fx + 5, y); ctx.closePath();
+      ctx.fillStyle = i % 2 ? "rgba(255,90,20,0.55)" : "rgba(255,200,40,0.5)"; ctx.fill();
+    }
+  }
   if (a.dash) { for (let i = 1; i <= 3; i++) ellipse(x - a.dash.vx * 0.018 * i, y - a.dash.vy * 0.018 * i + 1, 10 - i * 2, 4 - i * 0.8, `rgba(255,255,255,${0.16 - i * 0.04})`); }
   // shadow on the court
   ellipse(x, y + 1, 13 - P.lift * 3, 5 - P.lift, `rgba(0,0,0,${0.45 - P.lift * 0.15})`);
@@ -1201,16 +1278,80 @@ function drawActors(m, controlled) {
   drawRimFx(m);
   for (const a of order) { const hb = drawPerson(m, a, controlled && a === m.controlled); if (hb) held = hb; }
   if (b.state === "held" && held) drawBall(held.x, b.holder.y, b.holder.y - held.y, m.elapsed);
-  else if (b.state === "shot") { const f = Math.min(1, b.t / b.dur); drawBall(b.x, b.y, 50 * (1 - f) + b.z * 0.8 + 10 * f, m.elapsed); }
+  else if (b.state === "shot") {
+    const f = Math.min(1, b.t / b.dur), h = 50 * (1 - f) + b.z * 0.8 + 10 * f;
+    b.trail = b.trail || []; b.trail.push([b.x, b.y - h]); if (b.trail.length > 12) b.trail.shift();
+    const col = b.fire ? "255,120,30" : b.green ? "255,215,80" : "255,255,255";
+    b.trail.forEach(([tx, ty], i) => circle(tx, ty, 2 + i * (b.green || b.fire ? 0.7 : 0.35), `rgba(${col},${(i / b.trail.length) * (b.green || b.fire ? 0.55 : 0.2)})`));
+    if (b.green || b.fire) circle(b.x, b.y - h, 13, `rgba(${col},0.25)`);
+    drawBall(b.x, b.y, h, m.elapsed);
+  }
   else if (b.state === "pass") drawBall(b.x, b.y, 28, m.elapsed);
   else if (b.state === "loose") drawBall(b.x, b.y, 4 + b.z * 1.2 + Math.abs(Math.sin(m.elapsed * 10)) * Math.min(14, b.z), m.elapsed);
   else if (b.state === "dead") drawBall(b.x, b.y + 14, 4, m.elapsed);
+}
+
+// Fans stand along the fences. More fame = more people show up.
+function makeCrowd(size, seed) {
+  const rng = new Rng(seed), slots = [];
+  for (const side of [-1, 1]) for (let row = 0; row < 3; row++) for (let y = 96; y <= 640; y += 25) {
+    const x = side < 0 ? 58 - row * 22 : 942 + row * 22;
+    slots.push({ x: x + rng.uniform(-3, 3), y: y + row * 8 + rng.uniform(-3, 3), side, rank: row * 1000 + Math.abs(y - 360) + rng.uniform(0, 60) });
+  }
+  slots.sort((p, q) => p.rank - q.rank);
+  return slots.slice(0, size).map(sl => ({ ...sl, skin: rng.choice(SKINS), shirt: rng.choice(["#e04a3a", "#2f7de0", "#f5c83c", "#3ecf7a", "#f2f2f2", "#9b59b6", "#ff8a3d", "#222"]), hair: rng.choice(HAIRS), ph: rng.uniform(0, 6.28), hype: rng.uniform(0.6, 1.2) }))
+    .sort((p, q) => p.y - q.y);
+}
+function drawCrowd(crowd, t, excite) {
+  for (const f of crowd) {
+    const jump = Math.max(0, Math.sin(t * 9 * f.hype + f.ph)) * 7 * excite, bob = Math.sin(t * 2 + f.ph) * 0.8;
+    const x = f.x, y = f.y - jump + bob;
+    ellipse(f.x, f.y + 9, 6, 2.5, "rgba(0,0,0,0.35)");
+    const arm = excite > 0.25 ? -16 : -4;
+    ctx.strokeStyle = f.skin; ctx.lineWidth = 2.5; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(x - 5, y - 6); ctx.lineTo(x - 8, y + arm + Math.sin(t * 12 + f.ph) * 2 * excite); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x + 5, y - 6); ctx.lineTo(x + 8, y + arm + Math.cos(t * 12 + f.ph) * 2 * excite); ctx.stroke();
+    ctx.fillStyle = f.shirt; ctx.beginPath(); ctx.roundRect(x - 5.5, y - 8, 11, 14, 3); ctx.fill();
+    circle(x, y - 13, 4.8, f.skin); ctx.beginPath(); ctx.arc(x, y - 13, 4.8, Math.PI, 2 * Math.PI); ctx.fillStyle = f.hair; ctx.fill();
+  }
 }
 
 class MatchScreen extends Screen {
   constructor(ci, crew, bet = 0, mult = 1) {
     super(); Object.assign(this, { ci, crew, bet, mult, paused: false, doneT: 0 });
     this.match = new Match(this.c.lineup(), crew.players, new Rng(), true);
+    this.crowdN = this.c.crowdSize();
+    this.crowd = makeCrowd(this.crowdN, crew.id + ":" + this.c.fame);
+    this.parts = []; this.pops = []; this.excite = 0.15; this.shake = 0; this.flash = 0; this.freeze = null; this.lastBounce = 0;
+  }
+  burst(x, y, n, colors, speed = 160, up = 60) {
+    for (let i = 0; i < n; i++) { const a = Math.random() * Math.PI * 2, sp = speed * (0.4 + Math.random() * 0.8);
+      this.parts.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - up, life: 0.6 + Math.random() * 0.5, max: 1.1, col: colors[i % colors.length], r: 2 + Math.random() * 2.5, g: 260 }); }
+  }
+  pop(txt, x, y, color, size = 40, life = 1.1) { this.pops.push({ txt, x, y, color, size, life, max: life }); }
+  handleEvents() {
+    const m = this.match, [hx, hy] = S.HOOP, crowd = this.crowdN;
+    for (const e of m.events) {
+      if (e.type === "release" && e.human) {
+        const a = m.controlled;
+        this.freeze = { t: 0.5, green: e.green };
+        if (e.green) { Sound.green(); this.flash = 0.35; this.shake = Math.max(this.shake, 0.12); this.pop("GREEN!", a.x, a.y - 100, C.green, 54, 1.0); this.burst(a.x, a.y - 60, 16, ["#7dff9a", "#e8ffe9", C.gold], 140, 40); }
+      } else if (e.type === "make") {
+        const mine = e.team === 0;
+        if (e.kind === "dunk") { Sound.dunk(); this.shake = Math.max(this.shake, 0.4); this.burst(hx, hy, 30, [C.orange, C.gold, "#fff"], 260, 30); this.pop("SLAM!", hx, hy + 40, C.orange, 60); }
+        else if (e.swish) { Sound.swish(); this.burst(hx, hy + 6, e.green ? 28 : 16, e.green ? [C.gold, "#fff5c4", "#7dff9a"] : ["#ffffff", "#cfe3ff"], e.green ? 220 : 150, 20); this.pop(e.green ? "SPLASH!" : "SWISH", hx, hy + 44, e.green ? C.gold : C.white, e.green ? 52 : 40); }
+        else { Sound.rimIn(); this.burst(hx, hy, 10, [C.orange, "#fff"], 120, 10); }
+        this.pop(`+${e.points}`, hx + 50, hy + 10, mine ? C.team[0] : C.team[1], 46, 0.9);
+        if (e.newFire) { Sound.fire(); this.pop("ON FIRE!", 500, 330, "#ff7a1a", 70, 1.6); this.shake = Math.max(this.shake, 0.3); }
+        const big = e.kind === "dunk" || e.green || e.newFire || e.points === 2;
+        if (mine) { this.excite = Math.min(1.4, this.excite + (big ? 1.2 : 0.7)); Sound.cheer(crowd, big); }
+        else { this.excite = Math.min(1, this.excite + 0.3); Sound.groan(crowd); }
+      } else if (e.type === "miss") { Sound.clank(); if (e.team === 0) this.pop("CLANK", hx, hy + 40, C.grey, 30, 0.7); }
+      else if (e.type === "ankles") { Sound.ankles(); this.burst(e.x, e.y, 10, [C.gold, "#fff"], 90, 60); if (e.team === 0) { this.excite = Math.min(1.4, this.excite + 0.8); Sound.cheer(crowd, false); } }
+      else if (e.type === "block") { Sound.clank(); this.shake = Math.max(this.shake, 0.2); this.pop("REJECTED!", e.x, e.y - 90, C.red, 44); }
+      else if (e.type === "steal") { Sound.steal(); }
+    }
+    m.events.length = 0;
   }
   finish(forfeit = false) { App.switch(new ResultScreen(this.ci, this.crew, this.match, this.bet, this.mult, forfeit)); }
   key(k) {
@@ -1223,25 +1364,67 @@ class MatchScreen extends Screen {
     const mx = ((ks.has("d") || ks.has("arrowright") || t.right) ? 1 : 0) - ((ks.has("a") || ks.has("arrowleft") || t.left) ? 1 : 0);
     const my = ((ks.has("s") || ks.has("arrowdown") || t.down) ? 1 : 0) - ((ks.has("w") || ks.has("arrowup") || t.up) ? 1 : 0);
     const inp = App.edges; inp.move = [mx, my]; inp.shootDown = ks.has(" ") || t.shoot;
+    inp.sprint = ks.has("shift") || t.sprint;
     this.match.update(Math.min(dt, 1 / 30), inp);
     App.edges = blankInputs();
+    this.handleEvents();
+    // dribble sound for the ball you're holding
+    const m = this.match, b = m.ball;
+    if (b.state === "held" && b.holder === m.controlled && m.phase === "live" && m.meter === null) {
+      const n = Math.floor(b.holder.dribble / Math.PI);
+      if (n !== this.lastBounce) { this.lastBounce = n; Sound.dribble(); }
+    }
+    for (const q of this.parts) { q.life -= dt; q.vy += q.g * dt; q.x += q.vx * dt; q.y += q.vy * dt; }
+    this.parts = this.parts.filter(q => q.life > 0);
+    for (const q of this.pops) q.life -= dt;
+    this.pops = this.pops.filter(q => q.life > 0);
+    // embers rise off players who are on fire
+    for (const a of m.actors) if (a.onFire && Math.random() < dt * 25) this.parts.push({ x: a.x + (Math.random() - 0.5) * 20, y: a.y - Math.random() * 30, vx: (Math.random() - 0.5) * 30, vy: -60 - Math.random() * 60, life: 0.7, max: 0.7, col: Math.random() < 0.5 ? "#ff7a1a" : "#ffd23c", r: 1.5 + Math.random() * 2, g: -20 });
+    this.excite = Math.max(0.12, this.excite - dt * 0.6);
+    this.shake = Math.max(0, this.shake - dt); this.flash = Math.max(0, this.flash - dt);
+    if (this.freeze) { this.freeze.t -= dt; if (this.freeze.t <= 0) this.freeze = null; }
     if (this.match.phase === "over") { this.doneT += dt; if (this.doneT > 1.8) this.finish(); }
   }
   draw() {
-    const m = this.match; drawCourt(this.ci); drawActors(m, true);
-    if (m.meter !== null) {
-      const a = m.controlled, x = a.x + 26, y = a.y - 66, h = 60, w = m.meterWindow(a);
-      const lo = S.METER_SWEET - w, hi = S.METER_SWEET + w, fill = Math.min(1, m.meter) * h;
-      ctx.fillStyle = C.dark; ctx.fillRect(x, y, 10, h);
-      ctx.fillStyle = C.green; ctx.fillRect(x, y + h - hi * h, 10, (hi - lo) * h);
-      ctx.fillStyle = C.white; ctx.fillRect(x + 2, y + h - fill, 6, fill);
-      ctx.strokeStyle = C.white; ctx.lineWidth = 1; ctx.strokeRect(x, y, 10, h);
+    const m = this.match;
+    const sk = this.shake > 0 ? this.shake * 14 : 0;
+    ctx.save();
+    if (sk) ctx.translate((Math.random() - 0.5) * sk, (Math.random() - 0.5) * sk);
+    drawCourt(this.ci);
+    drawCrowd(this.crowd, m.elapsed, this.excite);
+    drawActors(m, true);
+    for (const q of this.parts) circle(q.x, q.y, q.r * Math.max(0.3, q.life / q.max), q.col);
+    // shot meter: fills while you hold, then freezes for a moment where you let go
+    const a = m.controlled;
+    if (m.meter !== null || this.freeze) {
+      const x = a.x + 26, y = a.y - 70, h = 64, w = m.meterWindow(a);
+      const lo = S.METER_SWEET - w, hi = S.METER_SWEET + w;
+      const val = m.meter !== null ? Math.min(1, m.meter) : (m.lastRelease != null ? m.lastRelease : 0);
+      const green = this.freeze && this.freeze.green;
+      rrect(x - 2, y - 2, 14, h + 4, 4, "rgba(10,10,14,0.85)");
+      ctx.fillStyle = green ? "#7dff9a" : C.green; ctx.fillRect(x, y + h - hi * h, 10, (hi - lo) * h);
+      ctx.fillStyle = this.freeze ? (green ? "#b8ffc8" : C.red) : C.white; ctx.fillRect(x + 2, y + h - val * h, 6, val * h);
+      if (green) { ctx.strokeStyle = `rgba(125,255,154,${this.freeze.t * 2})`; ctx.lineWidth = 3; ctx.strokeRect(x - 4, y - 4, 18, h + 8); }
     }
+    // stamina bar while sprinting or recovering
+    if (a.stamina < 0.999) {
+      const x = a.x - 16, y = a.y + 22;
+      rrect(x, y, 32, 5, 2.5, "rgba(10,10,14,0.8)");
+      rrect(x, y, 32 * a.stamina, 5, 2.5, a.stamina > 0.3 ? "#5ad2ff" : C.red);
+    }
+    for (const q of this.pops) {
+      const k = q.life / q.max, pop = k > 0.85 ? 1 + (k - 0.85) * 4 : 1;
+      ctx.globalAlpha = Math.min(1, k * 2.5);
+      text(q.txt, q.x, q.y - (1 - k) * 30, { size: q.size * pop, color: q.color, center: true, display: true });
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+    if (this.flash > 0) { ctx.fillStyle = `rgba(125,255,154,${this.flash * 0.35})`; ctx.fillRect(0, 0, S.W, S.H); }
     ctx.fillStyle = "#0f0f14"; ctx.fillRect(0, 0, S.W, 44);
     text(`YOU  ${m.score[0]}`, 330, 23, { size: 34, color: C.team[0], center: true, display: true });
     text(`first to ${m.gameTo}`, 500, 23, { size: 24, color: C.grey, center: true });
     text(`${m.score[1]}  ${this.crew.name.toUpperCase()}`, 690, 23, { size: 30, color: C.team[1], center: true, display: true });
-    text(TIERS[this.ci].court, 16, 14, { size: 22, color: C.grey });
+    text(`${TIERS[this.ci].court} · crowd ${this.crowdN}`, 16, 14, { size: 22, color: C.grey });
     text(`Shot ${Math.max(0, Math.ceil(m.shotClock))}`, S.W - 16, 12, { size: 26, right: true });
     if (m.needsClear) text(`${m.offense === 0 ? "YOU" : "THEY"} MUST CLEAR IT PAST THE ARC`, 500, 62, { size: 28, color: C.gold, center: true });
     [...m.messages].reverse().forEach(([msg], i) => text(msg, 500, 600 - i * 28, { size: i === 0 ? 32 : 24, center: true }));
@@ -1257,7 +1440,7 @@ class MatchScreen extends Screen {
     if (m.phase === "check") text("CHECK BALL", 500, 380, { size: 40, center: true, display: true });
     if (m.phase === "over") { const won = m.winner === 0; text(won ? "YOU WIN!" : "YOU LOSE", 500, 330, { size: 80, color: won ? C.green : C.red, center: true, display: true }); }
     if (!isTouch) {
-      text("WASD move · hold SPACE, release in the green · drive fast at an open rim to DUNK · J pass · K dribble move (WASD picks it) / steal · Q switch · Esc", 500, S.H - 16, { size: 20, center: true, weight: 500 });
+      text("WASD move · SHIFT sprint · hold SPACE, let go in the green · sprint at an open rim to DUNK · J pass · K move/steal · Q switch · M sound", 500, S.H - 16, { size: 20, center: true, weight: 500 });
     }
     if (this.paused) {
       rrect(290, 240, 420, 200, 12, "rgba(16,17,22,0.95)", C.grey, 1.5);
@@ -1297,9 +1480,11 @@ class ResultScreen extends Screen {
     text(this.forfeit ? "FORFEIT" : this.won ? "VICTORY" : "DEFEAT", 500, 122, { size: 76, color: this.won ? C.green : C.red, center: true, display: true });
     text(`${m.score[0]} - ${m.score[1]}  vs  ${this.crew.name}`, 500, 178, { size: 36, center: true });
     text(`You scored ${this.myPts}`, 500, 212, { size: 28, color: C.grey, center: true });
-    const lines = [`+${this.r.fame} fame`, `+$${this.r.cash}`];
+    const lines = [this.r.fame >= 0 ? `+${this.r.fame} fame` : `${this.r.fame} fame`, `+$${this.r.cash}`];
+    if (this.r.tips) lines.push(`+$${this.r.tips} crowd tips`);
     if (this.bet) lines.push(this.won ? `Bet paid $${this.r.betWin}!` : `Lost your $${this.bet} bet`);
-    text(lines.join("     "), 500, 254, { size: 34, color: C.gold, center: true });
+    text(lines.join("     "), 500, 254, { size: 34, color: this.r.fame < 0 ? "#ff9a8a" : C.gold, center: true });
+    if (this.r.fame < 0) text("Losses cost more fame the more famous you are.", 500, 290, { size: 22, color: C.grey, center: true, weight: 500 });
     if (this.r.tierUp) text(`FAME UP! You're now ${c.title}. ${TIERS[c.tier].court} unlocked!`, 500, 298, { size: 34, color: C.gold, center: true });
     if (this.r.crowned) text(`YOU ARE THE ${KING.toUpperCase()}!`, 500, 298, { size: 40, color: C.gold, center: true, display: true });
     if (this.won) text(`Recruit one of them? (crew ${c.crew.length}/${S.CREW_MAX})`, 500, 345, { size: 26, color: C.grey, center: true });
@@ -1492,6 +1677,8 @@ class MysteryScreen extends Screen {
 // =====================================================================
 const GAME_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "]);
 window.addEventListener("keydown", e => {
+  Sound.wake();
+  if ((e.key === "m" || e.key === "M") && e.target !== nameInput) { Sound.on = !Sound.on; }
   if (e.target === nameInput) {
     if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Enter" || e.key === "Escape") { e.preventDefault(); App.screen.key(e.key); }
     return;
@@ -1510,6 +1697,7 @@ window.addEventListener("keydown", e => {
 window.addEventListener("keyup", e => App.keys.delete(e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase()));
 window.addEventListener("blur", () => { App.keys.clear(); for (const d in App.touch) App.touch[d] = false; });
 canvas.addEventListener("pointerdown", e => {
+  Sound.wake();
   canvas.focus();
   const r = canvas.getBoundingClientRect(), x = (e.clientX - r.left) / r.width * S.W, y = (e.clientY - r.top) / r.height * S.H;
   for (const h of [...App.hits].reverse()) if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) { h.fn(); return; }
@@ -1523,6 +1711,9 @@ for (const btn of pad.querySelectorAll("[data-dir]")) {
 const shootBtn = document.getElementById("b-shoot");
 shootBtn.addEventListener("pointerdown", e => { e.preventDefault(); App.touch.shoot = true; App.edges.shootPressed = true; });
 for (const ev of ["pointerup", "pointerleave", "pointercancel"]) shootBtn.addEventListener(ev, () => { App.touch.shoot = false; });
+const sprintBtn = document.getElementById("b-sprint");
+sprintBtn.addEventListener("pointerdown", e => { e.preventDefault(); Sound.wake(); App.touch.sprint = true; sprintBtn.classList.add("on"); });
+for (const ev of ["pointerup", "pointerleave", "pointercancel"]) sprintBtn.addEventListener(ev, () => { App.touch.sprint = false; sprintBtn.classList.remove("on"); });
 document.getElementById("b-pass").addEventListener("pointerdown", e => { e.preventDefault(); App.edges.passPressed = true; });
 document.getElementById("b-move").addEventListener("pointerdown", e => { e.preventDefault(); App.edges.movePressed = true; });
 document.getElementById("b-switch").addEventListener("pointerdown", e => { e.preventDefault(); App.edges.switchPressed = true; });
