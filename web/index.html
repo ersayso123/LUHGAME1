@@ -313,15 +313,20 @@ class Match {
     if (this.ball.state === "held" && this.ball.holder === a) { speed *= 0.94; if (a === this.controlled && this.meter !== null) speed *= 0.3; }
     // players speed up and slow down smoothly instead of snapping
     const k = 1 - Math.exp(-S.ACCEL * dt);
-    if (a.plant > 0 && !a.dash) { a.plant -= dt; a.vx = a.vy = 0; mx = my = 0; }
-    else if (a.dash) {
-      const u = 1 - a.dash.t / (a.dash.T || a.dash.t), punch = Math.max(0.15, 1.8 - 1.6 * u);
-      a.vx = a.dash.vx * punch; a.vy = a.dash.vy * punch; a.dash.t -= dt;
-      if (a.dash.t <= 0) {
-        if (a.dash.plant) { a.vx = a.vy = 0; a.plant = 0.28; } else { a.vx *= 0.35; a.vy *= 0.35; }
-        a.dash = null;
-      }
-      mx = my = 0;   // keep facing while dashing
+    if (a.plant > 0 && !a.dash) {           // after a step-back: skid to a quick, smooth stop
+      a.plant -= dt; const f = Math.exp(-16 * dt); a.vx *= f; a.vy *= f; mx = my = 0;
+    } else if (a.dash) {
+      const u = 1 - a.dash.t / (a.dash.T || a.dash.t);
+      // crossovers explode out and flow straight back into your run (and keep steering);
+      // step-backs ease into a stop so you land set to shoot
+      const punch = a.dash.plant ? 1.9 * Math.pow(1 - u, 1.5) + 0.1 : 1.35 - 0.7 * u;
+      const steer = a.dash.plant ? 0 : 0.45;
+      const tx = a.dash.vx * punch + mx * speed * steer, ty = a.dash.vy * punch + my * speed * steer;
+      const kk = 1 - Math.exp(-30 * dt);
+      a.vx += (tx - a.vx) * kk; a.vy += (ty - a.vy) * kk;
+      a.dash.t -= dt;
+      if (a.dash.t <= 0) { if (a.dash.plant) a.plant = 0.18; a.dash = null; }
+      else if (a.dash.plant) mx = my = 0;   // keep facing the rim while stepping back
     } else { a.vx += (mx * speed - a.vx) * k; a.vy += (my * speed - a.vy) * k; }
     const ox = a.x, oy = a.y;
     [a.x, a.y] = clampCourt(a.x + a.vx * dt, a.y + a.vy * dt);
@@ -494,7 +499,7 @@ class Match {
       cross: { v: [side, 0], sp: 380, t: 0.15, odds: 1.0, stun: 0.7, label: side > 0 ? "CROSSOVER ▶" : "◀ CROSSOVER" },
       drive: { v: [side * 0.62, -0.78], sp: 420, t: 0.16, odds: 0.85, stun: 0.6, label: side > 0 ? "CROSS & DRIVE ↗" : "↖ CROSS & DRIVE" },
       stepback: { v: [0, 1], sp: 440, t: 0.17, odds: 0.7, stun: 0.45, label: "STEP BACK", plant: true },
-      sidestep: { v: [side * 0.8, 0.6], sp: 360, t: 0.15, odds: 0.8, stun: 0.5, label: side > 0 ? "SIDE STEP ▶" : "◀ SIDE STEP", plant: true },
+      sidestep: { v: [side * 0.72, 0.7], sp: 400, t: 0.17, odds: 0.8, stun: 0.5, label: side > 0 ? "STEP BACK ↘" : "↙ STEP BACK", plant: true },
       go: { v: [0, -1], sp: 380, t: 0.15, odds: 0.6, stun: 0.5, label: "HESI-GO" },
       hesi: { v: [0, 0], sp: 0, t: 0, odds: 0.55, stun: 0.55, label: "HESI" },
     };
@@ -1338,29 +1343,88 @@ class CreateScreen extends Screen {
 class HubScreen extends Screen {
   constructor() {
     super();
-    this.menu = new Menu([
-      ["Play", () => App.switch(new CourtScreen())],
-      [() => this.c.locked ? "Player Market  (locked)" : `Player Market  ${fmtTime(this.c.marketLeft())}`, () => this.open(() => new MarketScreen())],
-      [() => this.c.locked ? "Crew  (locked)" : "Crew", () => this.open(() => new CrewScreen())],
-      [() => this.c.locked ? "Train Stats  (locked)" : "Train Stats", () => this.open(() => new TrainScreen())],
-      [() => this.c.locked ? "Attribute Shop  (locked)" : "Attribute Shop", () => this.open(() => new AttrScreen())],
-      [() => this.c.locked ? "Luck Machine  (locked)" : "Luck Machine", () => this.open(() => new SlotScreen())],
-      [() => this.c.locked ? "Mystery Baller  (locked)" : "Mystery Baller", () => this.open(() => new MysteryScreen())],
-      ["Quit to Title", () => { App.save(); App.switch(new TitleScreen()); }],
-    ]);
+    const c = this.c;
+    // rows of tiles: [Play] [Crew, Train, Attributes] [Market, Mystery, Luck] [Quit]
+    this.rows = [
+      [{ id: "play", go: () => App.switch(new CourtScreen()) }],
+      [{ id: "crew", name: "Crew", go: () => this.open(() => new CrewScreen()) },
+       { id: "train", name: "Train Stats", go: () => this.open(() => new TrainScreen()) },
+       { id: "attr", name: "Attributes", go: () => this.open(() => new AttrScreen()) }],
+      [{ id: "market", name: "Player Market", go: () => this.open(() => new MarketScreen()) },
+       { id: "mystery", name: "Mystery Baller", go: () => this.open(() => new MysteryScreen()) },
+       { id: "luck", name: "Luck Machine", go: () => this.open(() => new SlotScreen()) }],
+      [{ id: "quit", go: () => { App.save(); App.switch(new TitleScreen()); } }],
+    ];
+    this.r = 0; this.col = 0;
   }
   open(make) { if (this.c.locked) { this.msg = "Locked until high school is over. Go play!"; this.msgT = 2.5; return; } App.switch(make()); }
-  key(k) { this.menu.key(k); }
+  key(k) {
+    const rows = this.rows;
+    if (K.up(k)) { this.r = (this.r - 1 + rows.length) % rows.length; }
+    else if (K.down(k)) { this.r = (this.r + 1) % rows.length; }
+    else if (K.left(k)) this.col = Math.max(0, this.col - 1);
+    else if (K.right(k)) this.col = Math.min(2, this.col + 1);
+    else if (K.ok(k)) { const row = rows[this.r]; row[Math.min(this.col, row.length - 1)].go(); }
+  }
+  isSel(r, i) { return this.r === r && Math.min(this.col, this.rows[r].length - 1) === i; }
   update(dt) {
     if (this.msgT) this.msgT = Math.max(0, this.msgT - dt);
     if (this.c.stage === "hs" && this.c.hsDone) { App.switch(new ScoutReportScreen()); return; }   // report not seen yet
     if (this.c.refreshMarket()) App.save();
   }
+  tileInfo(id) {
+    const c = this.c;
+    return {
+      crew: `${c.crew.length}/${S.CREW_MAX} players`,
+      train: `$${c.statCost(Math.min(...S.STATS.map(k => c.me.stats[k])))}+ per boost`,
+      attr: `${ATTRS[c.me.main].name} Lv ${c.me.mainLvl}`,
+      market: `New in ${fmtTime(c.marketLeft())}`,
+      mystery: `$${Luck.mysteryCost(c.tier)} a roll`,
+      luck: "Spin to win",
+    }[id];
+  }
   draw() {
-    this.header(); const c = this.c;
-    this.menu.draw(280, 140, 54, 38);
-    if (!c.market.seen && !c.locked) { rrect(420, 170, 48, 22, 6, C.red); text("NEW", 444, 181, { size: 20, center: true, display: true }); }
-    if (this.msgT) text(this.msg, 280, 580, { size: 24, color: C.gold, center: true });
+    this.header(); const c = this.c, locked = c.locked;
+    // PLAY: the big button, with what's next
+    const ps = this.isSel(0, 0), g = c.tourney ? c.tourneyGame() : null;
+    rrect(36, 96, 470, 104, 14, ps ? "#3d2f14" : "#2a2214", ps ? C.gold : "#6b5520", ps ? 3 : 2);
+    text("PLAY", 62, 106, { size: 60, color: C.gold, display: true });
+    text("▶", 474, 130, { size: 44, color: C.gold, center: true });
+    const line1 = g ? TIERS[g.court].tourney : c.gold ? "Olympic gold won" : TIERS[c.tier].tourney;
+    const line2 = g ? `${roundLabel(g)} vs ${g.name}` : c.gold ? "Replay any level for fun" : `Enter at ${TIERS[c.tier].court}`;
+    fitText(line1, 62, 152, 420, 22, C.grey);
+    fitText(line2, 62, 174, 420, 24, C.white);
+    hit(36, 96, 470, 104, () => { this.r = 0; this.rows[0][0].go(); });
+    // TEAM and SHOP sections
+    const section = (label, r, y) => {
+      text(label, 40, y, { size: 20, color: C.grey, display: true });
+      this.rows[r].forEach((t, i) => {
+        const x = 36 + i * 160, ty = y + 22, w = 150, h = 84, sel = this.isSel(r, i);
+        rrect(x, ty, w, h, 10, locked ? "#17181d" : sel ? "#343747" : "#20222b", sel ? C.gold : locked ? "#2a2c34" : "#343747", sel ? 2.5 : 1.5);
+        text(t.name, x + w / 2, ty + 28, { size: 25, color: locked ? "#5c5f6b" : C.white, center: true });
+        text(locked ? "LOCKED" : this.tileInfo(t.id), x + w / 2, ty + 58, { size: 18, color: locked ? "#5c5f6b" : C.grey, center: true, weight: 500 });
+        if (t.id === "market" && !locked && !c.market.seen) { rrect(x + w - 44, ty - 8, 44, 20, 6, C.red); text("NEW", x + w - 22, ty + 2, { size: 17, center: true, display: true }); }
+        hit(x, ty, w, h, () => { this.r = r; this.col = i; t.go(); });
+      });
+    };
+    section("TEAM", 1, 224);
+    section("SHOP", 2, 356);
+    // how you stack up against the next team
+    const mine = teamOverall(c.lineup()), opp = g ? g.ovr : null;
+    rrect(36, 488, 470, 56, 10, "#1b1d25");
+    text("YOUR LINEUP", 56, 498, { size: 17, color: C.grey, display: true });
+    text(`OVR ${mine}`, 56, 516, { size: 26, color: C.white, display: true });
+    if (opp != null) {
+      text("NEXT OPPONENT", 486, 498, { size: 17, color: C.grey, right: true, display: true });
+      text(`OVR ${opp}`, 486, 516, { size: 26, color: opp > mine ? "#ff8a7a" : C.green, right: true, display: true });
+      text(opp > mine ? `${opp - mine} better than you` : "you're favored", 271, 520, { size: 19, color: C.grey, center: true, weight: 500 });
+    }
+    if (this.msgT) text(this.msg, 271, 564, { size: 22, color: C.gold, center: true });
+    // quit sits quietly at the bottom
+    const qs = this.isSel(3, 0);
+    rrect(36, 590, 150, 40, 8, qs ? "#343747" : null, qs ? C.gold : "#343747", 1.5);
+    text("Quit to Title", 111, 610, { size: 22, color: qs ? C.white : C.grey, center: true });
+    hit(36, 590, 150, 40, () => { this.r = 3; this.rows[3][0].go(); });
     rrect(540, 100, 430, 500, 10, "#181a22", C.grey, 1.5);
     text("THE ROAD TO GOLD", 755, 126, { size: 30, color: C.gold, center: true, display: true });
     TIERS.forEach((t, i) => {
@@ -1387,6 +1451,12 @@ class HubScreen extends Screen {
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
     this.footer("Progress saves automatically in this browser");
   }
+}
+// Draw text that shrinks until it fits a width.
+function fitText(str, x, y, maxW, size, color) {
+  let sz = size;
+  while (sz > 12) { ctx.font = `500 ${Math.round(sz * 0.72)}px ${FONT_BODY}`; if (ctx.measureText(str).width <= maxW) break; sz -= 1; }
+  text(str, x, y, { size: sz, color, weight: 500 });
 }
 function fmtTime(ms) { const s = Math.ceil(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
 
@@ -1937,7 +2007,7 @@ class MatchScreen extends Screen {
     if (m.phase === "check") text("CHECK BALL", 500, 380, { size: 40, center: true, display: true });
     if (m.phase === "over") { const won = m.winner === 0; text(won ? "YOU WIN!" : "YOU LOSE", 500, 330, { size: 80, color: won ? C.green : C.red, center: true, display: true }); }
     if (!isTouch) {
-      text("WASD move · SHIFT sprint · SPACE shoot · J pass · K move (S back, S+A/D side) / steal · Q switch · M sound", 500, S.H - 16, { size: 20, center: true, weight: 500 });
+      text("WASD move · SHIFT sprint · SPACE shoot · J pass · K move (S step back, S+A/D back-diagonal) / steal · Q switch · M sound", 500, S.H - 16, { size: 20, center: true, weight: 500 });
     }
     if (this.paused) {
       rrect(290, 240, 420, 200, 12, "rgba(16,17,22,0.95)", C.grey, 1.5);
