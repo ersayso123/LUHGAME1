@@ -88,7 +88,7 @@ const S = {
   HOOP: [500, 115], ARC: 250, PAINT_HW: 80, PAINT_D: 190, CHECK: [500, 450],
   GAME_TO: 21, HALF: 11, SHOT_CLOCK: 14,
   PR: 14, BASE_SPEED: 145, SPEED_PER: 1.6, PASS_SPEED: 600, ACCEL: 8, SPRINT: 1.35, STAMINA_DRAIN: 0.42, STAMINA_REGEN: 0.22,
-  METER_TIME: 0.5, METER_SWEET: 0.8, WIN_NEAR: 0.12, WIN_FAR: 0.04,
+  METER_TIME: 0.5, METER_SWEET: 0.8, WIN_NEAR: 0.085, WIN_FAR: 0.028,
   DUNK_BASE: 0.82, LAYUP: 95, LAYUP_BASE: 0.6,
   STEAL_RANGE: 36, STEAL_BASE: 0.16, BLOCK_RANGE: 36, BLOCK_BASE: 0.10, GRAB: 20,
   MAIN_MAX: 5, SEC_MAX: 3, SEC_PCT: 0.5, SEC_UNLOCK: 1,
@@ -613,7 +613,7 @@ class Match {
     const t = clamp((dist(a.pos, S.HOOP) - 60) / (S.ARC + 90 - 60), 0, 1);
     const skill = 0.4 + a.p.stats.shooting / 99 * 0.9;            // 40 shooting ≈ 0.76x, 80 ≈ 1.13x
     const nervous = this.pressureOn && a.team === 0 ? (this.pressure >= 0.7 ? 0.7 : this.pressure >= 0.5 ? 0.86 : 1) : 1;
-    const cls = Math.max(0.7, 1 + 0.15 * this.edge(a));   // outclassed: the green gets tighter
+    const cls = Math.max(0.5, 1 + 0.3 * this.edge(a));   // outclassed: the green gets a lot tighter
     return (S.WIN_NEAR + (S.WIN_FAR - S.WIN_NEAR) * t) * skill * nervous * cls + a.eff("meter") + (a.stepBackT > 0 ? 0.015 : 0) + (a.onFire ? 0.012 : 0);
   }
   meterQuality(a, m) { const w = this.meterWindow(a), off = Math.abs(m - S.METER_SWEET); return off <= w ? 1 - 0.5 * off / w : Math.max(-1, -(off - w) / 0.25); }
@@ -643,7 +643,7 @@ class Match {
   makeChance(a, kind, quality = 0) {
     const d = dist(a.pos, S.HOOP), sh = a.p.stats.shooting;
     let base;
-    if (kind === "dunk") return clamp(S.DUNK_BASE + a.eff("dunk") - this.contest(a) * 0.8, 0.45, 0.95);
+    if (kind === "dunk") return clamp(S.DUNK_BASE + a.eff("dunk") - this.contest(a) * 1.15, 0.4, 0.93);
     if (kind === "layup") base = S.LAYUP_BASE + a.eff("finish") + (sh - 50) / 99 * 0.15 - this.contest(a) * 1.15 * (a.team === 0 && this.oppOn("paint") ? 1.4 : 1);   // finishing through a defender is hard
     else {
       if (d <= S.ARC) base = 0.52 - 0.12 * clamp((d - 60) / (S.ARC - 60), 0, 1);
@@ -664,7 +664,7 @@ class Match {
         if (dd < S.BLOCK_RANGE && dfd.stun <= 0) {
           let ch = S.BLOCK_BASE * dfd.p.stats.defense / 70 * (dfd.jump > 0 ? 1.8 : 1) * (1 - 0.5 * dd / S.BLOCK_RANGE) * Math.max(0.4, 1 + 0.4 * this.edge(dfd))
             * clamp(1 + ((dfd.p.ht || 79) - (a.p.ht || 79)) * 0.04 + ((dfd.p.ws || 82) - (dfd.p.ht || 79) - 3) * 0.03, 0.5, 1.8);   // length blocks shots
-          if (kind === "dunk") ch *= 0.3; if (pts === 2) ch *= 0.6;
+          if (kind === "dunk") ch *= 0.3 + clamp(((dfd.p.ht || 79) - (a.p.ht || 79)) * 0.05, 0, 0.35); if (pts === 2) ch *= 0.6;   // a taller man can meet you at the rim
           if (this.rng.random() < ch) {
             this.say(`BLOCKED by ${dfd.p.name}!`); if (dfd === this.mainGuy) this.box.blk++;
             this.events.push({ type: "block", x: a.x, y: a.y }); a.streak = 0;
@@ -1299,7 +1299,7 @@ class Career {
   constructor(d) {
     Object.assign(this, { cash: 100, fame: 0, tier: 0, champion: false, starters: [0, 1], tourney: null, entries: 0, titles: 0, games: 0, market: null, moves: {},
       stage: "hs", team: null, startTier: 0, gamesAtDraft: 0, hsLog: [], hsDone: false, hsChamp: false, draftGrade: null, gold: false, ladder: 2, hustleLog: [], hustleChamp: false, hustlePending: false, throneLog: [], throneChamp: false, thronePending: false,
-      salary: 0, proLog: [], offers: null, gamesSinceOffers: 0, gym: null, gymDay: 0, hustlePicks: [], lastTourney: null, school: null, prog: {} }, d);
+      salary: 0, proLog: [], offers: null, gamesSinceOffers: 0, gym: null, gymDay: 0, hustlePicks: [], lastTourney: null, school: null, prog: {}, pickupSeed: 0 }, d);
     // older saves: give everyone a position
     if (!this.me.pos) this.me.pos = "SF";
     for (const p of this.crew) if (!p.pos) p.pos = guessPos(p);
@@ -1413,8 +1413,15 @@ class Career {
     return { team: this.team, tier, bonus: d.bonus, walkOn: !!d.walkOn, extra, fameUp };
   }
   // Pickup games: two local crews at any court you've reached. They don't move you up.
+  // Pickup crews: new ones after every game you play. Each crew's rating varies, but they sit around the court's usual level.
   crewsFor(ci) {
-    return [0, 1].map(k => { const players = crewPlayers(ci, k); return { id: `${ci}:${k}`, court: ci, name: TIERS[ci].crews[k], players, boss: false, ovr: teamOverall(players), mode: "pickup" }; });
+    const seed = this.pickupSeed || 0, used = new Set();
+    return [0, 1].map(k => {
+      const rng = new Rng(`PU|${ci}|${seed}|${k}|${this.me.name}`);
+      let name; do { name = ci === OLYMPICS ? `Team ${rng.choice(STATES)}` : `${rng.choice(CITIES)} ${rng.choice(NICKS)}`; } while (used.has(name)); used.add(name);
+      const players = makeCrew(rng, TIERS[ci].base + ROUND_OFFSETS[k] + rng.randint(-3, 4));
+      return { id: `${ci}:${seed}:${k}`, court: ci, name, players, boss: false, ovr: teamOverall(players), mode: "pickup" };
+    });
   }
   enterTourney() {
     this.entries++; this.tourney = { tier: this.tier, seed: this.entries, round: 0, series: { w: 0, l: 0 }, log: {} };
@@ -1525,6 +1532,7 @@ class Career {
   applyResult(crew, won, margin = 0, bet = 0, mult = 1, moveUse = {}, box = null, extra = {}) {
     const ci = crew.court, r = { fame: 0, cash: 0, betWin: 0, tips: 0, tierUp: false, crowned: false, nextRound: false, champ: false, eliminated: false, hsDone: false, scout: null };
     this.games++;
+    if (crew.mode === "pickup") this.pickupSeed = (this.pickupSeed || 0) + 1;   // new crews show up next time
     const hs = crew.mode === "tourney" && this.stage === "hs";
     if (hs && box) { r.scout = scoutGameScore(won, margin, box); this.hsLog.push({ round: crew.round, opp: crew.name, won, margin, score: r.scout, box: { ...box } }); }
     const hustleT = crew.mode === "tourney" && ci === HUSTLE && this.stage === "pro";
@@ -1667,8 +1675,8 @@ class Career {
   }
   toggleStarter(i) { if (!this.starters.includes(i)) this.starters = [this.starters[this.starters.length - 1], i]; }
   toJSON() {
-    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog } = this;
-    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog };
+    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed } = this;
+    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed };
   }
 }
 
@@ -2254,7 +2262,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 41 (green, fire and dunk animations)");
+    this.footer("Progress saves automatically in this browser  ·  version 42 (tougher, new pickup crews)");
   }
 }
 // Draw text that shrinks until it fits a width.
