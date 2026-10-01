@@ -89,7 +89,7 @@ const S = {
   GAME_TO: 21, HALF: 11, SHOT_CLOCK: 10,
   PR: 14, BASE_SPEED: 165, SPEED_PER: 1.8, PASS_SPEED: 720, ACCEL: 11, SPRINT: 1.35, STAMINA_DRAIN: 0.42, STAMINA_REGEN: 0.22,
   METER_TIME: 0.5, METER_SWEET: 0.8, WIN_NEAR: 0.12, WIN_FAR: 0.04,
-  DUNK_RANGE: 85, DUNK_BASE: 0.9, LAYUP: 95, LAYUP_BASE: 0.66,
+  DUNK_RANGE: 85, DUNK_BASE: 0.82, LAYUP: 95, LAYUP_BASE: 0.6,
   STEAL_RANGE: 36, STEAL_BASE: 0.16, BLOCK_RANGE: 36, BLOCK_BASE: 0.10, GRAB: 20,
   MAIN_MAX: 5, SEC_MAX: 3, SEC_PCT: 0.5, SEC_UNLOCK: 1,
   CREW_MAX: 6, STAT_MAX: 99, STAT_STEP: 2,
@@ -584,7 +584,7 @@ class Match {
   makeChance(a, kind, quality = 0) {
     const d = dist(a.pos, S.HOOP), sh = a.p.stats.shooting;
     let base;
-    if (kind === "dunk") return clamp(S.DUNK_BASE + a.eff("dunk") - this.contest(a) * 0.3, 0.5, 0.98);
+    if (kind === "dunk") return clamp(S.DUNK_BASE + a.eff("dunk") - this.contest(a) * 0.8, 0.45, 0.95);
     const knows = this.human && a.team === 0 ? this.read : null;
     if (kind === "layup") base = S.LAYUP_BASE + a.eff("finish") + (sh - 50) / 99 * 0.15 - this.contest(a) * 1.15 * (1 + 0.5 * (knows ? knows.rim : 0));   // finishing through a defender is hard
     else {
@@ -800,7 +800,7 @@ const AI = (() => {
   // AI "hits the green" about as often as a player of that skill would; otherwise a mistimed release.
   function jumper(m, a) {
     const t = clamp((dist(a.pos, S.HOOP) - 60) / (S.ARC + 90 - 60), 0, 1);
-    const g = clamp((0.12 + (a.p.stats.shooting - 40) / 130 + a.eff("meter") * 3 - 0.1 * t) * (1 - m.contest(a) * 1.5) * Math.max(0.5, 1 + 0.25 * m.edge(a)), 0.03, 0.6);
+    const g = clamp((0.05 + (a.p.stats.shooting - 40) / 220 + a.eff("meter") * 2 - 0.06 * t) * Math.max(0, 1 - m.contest(a) * 2.5) * Math.max(0.5, 1 + 0.2 * m.edge(a)), 0.01, 0.25);   // greens are rare, and a hand in the face kills them
     if (m.rng.random() < g) return I({ action: "shoot", kind: "jumper", green: true, quality: 1 });
     return I({ action: "shoot", kind: "jumper", quality: m.rng.uniform(-0.9, 0.2) });
   }
@@ -2146,7 +2146,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 31 (lock-on defense)");
+    this.footer("Progress saves automatically in this browser  ·  version 32 (AI misses more)");
   }
 }
 // Draw text that shrinks until it fits a width.
