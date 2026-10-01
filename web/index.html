@@ -89,7 +89,7 @@ const S = {
   GAME_TO: 21, HALF: 11, SHOT_CLOCK: 14,
   PR: 14, BASE_SPEED: 145, SPEED_PER: 1.6, PASS_SPEED: 600, ACCEL: 8, SPRINT: 1.35, STAMINA_DRAIN: 0.42, STAMINA_REGEN: 0.22,
   METER_TIME: 0.5, METER_SWEET: 0.8, WIN_NEAR: 0.12, WIN_FAR: 0.04,
-  DUNK_RANGE: 85, DUNK_BASE: 0.82, LAYUP: 95, LAYUP_BASE: 0.6,
+  DUNK_BASE: 0.82, LAYUP: 95, LAYUP_BASE: 0.6,
   STEAL_RANGE: 36, STEAL_BASE: 0.16, BLOCK_RANGE: 36, BLOCK_BASE: 0.10, GRAB: 20,
   MAIN_MAX: 5, SEC_MAX: 3, SEC_PCT: 0.5, SEC_UNLOCK: 1,
   CREW_MAX: 6, STAT_MAX: 99, STAT_STEP: 2,
@@ -436,18 +436,31 @@ class Match {
   // adds range and lets you dunk a little slower and through more traffic.
   dunkOpen(a) {
     const attr = canDunk(a.p), d = dist(a.pos, S.HOOP);
-    if (d > S.DUNK_RANGE + (attr ? 25 : 0)) return false;
-    const sp = Math.hypot(a.vx, a.vy), need = attr ? 0.6 : 0.95;   // without Dunker you need to be at full speed or sprinting
-    if (sp < a.baseSpeed() * need) return false;
+    if (d > this.dunkRadius(a)) return false;
+    const sp = Math.hypot(a.vx, a.vy);
+    // sprinting at the rim (or a Dunker at full speed) inside your dunk radius
+    if (!(a.sprinting ? sp > a.baseSpeed() * 0.7 : attr && sp > a.baseSpeed() * 0.85)) return false;
     const [hx, hy] = norm(S.HOOP[0] - a.x, S.HOOP[1] - a.y);
     if ((a.vx * hx + a.vy * hy) < sp * 0.5) return false;            // must be heading at the rim
-    const clearR = attr ? 16 : 26;
+    const clearR = attr ? 16 : 22;
     for (const o of this.team(1 - a.team)) {                         // anyone standing in the lane?
       const t = clamp(((o.x - a.x) * hx + (o.y - a.y) * hy) / Math.max(1, d), 0, 1);
       const px = a.x + hx * d * t, py = a.y + hy * d * t;
       if (Math.hypot(o.x - px, o.y - py) < clearR && o.stun <= 0) return false;
     }
     return true;
+  }
+  // what the shot looks like right now (2K style): how contested, and the make % for a decent (non-green) release
+  shotOdds(a) {
+    const kind = this.shotKind(a), c = this.contest(a);
+    const pct = Math.round(this.makeChance(a, kind, 0.4) * 100);
+    const label = c < 0.04 ? "WIDE OPEN" : c < 0.11 ? "OPEN" : c < 0.2 ? "CONTESTED" : "SMOTHERED";
+    return { kind, pct, label, c };
+  }
+  // how far out you can take off for a dunk: faster, taller and lighter = farther
+  dunkRadius(a) {
+    const p = physOf(a.p);
+    return clamp(62 + (p.stats.speed - 50) * 1.2 + (p.ht - 78) * 5 - (p.wt - 215) * 0.3 + (canDunk(p) ? 25 : 0), 36, 150);
   }
   shotKind(a) {
     if (this.dunkOpen(a)) return "dunk";
@@ -611,7 +624,8 @@ class Match {
     if (!dfd || dd >= 70) return 0;
     const scouted = a.team === 0 ? 1 + 0.5 * this.scout : coachOn(this, "lockdown") ? 1.25 : 1;
     const size = clamp(1 + ((dfd.p.ht || 79) - (a.p.ht || 79)) * 0.02, 0.7, 1.3) * (this.human && dfd === this.controlled ? 1.25 : 1);   // a bigger defender bothers shots more (and you, hands up, count extra)
-    return (1 - dd / 70) * (0.16 + dfd.p.stats.defense / 99 * 0.22 + dfd.eff("contest")) * scouted * Math.max(0.4, 1 + 0.35 * this.edge(dfd)) * size;
+    const guard = clamp(1 + (dfd.p.stats.defense - a.p.stats.shooting) / 110, 0.6, 1.5);   // a better defender than you are a shooter = a tougher look
+    return (1 - dd / 70) * (0.16 + dfd.p.stats.defense / 99 * 0.22 + dfd.eff("contest")) * scouted * Math.max(0.4, 1 + 0.35 * this.edge(dfd)) * size * guard;
   }
   // Chance to make a shot that is NOT a green release.
   makeChance(a, kind, quality = 0) {
@@ -2218,7 +2232,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 39 (no pink)");
+    this.footer("Progress saves automatically in this browser  ·  version 40 (contest meter, sprint dunks)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -2987,6 +3001,15 @@ class MatchScreen extends Screen {
     if (m.lockMan && m.offense !== 0 && m.phase === "live") {   // who you're locked on
       ctx.save(); ctx.setLineDash([5, 4]); ellipse(m.lockMan.x, m.lockMan.y + 1, 18, 8, null, `rgba(255,90,80,${0.6 + 0.3 * Math.sin(m.elapsed * 6)})`, 2.2); ctx.restore();
     }
+    // your dunk zone: shows when you're attacking with the ball (sprint to dunk from inside it)
+    if (m.phase === "live" && m.ball.state === "held" && m.ball.holder === m.controlled && m.controlled.team === 0 && dist(m.controlled.pos, S.HOOP) < 260) {
+      const a = m.controlled, r = m.dunkRadius(a), can = m.dunkOpen(a), inside = dist(a.pos, S.HOOP) <= r;
+      ctx.save(); ctx.beginPath(); ctx.rect(S.CL, S.CT, S.CR - S.CL, S.CB - S.CT); ctx.clip();
+      if (!can) ctx.setLineDash([6, 6]);
+      ellipse(S.HOOP[0], S.HOOP[1], r, r, can ? "rgba(235,130,40,0.16)" : null, can ? "rgba(255,150,50,0.95)" : inside ? "rgba(255,190,90,0.6)" : "rgba(255,255,255,0.28)", can ? 3 : 2);
+      ctx.restore();
+      if (inside && !can && !a.sprinting) text("SPRINT TO DUNK", S.HOOP[0], S.HOOP[1] + r + 12, { size: 16, color: "#ffcf8a", center: true, display: true });
+    }
     drawActors(m, true);
     for (const t of m.team(0)) if (t.calledOpen && m.coach && !m.coach.used && m.ball.state === "held" && m.ball.holder !== t) {   // who the coach wants you to hit
       const bob = Math.sin(m.elapsed * 8) * 3;
@@ -3054,13 +3077,16 @@ class MatchScreen extends Screen {
     }
     [...m.messages].reverse().forEach(([msg], i) => text(msg, 500, 600 - i * 28, { size: i === 0 ? 32 : 24, center: true }));
     const ca = m.controlled, cb = m.ball;
-    if (m.phase === "live" && cb.state === "held" && cb.holder === ca && !m.needsClear && m.meter === null) {
-      const kind = m.shotKind(ca);
-      if (kind !== "jumper") {
-        const tag = kind === "dunk" ? "DUNK!" : "LAYUP";
-        rrect(ca.x - 30, ca.y - 92, 60, 22, 6, kind === "dunk" ? C.orange : "rgba(20,20,26,0.85)", C.gold, 1.5);
-        text(tag, ca.x, ca.y - 81, { size: 22, color: kind === "dunk" ? "#1a0f05" : C.gold, center: true, display: true });
-      }
+    if (m.phase === "live" && cb.state === "held" && cb.holder === ca && !m.needsClear) {
+      // contest meter (2K style): shot type, how contested, and your make %
+      const o = m.shotOdds(ca), col = { "WIDE OPEN": C.green, OPEN: "#a6e35a", CONTESTED: C.orange, SMOTHERED: C.red }[o.label];
+      const tag = o.kind === "dunk" ? "DUNK" : o.kind === "layup" ? "LAYUP" : shotPoints(ca.pos) === 2 ? "3PT" : "JUMPER";
+      const x = ca.x - 62, y = ca.y - 104;
+      rrect(x, y, 124, 30, 7, "rgba(12,12,16,0.88)", col, 1.5);
+      text(tag, x + 7, y + 3, { size: 15, color: o.kind === "dunk" ? C.orange : C.grey, display: true });
+      text(`${o.pct}%`, x + 117, y + 2, { size: 22, color: col, right: true, display: true });
+      text(o.label, x + 7, y + 17, { size: 13, color: col, display: true });
+      rrect(x + 4, y + 26, 116, 3, 1.5, "#2a2c36"); rrect(x + 4, y + 26, 116 * o.pct / 100, 3, 1.5, col);
     }
     if (m.phase === "check") text("CHECK BALL", 500, 380, { size: 40, center: true, display: true });
     if (m.phase === "over") { const won = m.winner === 0; text(won ? "YOU WIN!" : "YOU LOSE", 500, 330, { size: 80, color: won ? C.green : C.red, center: true, display: true }); }
