@@ -17,6 +17,7 @@
   color-scheme: dark;
 }
 html, body { height: 100%; }
+body.pink { --ground: #1c0b17; --panel: #2c1225; --line: #6a2a52; --muted: #d79ac0; --crown: #ff5fb0; --ball: #ff7ac8; }
 body {
   background: var(--ground);
   color: var(--ink);
@@ -101,6 +102,10 @@ const C = {
   red: "#e15046", orange: "#eb8228", blue: "#5096f0", black: "#0f0f12",
   team: ["#3c82eb", "#d7413c"], bg: "#12141a", bar: "#1e202a",
 };
+// Pink mode: everything goes pink (switch it on the Hub)
+const PINK_KEY = "streetball-pink";
+let PINK = (() => { try { return localStorage.getItem(PINK_KEY) !== "off"; } catch (e) { return true; } })();
+const setPink = on => { PINK = on; try { localStorage.setItem(PINK_KEY, on ? "on" : "off"); } catch (e) { /* this visit only */ } };
 const SAVE_KEY = "streetball-kingdom-v1";   // the old single save (moved into slot 1)
 const SLOTS = 5, slotKey = i => `streetball-kingdom-slot-${i}`;
 try { const old = localStorage.getItem(SAVE_KEY); if (old && !localStorage.getItem(slotKey(0))) { localStorage.setItem(slotKey(0), old); localStorage.removeItem(SAVE_KEY); } } catch (e) { /* no storage */ }
@@ -2194,6 +2199,9 @@ class HubScreen extends Screen {
       text(c.tourney ? "Bracket (B)" : "Last bracket (B)", 291, 624, { size: 22, color: C.gold, center: true });
       hit(206, 604, 170, 40, () => App.switch(new BracketScreen(new HubScreen())));
     }
+    rrect(396, 604, 110, 40, 8, "#2a1424", "#ff5fb0", 1.5);   // pink mode on/off
+    text(PINK ? "Pink: ON" : "Pink: OFF", 451, 624, { size: 20, color: "#ff8fc8", center: true });
+    hit(396, 604, 110, 40, () => setPink(!PINK));
     rrect(540, 100, 430, 500, 10, "#181a22", C.grey, 1.5);
     text("THE ROAD TO GOLD", 755, 126, { size: 30, color: C.gold, center: true, display: true });
     TIERS.forEach((t, i) => {
@@ -2218,7 +2226,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 37 (slower pace, no cheap putbacks, bigger bets)");
+    this.footer("Progress saves automatically in this browser  ·  version 38 (pink)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -3702,6 +3710,11 @@ function frame(now) {
   App.screen.update(dt);
   App.hits = [];
   App.screen.draw();
+  if (PINK) {   // everything goes pink (keeps the light and dark, swaps the color)
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalCompositeOperation = "color"; ctx.globalAlpha = 0.62;
+    ctx.fillStyle = "#ff4fa8"; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.restore();
+  }
+  document.body.classList.toggle("pink", PINK);
   requestAnimationFrame(frame);
 }
 function start(data) {
