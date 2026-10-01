@@ -92,7 +92,7 @@ const S = {
   METER_TIME: 0.5, METER_SWEET: 0.8, WIN_NEAR: 0.085, WIN_FAR: 0.028,
   DUNK_BASE: 0.82, LAYUP: 95, LAYUP_BASE: 0.6,
   STEAL_RANGE: 36, STEAL_BASE: 0.16, BLOCK_RANGE: 36, BLOCK_BASE: 0.10, GRAB: 20,
-  MAIN_MAX: 5, SEC_MAX: 3, SEC_PCT: 0.5, SEC_UNLOCK: 1,
+  MAIN_MAX: 5, SEC_MAX: 3, SEC_PCT: 0.5, SEC_UNLOCK: 4, THIRD_PCT: 0.35,
   CREW_MAX: 6, STAT_MAX: 99, STAT_STEP: 2,
   STATS: ["shooting", "speed", "handles", "defense", "rebounding"],
   LABEL: { shooting: "Shooting", speed: "Speed", handles: "Handles", defense: "Defense", rebounding: "Rebounding" },
@@ -154,40 +154,76 @@ function effect(p, key) {
   let t = 0;
   if (p.main) t += (ATTRS[p.main].fx[key] || 0) * p.mainLvl;
   if (p.sec) t += (ATTRS[p.sec].fx[key] || 0) * p.secLvl * S.SEC_PCT;
+  if (p.third) t += (ATTRS[p.third].fx[key] || 0) * (p.thirdLvl || 0) * S.THIRD_PCT;
   return t;
 }
-const canDunk = p => (p.main === "dunker" && p.mainLvl > 0) || (p.sec === "dunker" && p.secLvl > 0);
+const canDunk = p => (p.main === "dunker" && p.mainLvl > 0) || (p.sec === "dunker" && p.secLvl > 0) || (p.third === "dunker" && p.thirdLvl > 0);
 // ---- Attributes (badge-style): you earn them at OVR milestones and equip them in limited slots.
 // Teammates can buy them; better opponents come with them. (Your Sharpshooter/Dunker/etc. pick is your Archetype.)
 const BADGES = {
-  combo: { name: "Combo Dribbler", short: "Combo", ovr: 48, price: 400, pos: ["PG", "SG", "SF"], desc: "Chain two dribble moves with no delay, then a longer cooldown." },
-  firststep: { name: "Quick First Step", short: "1st Step", ovr: 50, price: 350, pos: ["PG", "SG", "SF"], desc: "Crossovers, cross & drives and hesi-gos explode into a burst of speed." },
-  ankles: { name: "Ankle Breaker", short: "Ankles", ovr: 53, price: 450, pos: ["PG", "SG"], desc: "Your moves break ankles 30% more, and defenders stay down longer." },
-  deadeye: { name: "Deadeye", short: "Deadeye", ovr: 56, price: 500, pos: ["SG", "SF", "PG"], desc: "Contests hurt your shots 30% less." },
-  range: { name: "Limitless Range", short: "Range", ovr: 59, price: 550, pos: ["SG", "PG", "SF"], desc: "Deep shots fall more, and your green window holds up from range." },
-  poster: { name: "Posterizer", short: "Poster", ovr: 62, price: 500, pos: ["SF", "PF", "C"], desc: "Bigger dunk radius; your dunks are 40% harder to stop." },
-  lockdown: { name: "Lockdown Defender", short: "Lockdown", ovr: 65, price: 500, pos: ["SG", "SF", "PF"], desc: "Steal timing is more forgiving and your contests are 15% stronger." },
-  boards: { name: "Rebound Chaser", short: "Boards", ovr: 68, price: 400, pos: ["PF", "C", "SF"], desc: "Grab rebounds from farther away." },
-  clutch: { name: "Clutch", short: "Clutch", ovr: 72, price: 600, pos: ["PG", "SG", "SF", "PF", "C"], desc: "Bigger green window when the game is close late." },
+  combo: { name: "Combo Dribbler", short: "Combo", league: 3, price: 400, pos: ["PG", "SG", "SF"], desc: "Chain two dribble moves with no delay, then a longer cooldown." },
+  firststep: { name: "Quick First Step", short: "1st Step", league: 3, price: 350, pos: ["PG", "SG", "SF"], desc: "Crossovers, cross & drives and hesi-gos explode into a burst of speed." },
+  ankles: { name: "Ankle Breaker", short: "Ankles", league: 3, price: 450, pos: ["PG", "SG"], desc: "Your moves break ankles 30% more, and defenders stay down longer." },
+  deadeye: { name: "Deadeye", short: "Deadeye", league: 5, price: 500, pos: ["SG", "SF", "PG"], desc: "Contests hurt your shots 30% less." },
+  range: { name: "Limitless Range", short: "Range", league: 6, price: 550, pos: ["SG", "PG", "SF"], desc: "Deep shots fall more, and your green window holds up from range." },
+  poster: { name: "Posterizer", short: "Poster", league: 5, price: 500, pos: ["SF", "PF", "C"], desc: "Bigger dunk radius; your dunks are 40% harder to stop." },
+  lockdown: { name: "Lockdown Defender", short: "Lockdown", league: 5, price: 500, pos: ["SG", "SF", "PF"], desc: "Steal timing is more forgiving and your contests are 15% stronger." },
+  boards: { name: "Rebound Chaser", short: "Boards", league: 3, price: 400, pos: ["PF", "C", "SF"], desc: "Grab rebounds from farther away." },
+  clutch: { name: "Clutch", short: "Clutch", league: 6, price: 600, pos: ["PG", "SG", "SF", "PF", "C"], desc: "Bigger green window when the game is close late." },
 };
 const BADGE_ORDER = Object.keys(BADGES);
 const hasBadge = (p, id) => !!(p && p.badges && p.badges.includes(id));
 const badgeLabel = p => (p.badges || []).map(b => BADGES[b].short).join(", ");
-// OVR milestones for your player: attributes, attribute slots, stamina, new moves, crew slots, cash and fame
+// The ladder: what every player gets at each level (you, your opponents by their league, shop players by yours).
+// HS / Hustle / Rec: main archetype only. Minor: 1st attribute. Semi-Pro: secondary archetype. Pro: 2nd attribute (better ones).
+// Throne: elite attributes, main archetype maxes out. Olympics: a third archetype.
+const LADDER = [
+  { slots: 0, league: 0, sec: false, third: false, mainMax: 2 },   // High School
+  { slots: 0, league: 1, sec: false, third: false, mainMax: 2 },   // Hustle League
+  { slots: 0, league: 2, sec: false, third: false, mainMax: 3 },   // Rec League
+  { slots: 1, league: 3, sec: false, third: false, mainMax: 3 },   // Minor League
+  { slots: 1, league: 4, sec: true, third: false, mainMax: 4 },    // Semi-Pro
+  { slots: 2, league: 5, sec: true, third: false, mainMax: 4 },    // Pro League
+  { slots: 2, league: 6, sec: true, third: false, mainMax: 5 },    // The Throne
+  { slots: 2, league: 7, sec: true, third: true, mainMax: 5 },     // The Olympics
+];
+const inLeague = t => { const n = TIERS[t].name; return n.startsWith("The ") || n === "Semi-Pro" ? n : `the ${n}`; };   // "in the Pro League", "in Semi-Pro"
+const rungOf = tier => LADDER[clamp(tier || 0, 0, LADDER.length - 1)];
+const badgeOpenAt = (id, tier) => BADGES[id].league <= rungOf(tier).league && rungOf(tier).slots > 0;
+const nextRung = (tier, f) => { for (let t = tier + 1; t < LADDER.length; t++) if (f(LADDER[t], t)) return t; return null; };
+// A player as their league allows: no secondary before Semi-Pro, a third at the Olympics, main level capped
+function ladderize(p, tier, rng = null) {
+  const L = rungOf(tier);
+  if (p.mainLvl > L.mainMax) p.mainLvl = L.mainMax;
+  if (!L.sec && p.sec) { p.sec = null; p.secLvl = 0; }
+  if (L.third && !p.third && p.sec) { rng = rng || new Rng(`third|${p.name}|${p.number}`); p.third = rng.choice(ATTR_ORDER.filter(a => a !== p.main && a !== p.sec)); p.thirdLvl = rng.randint(1, S.SEC_MAX); }
+  if (!L.third && p.third) { p.third = null; p.thirdLvl = 0; }
+  return p;
+}
+// Keep a player's attributes within what their league allows (the rest wait until they're allowed again)
+function fitBadges(p, tier, slots = rungOf(tier).slots) {
+  const all = [...new Set([...(p.badges || []), ...(p.badgesHeld || [])])];
+  p.badges = all.filter(b => badgeOpenAt(b, tier)).slice(0, slots);
+  p.badgesHeld = all.filter(b => !p.badges.includes(b));
+  return p;
+}
+// OVR milestones for your player: stamina, new moves, crew slots, cash and fame (attributes come from your league)
 const MILESTONES = [
-  { ovr: 45, stamina: true }, { ovr: 48, badge: "combo", slot: true }, { ovr: 50, badge: "firststep" }, { ovr: 52, move: "spin" },
-  { ovr: 53, badge: "ankles" }, { ovr: 55, stamina: true }, { ovr: 56, badge: "deadeye", crew: true }, { ovr: 58, slot: true },
-  { ovr: 59, badge: "range" }, { ovr: 60, move: "behind" }, { ovr: 62, badge: "poster" }, { ovr: 65, badge: "lockdown", stamina: true },
-  { ovr: 68, badge: "boards" }, { ovr: 70, slot: true }, { ovr: 72, badge: "clutch" }, { ovr: 75, stamina: true, crew: true },
-  { ovr: 80 }, { ovr: 82, slot: true }, { ovr: 85 }, { ovr: 90 },
+  { ovr: 45, stamina: true }, { ovr: 48 }, { ovr: 50 }, { ovr: 52, move: "spin" },
+  { ovr: 55, stamina: true }, { ovr: 56, crew: true }, { ovr: 58 }, { ovr: 60, move: "behind" },
+  { ovr: 62 }, { ovr: 65, stamina: true }, { ovr: 68 }, { ovr: 70 }, { ovr: 72 }, { ovr: 75, stamina: true, crew: true },
+  { ovr: 80 }, { ovr: 82 }, { ovr: 85 }, { ovr: 90 },
 ];
 const MOVE_NAMES = { spin: "Spin move", behind: "Behind-the-back" };
 const milestoneText = ms => [ms.badge && BADGES[ms.badge].name, ms.slot && "+1 attribute slot", ms.move && MOVE_NAMES[ms.move], ms.stamina && "+stamina", ms.crew && "+1 crew slot"].filter(Boolean).join(" · ") || "cash & fame";
 // Opponents and generated players: the better they are, the more attributes (and moves) they have
-function giveBadges(p) {
+function tierForOvr(o) { let t = 0; for (let i = 0; i < TIERS.length; i++) if (TIERS[i].base <= o + 2) t = i; return t; }
+function giveBadges(p, tier = null) {
   if (p.badges) return p;
-  const o = overall(p), n = o >= 85 ? 3 : o >= 70 ? 2 : o >= 55 ? 1 : 0, rng = new Rng(`badge|${p.name}|${p.number}|${p.pos}`);
-  const pool = BADGE_ORDER.filter(b => BADGES[b].pos.includes(p.pos || "SF")); p.badges = [];
+  const o = overall(p); tier = tier ?? tierForOvr(o);
+  const n = rungOf(tier).slots, rng = new Rng(`badge|${p.name}|${p.number}|${p.pos}`);
+  let pool = BADGE_ORDER.filter(b => badgeOpenAt(b, tier) && BADGES[b].pos.includes(p.pos || "SF"));
+  if (pool.length < n) pool = BADGE_ORDER.filter(b => badgeOpenAt(b, tier)); p.badges = [];
   while (p.badges.length < n && pool.length) p.badges.push(pool.splice(rng.randint(0, pool.length - 1), 1)[0]);
   p.moves = o >= 70 ? ["spin", "behind"] : o >= 60 ? ["spin"] : [];
   return p;
@@ -196,6 +232,7 @@ function attrLabel(p) {
   const parts = [];
   if (p.main && p.mainLvl) parts.push(`${ATTRS[p.main].name} ${p.mainLvl}`);
   if (p.sec && p.secLvl) parts.push(`${ATTRS[p.sec].name} ${p.secLvl} (2nd)`);
+  if (p.third && p.thirdLvl) parts.push(`${ATTRS[p.third].name} ${p.thirdLvl} (3rd)`);
   return parts.join(" / ") || "No archetype";
 }
 
@@ -208,7 +245,7 @@ function makePlayer(name, number, stats, main = null, mainLvl = 0, sec = null, s
 const copyPlayer = p => JSON.parse(JSON.stringify(p));
 function overall(p) {
   const avg = S.STATS.reduce((a, s) => a + p.stats[s], 0) / S.STATS.length;
-  return Math.min(99, Math.round(avg + 2 * p.mainLvl + p.secLvl));
+  return Math.min(99, Math.round(avg + 2 * p.mainLvl + p.secLvl + (p.thirdLvl || 0)));
 }
 const teamOverall = ps => Math.round(ps.reduce((a, p) => a + overall(p), 0) / ps.length);
 
@@ -1135,7 +1172,7 @@ const BET_STEPS = [10, 25, 50, 100, 200, 400, 750, 1000, 1200];
 const QUAL_POOL = ["Southview Spartans", "Riverside Raiders", "Oak Hill Owls", "Maplewood Mavericks"];
 // High school starts with a best-of-3 qualifier series (win 2 to make the quarterfinals)
 function qualifierGame(seed, q) {
-  const rng = new Rng(`Q|${seed}`), name = rng.choice(QUAL_POOL), players = makeCrew(rng, TIERS[0].base - 3);
+  const rng = new Rng(`Q|${seed}`), name = rng.choice(QUAL_POOL), players = makeCrew(rng, TIERS[0].base - 3, 0);
   const n = q.w + q.l + 1;
   return { id: `Q${seed}:${n}`, court: 0, name, players, boss: false, ovr: teamOverall(players), mode: "tourney", round: -1, series: { ...q, game: n } };
 }
@@ -1236,9 +1273,10 @@ function settleOverall(p, target) {
   for (let pass = 0; pass < 4; pass++) { const diff = target - overall(p); if (!diff) break; for (const k of S.STATS) p.stats[k] = clamp(p.stats[k] + diff, 20, S.STAT_MAX); }
   return p;
 }
-function makeCrew(rng, base) {
+function makeCrew(rng, base, tier = null) {
+  const t = tier ?? tierForOvr(base);
   return [rng.choice(["PG", "SG"]), rng.choice(["SF", "SG", "PF"]), rng.choice(["C", "PF"])]
-    .map(pos => giveBadges(settleOverall(generatePlayer(rng, base, pos), Math.min(99, base + rng.randint(-2, 2)))));
+    .map(pos => giveBadges(settleOverall(ladderize(generatePlayer(rng, base, pos), t, rng), Math.min(99, base + rng.randint(-2, 2))), t));
 }
 function crewPlayers(ci, k) { return makeCrew(new Rng(`${TIERS[ci].court}|${TIERS[ci].crews[k]}`), TIERS[ci].base + ROUND_OFFSETS[k]); }
 // Tournament bracket for one entry: two random crews, then that court's champions in the final.
@@ -1246,7 +1284,7 @@ function bracket(tier, seed) {
   const rng = new Rng(`T|${tier}|${seed}`), pool = [...(tier === 0 ? HS_POOL : tier === OLYMPICS ? OLY_POOL : TEAM_POOL)];
   // build the three teams, then seed them so each round is tougher than the last
   const offs = tier === OLYMPICS ? [0, 1, 3, 5, 7] : ROUND_OFFSETS;   // at the Olympics everyone is elite
-  const crews = ROUNDS.map((_, r) => makeCrew(rng, TIERS[tier].base + offs[r])).sort((a, b) => teamOverall(a) - teamOverall(b));
+  const crews = ROUNDS.map((_, r) => makeCrew(rng, TIERS[tier].base + offs[r], tier)).sort((a, b) => teamOverall(a) - teamOverall(b));
   for (let r = 1; r < crews.length; r++) {        // break ties: a later round must be at least 2 better
     while (teamOverall(crews[r]) < teamOverall(crews[r - 1]) + 2 && teamOverall(crews[r]) < 99) for (const p of crews[r]) settleOverall(p, Math.min(99, overall(p) + 1));
   }
@@ -1424,6 +1462,7 @@ class Career {
     this.me.badges = this.me.badges || []; this.me.moves = this.me.moves || [];
     for (const p of this.crew) if (p.cap == null) p.cap = overall(p) + 3;   // older teammates: a little room to grow
     if (!d || !d.milestonesHit) this.checkMilestones(true);                 // older saves: grant what you've already reached (no cash)
+    this.fitLadder(); if (!d || !d.seenRung) this.ladderNews = null;          // older saves: no pop-up for what you already have
     if (this.stage === "pro" && !this.salary) this.salary = SALARY[this.tier] || 0;
   }
   static fresh(name, main, pos = "SF", opts = {}) {
@@ -1463,7 +1502,7 @@ class Career {
   hustleVerdict(rep) {
     if (!this.hustlePending) return null;
     const to = placement(this.hustleLog, this.hustleChamp, HUSTLE), fameUp = SCOUT_FAME[rep.grade] || 0;
-    this.tier = Math.max(this.tier, to); this.fame = placedFame(this.fame, this.tier, fameUp);
+    this.tier = Math.max(this.tier, to); this.fame = placedFame(this.fame, this.tier, fameUp); this.fitLadder();
     this.salary = Math.max(this.salary, SALARY[this.tier]);
     if (to >= 2 && this.crew.length < 2) { this.crew = [...this.teamRoster(to), ...this.crew]; this.starters = [0, 1]; }   // signed: a real roster
     this.hustlePending = false; this.hustleLog = []; this.hustleChamp = false;
@@ -1509,13 +1548,13 @@ class Career {
     if (this.stage !== "hs") return null;
     const rng = new Rng(), d = DRAFT[rep.grade], tier = placement(this.hsLog, this.hsChamp, HUSTLE), fameUp = SCOUT_FAME[rep.grade] || 0;
     this.stage = "pro"; this.team = rng.choice(FRANCHISES); this.draftGrade = rep.grade;
-    this.tier = tier; this.startTier = tier; this.gamesAtDraft = this.games; this.tourney = null; this.fame = placedFame(this.fame, tier, fameUp);
+    this.tier = tier; this.startTier = tier; this.gamesAtDraft = this.games; this.tourney = null; this.fame = placedFame(this.fame, tier, fameUp); this.fitLadder();
     this.cash += d.bonus; this.salary = SALARY[tier];
     // high school's over: your old teammates go their own way
     if (tier >= 2) { this.crew = this.teamRoster(tier); this.starters = [0, 1]; }
     else { this.crew = []; this.starters = []; this.ensureGym(); }   // the Hustle League is a pickup gym
     let extra = null;
-    if (rep.grade === "A" && this.crew.length < this.crewMax()) { extra = rarePlayer(rng, overall(this.me), RARITY[1]); this.crew.push(extra); }
+    if (rep.grade === "A" && this.crew.length < this.crewMax()) { extra = ladderize(rarePlayer(rng, overall(this.me), RARITY[1]), this.tier, rng); this.crew.push(extra); }
     return { team: this.team, tier, bonus: d.bonus, walkOn: !!d.walkOn, extra, fameUp };
   }
   // Pickup games: two local crews at any court you've reached. They don't move you up.
@@ -1525,7 +1564,7 @@ class Career {
     return [0, 1].map(k => {
       const rng = new Rng(`PU|${ci}|${seed}|${k}|${this.me.name}`);
       let name; do { name = ci === OLYMPICS ? `Team ${rng.choice(STATES)}` : `${rng.choice(CITIES)} ${rng.choice(NICKS)}`; } while (used.has(name)); used.add(name);
-      const players = makeCrew(rng, TIERS[ci].base + ROUND_OFFSETS[k] + rng.randint(-3, 4));
+      const players = makeCrew(rng, TIERS[ci].base + ROUND_OFFSETS[k] + rng.randint(-3, 4), ci);
       return { id: `${ci}:${seed}:${k}`, court: ci, name, players, boss: false, ovr: teamOverall(players), mode: "pickup" };
     });
   }
@@ -1554,7 +1593,7 @@ class Career {
     return [this.me, ...picks];
   }
   // A new team, a new roster: a guard, a wing and a big a little below the level
-  teamRoster(tier) { const rng = new Rng(); return ["PG", "SF", "C"].map(pos => settleOverall(generatePlayer(rng, TIERS[tier].base - 8, pos), TIERS[tier].base - 8 + rng.randint(-2, 2))); }
+  teamRoster(tier) { const rng = new Rng(); return ["PG", "SF", "C"].map(pos => settleOverall(ladderize(generatePlayer(rng, TIERS[tier].base - 8, pos), tier, rng), TIERS[tier].base - 8 + rng.randint(-2, 2))); }
   // ---- the Hustle gym: regulars who rotate every day; the ones who like you will run the Classic with you
   // The Hustle League gym is public: 30 regulars, 10-15 of them in on any given day (it changes every game)
   ensureGym() {
@@ -1565,7 +1604,7 @@ class Career {
     while (this.gym.length < GYM_SIZE) {   // older saves had 8 regulars: top them up, keep how much they like you
       const pos = POSITIONS[this.gym.length % POSITIONS.length];
       let p, n = 0; do { p = generatePlayer(rng, base, pos); } while (names.has(p.name) && ++n < 200); names.add(p.name);   // no two regulars share a name
-      this.gym.push({ p: settleOverall(p, base + rng.randint(-4, 4)), like: rng.randint(5, 35) });
+      this.gym.push({ p: settleOverall(ladderize(p, HUSTLE, rng), base + rng.randint(-4, 4)), like: rng.randint(5, 35) });
     }
   }
   gymToday() {   // indexes of who's in the gym today
@@ -1647,19 +1686,40 @@ class Career {
     }
     return { hurt, newFans };
   }
-  secUnlocked() { return this.tier >= S.SEC_UNLOCK || this.champion; }
+  get myTier() { return this.stage === "hs" ? 0 : this.tier; }
+  get rung() { return rungOf(this.myTier); }
+  secUnlocked() { return this.rung.sec; }
+  badgeOpen(id) { return badgeOpenAt(id, this.myTier); }
+  // after any level change: keep you and your crew within the ladder, and flag what just opened up
+  fitLadder() {
+    const me = this.me, L = this.rung, news = [];
+    me.badges = (me.badges || []).filter(b => this.badgeOpen(b)).slice(0, L.slots);
+    if (!L.sec && me.sec) { me.secHeld = { sec: me.sec, secLvl: me.secLvl }; me.sec = null; me.secLvl = 0; }   // bought too early: waits for Semi-Pro
+    if (L.sec && !me.sec && me.secHeld) { me.sec = me.secHeld.sec; me.secLvl = me.secHeld.secLvl; me.secHeld = null; }
+    if (!L.third && me.third) { me.thirdHeld = { third: me.third, thirdLvl: me.thirdLvl }; me.third = null; me.thirdLvl = 0; }
+    if (L.third && !me.third && me.thirdHeld) { me.third = me.thirdHeld.third; me.thirdLvl = me.thirdHeld.thirdLvl; me.thirdHeld = null; }
+    for (const p of this.crew) if (p !== me && (p.badges || p.badgesHeld)) fitBadges(p, this.myTier, Math.min(p.badgeSlots || 1, L.slots));
+    const seen = this.seenRung || { slots: 0, sec: false, third: false };
+    if (L.slots > seen.slots) news.push(L.slots === 1 ? "Your first ATTRIBUTE SLOT is open!" : "A new ATTRIBUTE SLOT is open, and better attributes are unlocked!");
+    if (L.sec && !seen.sec) news.push("Your SECONDARY ARCHETYPE is unlocked!");
+    if (L.third && !seen.third) news.push("The Olympic prize: a THIRD ARCHETYPE!");
+    if (L.league === 6 && (seen.league || 0) < 6) news.push("Elite attributes unlocked, and your main archetype can max out!");
+    this.seenRung = { slots: Math.max(seen.slots, L.slots), sec: seen.sec || L.sec, third: seen.third || L.third, league: Math.max(seen.league || 0, L.league) };
+    if (news.length) this.ladderNews = news;
+    return news;
+  }
   crowdSize() { return clamp(Math.round(3 + this.fame * 0.18), 3, 140); }
   // ---- fame and your level
   demoteLine() { return this.stage === "pro" && this.tier > HUSTLE ? Math.floor(LEVEL_FAME[this.tier] * DEMOTE_AT) : null; }
   fameCallUp() { return this.stage === "pro" && this.tier >= 2 && this.tier < THRONE ? LEVEL_FAME[this.tier + 1] : null; }   // the Hustle League and the Olympics stay with the scouts
   fameMaxed() { const up = this.fameCallUp(); return up != null && this.fame >= up; }
-  arrive() { this.fame = Math.max(this.fame, LEVEL_FAME[this.tier]); this.salary = Math.max(this.salary, SALARY[this.tier]); }   // a new level comes with the buzz (and the pay)
+  arrive() { this.fame = Math.max(this.fame, LEVEL_FAME[this.tier]); this.salary = Math.max(this.salary, SALARY[this.tier]); this.fitLadder(); }   // a new level comes with the buzz (and the pay)
   endTourneyAt(tier) { if (this.tourney && this.tourney.tier === tier) { const t = this.tourney; t.over = true; t.outRound = t.round; this.tourney = null; } }
   fameMove() {
     const up = this.fameCallUp(), line = this.demoteLine(), from = this.tier;
     if (up != null && this.fame >= up) { this.fame = up; return null; }   // bar maxed: now a team has to come get you
     if (line != null && this.fame < line) {
-      this.tier--; this.salary = Math.min(this.salary, SALARY[this.tier]); if (this.tier === HUSTLE) this.ensureGym();
+      this.tier--; this.salary = Math.min(this.salary, SALARY[this.tier]); if (this.tier === HUSTLE) this.ensureGym(); this.fitLadder();
       this.endTourneyAt(from); return { up: false, from, to: this.tier };
     }
     return null;
@@ -1752,6 +1812,7 @@ class Career {
       const mv = this.fameMove();
       if (mv) { r.fameMove = mv; r.nextGame = r.nextRound = false; }
     }
+    { const news = this.fitLadder(); if (news.length) r.ladder = news; }
     r.offers = this.maybeOffers();
     Object.assign(r, this.afterGame(extra.played || [], extra.injured || [], ci, won, box));
     return r;
@@ -1775,7 +1836,7 @@ class Career {
     const out = [];
     for (let i = 0; i < Math.min(4, count); i++) {
       const rar = rng.choices(RARITY, RARITY.map(r => r.w * (1 + r.boost * luck)));
-      const p = rarePlayer(rng, anchor, rar);
+      const p = ladderize(rarePlayer(rng, anchor, rar), this.stage === "hs" ? 0 : this.tier, rng);
       out.push({ i, rarity: rar, player: p, price: overall(p) * rar.price, sold: this.market.bought.includes(i) });
     }
     return out;
@@ -1792,13 +1853,12 @@ class Career {
   }
   // ---- OVR milestones: attributes, slots, stamina, moves, crew slots, cash and fame
   crewMax() { return S.CREW_MAX + (this.crewBonus || 0); }
-  attrSlots() { return MILESTONES.filter(ms => ms.slot && this.milestonesHit.includes(ms.ovr)).length; }
+  attrSlots() { return this.rung.slots; }
   checkMilestones(silent = false, noFame = false) {
     const got = [], ovr = overall(this.me);
     MILESTONES.forEach((ms, i) => {
       if (ms.ovr > ovr || this.milestonesHit.includes(ms.ovr)) return;
       this.milestonesHit.push(ms.ovr);
-      if (ms.badge && !this.unlocked.includes(ms.badge)) { this.unlocked.push(ms.badge); if (this.me.badges.length < this.attrSlots() + (ms.slot ? 0 : 0)) this.me.badges.push(ms.badge); }
       if (ms.move && !this.me.moves.includes(ms.move)) this.me.moves.push(ms.move);
       if (ms.stamina) this.me.stamBonus = Math.min(0.32, (this.me.stamBonus || 0) + 0.08);
       if (ms.crew) this.crewBonus = (this.crewBonus || 0) + 1;
@@ -1806,14 +1866,13 @@ class Career {
       this.cash += cash; this.fame += fame;
       got.push({ ...ms, cash, fame });
     });
-    // fill any open slots with unlocked attributes
-    for (const b of this.unlocked) if (this.me.badges.length < this.attrSlots() && !this.me.badges.includes(b)) this.me.badges.push(b);
     return got;
   }
   toggleBadge(id) {
     const eq = this.me.badges;
     if (eq.includes(id)) { eq.splice(eq.indexOf(id), 1); return [true, `${BADGES[id].name} off.`]; }
-    if (!this.unlocked.includes(id)) return [false, `Unlocks at OVR ${BADGES[id].ovr}.`];
+    if (!this.attrSlots()) return [false, "Attributes unlock in the Minor League."];
+    if (!this.badgeOpen(id)) return [false, `Unlocks in ${inLeague(BADGES[id].league)}.`];
     if (eq.length >= this.attrSlots()) return [false, `All ${this.attrSlots()} slots are full. Take one off first.`];
     eq.push(id); return [true, `${BADGES[id].name} equipped.`];
   }
@@ -1836,8 +1895,10 @@ class Career {
     return ups;
   }
   buyMateBadge(p, id) {
-    p.badges = p.badges || []; const slots = p.badgeSlots || 1, price = BADGES[id].price;
+    p.badges = p.badges || []; const slots = Math.min(p.badgeSlots || 1, this.attrSlots()), price = BADGES[id].price;
     if (p.badges.includes(id)) return [false, "Already has it."];
+    if (!slots) return [false, "Attributes unlock in the Minor League."];
+    if (!this.badgeOpen(id)) return [false, `${BADGES[id].name} unlocks in ${inLeague(BADGES[id].league)}.`];
     if (p.badges.length >= slots) return [false, `${p.name} has no open attribute slot.`];
     if (this.cash < price) return [false, `Need $${price}.`];
     this.cash -= price; p.badges.push(id); return [true, `${p.name} learned ${BADGES[id].name}!`];
@@ -1859,19 +1920,24 @@ class Career {
     }
     return { gains: g, ups };
   }
-  attrCost(slot) { return upgradeCost(slot, slot === "main" ? this.me.mainLvl : this.me.secLvl); }
+  attrCost(slot) { return upgradeCost(slot === "third" ? "sec" : slot, slot === "main" ? this.me.mainLvl : slot === "third" ? (this.me.thirdLvl || 0) : this.me.secLvl); }
   buyAttr(slot, key) {
     const me = this.me; let lvl;
     if (slot === "sec") {
-      if (!this.secUnlocked()) return [false, "Secondary unlocks when you go pro."];
+      if (!this.secUnlocked()) return [false, "Your Secondary unlocks in Semi-Pro."];
       if (me.secLvl === 0 && (!key || key === me.main)) return [false, "Pick a Secondary different from your Main."];
       lvl = me.secLvl;
+    } else if (slot === "third") {
+      if (!this.rung.third) return [false, "Your third archetype is the Olympic prize."];
+      if (!me.thirdLvl && (!key || key === me.main || key === me.sec)) return [false, "Pick a third archetype different from the other two."];
+      lvl = me.thirdLvl || 0;
     } else lvl = me.mainLvl;
-    if (lvl >= maxLevel(slot)) return [false, "Already maxed."];
+    if (slot === "main" && lvl >= this.rung.mainMax && lvl < S.MAIN_MAX) { const nt = nextRung(this.myTier, L => L.mainMax > lvl); return [false, `Max for ${inLeague(this.myTier)}. Level ${lvl + 1} opens in ${inLeague(nt)}.`]; }
+    if (lvl >= maxLevel(slot === "third" ? "sec" : slot)) return [false, "Already maxed."];
     const cost = upgradeCost(slot, lvl);
     if (this.cash < cost) return [false, `Need $${cost}.`];
     this.cash -= cost;
-    if (slot === "main") me.mainLvl++; else { if (me.secLvl === 0) me.sec = key; me.secLvl++; }
+    if (slot === "main") me.mainLvl++; else if (slot === "third") { if (!me.thirdLvl) me.third = key; me.thirdLvl = (me.thirdLvl || 0) + 1; } else { if (me.secLvl === 0) me.sec = key; me.secLvl++; }
     return [true, "Upgraded!"];
   }
   release(i) {
@@ -1883,8 +1949,8 @@ class Career {
   }
   toggleStarter(i) { if (!this.starters.includes(i)) this.starters = [this.starters[this.starters.length - 1], i]; }
   toJSON() {
-    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed, unlocked, milestonesHit, crewBonus, press, gymAsk } = this;
-    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed, unlocked, milestonesHit, crewBonus, press, gymAsk };
+    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed, unlocked, milestonesHit, crewBonus, press, gymAsk, seenRung, ladderNews } = this;
+    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed, unlocked, milestonesHit, crewBonus, press, gymAsk, seenRung, ladderNews };
   }
 }
 
@@ -1906,7 +1972,7 @@ const Luck = {
   // a card for your crew from a rarity row ["Bum", weight, "Common"]
   makeCard(c, r, rng) {
     const rar = RARITY.find(x => x.name === r[2]);
-    const p = rarePlayer(rng, overall(c.me) + (r[0] === "Bum" ? -6 : 0), rar), ri = RARITY.indexOf(rar);
+    const p = ladderize(rarePlayer(rng, overall(c.me) + (r[0] === "Bum" ? -6 : 0), rar), c.stage === "hs" ? 0 : c.tier, rng), ri = RARITY.indexOf(rar);
     p.cap = overall(p) + [4, 6, 8, 10, 12, 15][Math.max(0, ri)]; p.badgeSlots = ri >= 3 ? 2 : 1; p.badges = []; c.crew.push(p);
     return [r[0], p];
   },
@@ -2417,7 +2483,7 @@ class HubScreen extends Screen {
     return {
       crew: c.stage === "pro" && c.tier === HUSTLE ? `${c.gymToday().length} in the gym today` : `${c.crew.length}/${c.crewMax()} players`,
       train: `Shooting ${Math.round(c.prog.shooting || 0)}% to next`,
-      attr: `${c.me.badges.length}/${c.attrSlots()} slots · ${c.unlocked.length} earned`,
+      attr: c.attrSlots() ? `${c.me.badges.length}/${c.attrSlots()} slots` + (c.ladderNews ? "  ·  NEW!" : "") : "Unlocks in the Minor League",
       market: `New in ${fmtTime(c.marketLeft())}`,
       mystery: `$${Luck.mysteryCost(c.tier)} a roll`,
       luck: "Spin to win",
@@ -2498,7 +2564,9 @@ class HubScreen extends Screen {
       const done = i < c.tier || (i === OLYMPICS && c.gold);
       const status = here ? "YOU ARE HERE" : !done ? "LOCKED" : i === 0 ? "GRADUATED" : i === OLYMPICS ? "GOLD" : c.stage === "pro" && i < c.startTier ? "SKIPPED" : "WON";
       const col = here ? C.white : done ? (status === "SKIPPED" ? C.grey : C.green) : "#5c5f6b";
-      text(t.name, 564, y, { size: 26, color: col });
+      const nw = text(t.name, 564, y, { size: 26, color: col });
+      const UNLOCK = { 3: "+ATTRIBUTE", 4: "+2ND ARCHETYPE", 5: "+2ND ATTRIBUTE", 6: "+ELITE · MAIN MAX", 7: "+3RD ARCHETYPE" };   // what each level unlocks
+      if (UNLOCK[i]) text(UNLOCK[i], 564 + nw + 10, y + 6, { size: 13, color: done || here ? "#c9a640" : "#6a5d34", display: true });
       text(status, 946, y + 3, { size: 17, color: col, right: true });
       text(`${t.court} · ${t.tourney}`, 564, y + 22, { size: 17, color: C.grey, weight: 500 });
       if (here && c.tourney) { const t = c.tourney, s = t.series || { w: 0, l: 0 }; text(SERIES_WINS[Math.max(0, t.round)] > 1 ? `${ROUNDS[Math.max(0, t.round)]} ${s.w}-${s.l}` : `${ROUNDS[Math.max(0, t.round)]} next`, 946, y + 22, { size: 17, color: C.gold, right: true }); }
@@ -2514,7 +2582,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 45 (scouts, card machines & fatigue)");
+    this.footer("Progress saves automatically in this browser  ·  version 46 (the ladder: archetypes & attributes by league)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -3593,6 +3661,7 @@ class ResultScreen extends Screen {
     if (r.nextRound && c.tourney) say(`On to the ${ROUNDS[c.tourney.round]}!`, C.gold, 28, true);
     if (r.hustle) say(c.stage === "pro" && c.tier > HUSTLE ? "Side hustle: no salary, no prize money, no fame. Only your bets pay." : "Hustle League: no prize money, no fame. Only your bets pay.", C.grey, 20);
     if (r.offers) say("SCOUTS ARE CALLING! Teams want to sign you.", C.gold, 26, true);
+    for (const n of r.ladder || []) say(n + "  (see Attributes)", C.gold, 22, true);
     for (const h of r.hurt || []) say(`${h.name} got hurt: out ${h.games} games`, "#ff8a7a", 22);
     if (r.newFans && r.newFans.length) say(`${r.newFans.join(" & ")} ${r.newFans.length > 1 ? "like" : "likes"} you now. They'll run the Hustle Classic with you.`, C.green, 20);
     if (r.scout != null) say(`Scout grade this game: ${r.scout} (${gradeOf(r.scout)})`, C.gold, 26, true);
@@ -3973,7 +4042,7 @@ class GymScreen extends Screen {
 
 // Your attributes: equip what you've earned (limited slots); the Archetype (Sharpshooter etc.) is upgraded separately
 class AttributesScreen extends Screen {
-  constructor() { super(); this.i = 0; this.msg = ""; }
+  constructor() { super(); this.i = 0; this.msg = ""; this.c.ladderNews = null; App.save(); }
   key(k) {
     const n = BADGE_ORDER.length;
     if (K.back(k)) App.switch(new HubScreen());
@@ -3983,18 +4052,21 @@ class AttributesScreen extends Screen {
   }
   draw() {
     this.header(); this.backButton(() => App.switch(new HubScreen()));
-    const c = this.c, slots = c.attrSlots(), eq = c.me.badges;
+    const c = this.c, slots = c.attrSlots(), eq = c.me.badges, t = c.myTier;
+    const nxt = nextRung(t, L => L.slots > slots);
     text("Attributes", 500, 104, { size: 42, center: true, display: true });
-    text(`${eq.length}/${slots} slots used  ·  earn attributes and slots as your OVR climbs (you're ${overall(c.me)})`, 500, 140, { size: 22, color: C.grey, center: true, weight: 500 });
+    text(slots ? `${eq.length}/${slots} slots used${nxt != null ? `  ·  next slot: ${TIERS[nxt].name}` : ""}  ·  pick any you've unlocked, swap any time` : "Your first attribute slot opens in the Minor League. For now, level up your Archetype.", 500, 140, { size: 21, color: C.grey, center: true, weight: 500 });
     rrect(780, 88, 196, 36, 8, "#2a2214", C.gold, 1.5); text("Archetype upgrades ▸", 878, 106, { size: 20, color: C.gold, center: true }); hit(780, 88, 196, 36, () => App.switch(new AttrScreen()));
-    BADGE_ORDER.forEach((id, i) => {
-      const B = BADGES[id], y = 164 + i * 50, sel = i === this.i, have = c.unlocked.includes(id), on = eq.includes(id);
+    const POOL_NAME = { 3: "STARTER", 5: "PRO", 6: "ELITE" };
+    BADGE_ORDER.slice().sort((x, y) => BADGES[x].league - BADGES[y].league).forEach((id, i) => {
+      const B = BADGES[id], y = 164 + i * 50, bi = BADGE_ORDER.indexOf(id), sel = bi === this.i, have = c.badgeOpen(id), on = eq.includes(id);
       rrect(60, y, 880, 44, 8, sel ? "#2e3040" : "#1c1e26", sel ? C.gold : on ? C.green : null, 1.5);
-      text(B.name, 80, y + 6, { size: 24, color: have ? (on ? C.green : C.white) : "#5c5f6b" });
-      text(B.desc, 80, y + 26, { size: 16, color: have ? C.grey : "#4a4c58", weight: 500 });
-      if (!have) text(`OVR ${B.ovr}`, 920, y + 13, { size: 20, color: "#6a6d7a", right: true, display: true });
+      text(POOL_NAME[B.league], 72, y + 14, { size: 13, color: B.league >= 6 ? C.gold : B.league >= 5 ? C.blue : C.grey, display: true });
+      text(B.name, 140, y + 6, { size: 24, color: have ? (on ? C.green : C.white) : "#5c5f6b" });
+      text(B.desc, 140, y + 26, { size: 16, color: have ? C.grey : "#4a4c58", weight: 500 });
+      if (!have) text(TIERS[B.league].name, 920, y + 13, { size: 19, color: "#6a6d7a", right: true, display: true });
       else { rrect(830, y + 7, 96, 30, 8, on ? "#264a2e" : "#2a2c36"); text(on ? "ON" : "EQUIP", 878, y + 22, { size: 18, color: on ? C.green : C.white, center: true, display: true }); }
-      hit(60, y, 880, 44, () => { this.i = i; const [, msg] = c.toggleBadge(id); this.msg = msg; App.save(); });
+      hit(60, y, 880, 44, () => { this.i = bi; const [, msg] = c.toggleBadge(id); this.msg = msg; App.save(); });
     });
     if (this.msg) text(this.msg, 500, 622, { size: 24, color: C.gold, center: true });
     this.footer("▲▼ pick  ·  Enter = equip / take off  ·  A = Archetype upgrades");
@@ -4071,47 +4143,58 @@ class TrainScreen extends Screen {   // "Progress": stats grow by playing, not b
 
 class AttrScreen extends Screen {
   constructor() {
-    super(); this.row = 0; this.msg = "";
+    super(); this.row = 0; this.msg = ""; this.c.ladderNews = null;
     const me = this.c.me;
-    this.secI = me.sec ? ATTR_ORDER.indexOf(me.sec) : 0;
-    if (!me.sec && ATTR_ORDER[this.secI] === me.main) this.secI = 1;
+    this.pick = { sec: me.sec ? ATTR_ORDER.indexOf(me.sec) : 0, third: me.third ? ATTR_ORDER.indexOf(me.third) : 0 };
+    this.step("sec", 0); this.step("third", 0);
   }
-  stepSec(d) { const me = this.c.me; if (me.secLvl > 0) return; this.secI = (this.secI + d + ATTR_ORDER.length) % ATTR_ORDER.length; if (ATTR_ORDER[this.secI] === me.main) this.secI = (this.secI + d + ATTR_ORDER.length) % ATTR_ORDER.length; }
+  taken(slot) { const me = this.c.me; return slot === "sec" ? [me.main] : [me.main, me.sec]; }
+  step(slot, d) {
+    const me = this.c.me; if ((slot === "sec" ? me.secLvl : me.thirdLvl) > 0) return;
+    const n = ATTR_ORDER.length; let i = this.pick[slot];
+    for (let k = 0; k < n; k++) { i = (i + (d || (k ? 1 : 0)) + n) % n; if (!this.taken(slot).includes(ATTR_ORDER[i])) break; }
+    this.pick[slot] = i;
+  }
+  slotOf(row) { return ["main", "sec", "third"][row]; }
   buy(row) {
-    this.row = row;
-    const [ok, msg] = row === 0 ? this.c.buyAttr("main") : this.c.buyAttr("sec", ATTR_ORDER[this.secI]);
+    this.row = row; const slot = this.slotOf(row);
+    const [ok, msg] = this.c.buyAttr(slot, slot === "main" ? null : ATTR_ORDER[this.pick[slot]]);
     this.msg = msg; if (ok) App.save();
   }
   key(k) {
-    if (K.back(k)) App.switch(new HubScreen());
-    else if (K.up(k) || K.down(k)) this.row = 1 - this.row;
-    else if ((K.left(k) || K.right(k)) && this.row === 1) this.stepSec(K.left(k) ? -1 : 1);
+    if (K.back(k)) App.switch(new AttributesScreen());
+    else if (K.up(k)) this.row = (this.row + 2) % 3; else if (K.down(k)) this.row = (this.row + 1) % 3;
+    else if ((K.left(k) || K.right(k)) && this.row > 0) this.step(this.slotOf(this.row), K.left(k) ? -1 : 1);
     else if (K.ok(k)) this.buy(this.row);
   }
   draw() {
     this.header("Archetype"); this.backButton(() => App.switch(new AttributesScreen()));
-    const c = this.c, me = c.me, pct = Math.round(S.SEC_PCT * 100);
-    const mainCost = c.attrCost("main");
-    const rows = [[`MAIN: ${ATTRS[me.main].name}   Lv ${me.mainLvl}/${S.MAIN_MAX}`, me.mainLvl >= S.MAIN_MAX ? "MAXED" : `Buy level · $${mainCost}`, "Full effect"]];
-    if (!c.secUnlocked()) rows.push(["SECONDARY: locked", "Unlocks when you go pro", `${pct}% effect, max level ${S.SEC_MAX}`]);
-    else {
-      const key = me.sec || ATTR_ORDER[this.secI], cost = c.attrCost("sec");
-      rows.push([`SECONDARY: ${me.secLvl === 0 ? "◀ " + ATTRS[key].name + " ▶" : ATTRS[key].name}   Lv ${me.secLvl}/${S.SEC_MAX}`, me.secLvl >= S.SEC_MAX ? "MAXED" : `Buy level · $${cost}`, `${pct}% effect, max level ${S.SEC_MAX}`]);
-    }
+    const c = this.c, me = c.me, L = c.rung, t = c.myTier;
+    const cap = L.mainMax, nxtMain = nextRung(t, R => R.mainMax > cap);
+    const rows = [[`MAIN: ${ATTRS[me.main].name}   Lv ${me.mainLvl}/${S.MAIN_MAX}`, me.mainLvl >= S.MAIN_MAX ? "MAXED" : me.mainLvl >= cap ? `Max here` : `Buy level · $${c.attrCost("main")}`,
+      me.mainLvl >= cap && me.mainLvl < S.MAIN_MAX ? `Full effect  ·  level ${me.mainLvl + 1} opens in ${inLeague(nxtMain)}` : "Full effect"]];
+    const arch = (slot, label, open, lvl, cur, pct, unlockAt) => {
+      if (!open) return [`${label}: locked`, unlockAt, `${pct}% effect, max level ${S.SEC_MAX}`];
+      const key = cur || ATTR_ORDER[this.pick[slot]];
+      return [`${label}: ${lvl === 0 ? "◀ " + ATTRS[key].name + " ▶" : ATTRS[key].name}   Lv ${lvl}/${S.SEC_MAX}`, lvl >= S.SEC_MAX ? "MAXED" : `Buy level · $${c.attrCost(slot)}`, `${pct}% effect, max level ${S.SEC_MAX}`];
+    };
+    rows.push(arch("sec", "SECONDARY", L.sec, me.secLvl, me.sec, Math.round(S.SEC_PCT * 100), "Semi-Pro"));
+    rows.push(arch("third", "THIRD", L.third, me.thirdLvl || 0, me.third, Math.round(S.THIRD_PCT * 100), "Olympic prize"));
     rows.forEach(([a, b, note], i) => {
-      const y = 150 + i * 92, sel = i === this.row;
-      rrect(120, y, 760, 78, 10, sel ? "#3a3c4b" : "#23242c", sel ? C.gold : null, 2);
-      text(a, 138, y + 12, { size: 34 });
-      text(note, 138, y + 48, { size: 23, color: C.grey, weight: 500 });
-      rrect(660, y + 16, 204, 46, 8, "#264a2e"); text(b, 762, y + 39, { size: 26, color: C.green, center: true });
-      hit(660, y + 16, 204, 46, () => this.buy(i));
-      hit(120, y, 530, 78, () => { this.row = i; });
-      if (i === 1 && c.secUnlocked() && me.secLvl === 0) { hit(120, y, 260, 78, () => { this.row = 1; this.stepSec(-1); }); hit(380, y, 270, 78, () => { this.row = 1; this.stepSec(1); }); }
+      const y = 140 + i * 86, sel = i === this.row, locked = (i === 1 && !L.sec) || (i === 2 && !L.third);
+      rrect(100, y, 800, 74, 10, sel ? "#3a3c4b" : "#23242c", sel ? C.gold : null, 2);
+      text(a, 118, y + 10, { size: 30, color: locked ? "#6a6d7a" : C.white });
+      text(note, 118, y + 46, { size: 21, color: C.grey, weight: 500 });
+      rrect(680, y + 14, 204, 46, 8, locked ? "#2a2c36" : "#264a2e"); text(b, 782, y + 37, { size: 24, color: locked ? "#8a8d9a" : C.green, center: true });
+      if (!locked) hit(680, y + 14, 204, 46, () => this.buy(i));
+      hit(100, y, 570, 74, () => { this.row = i; });
+      const slot = this.slotOf(i);
+      if (i > 0 && !locked && !(i === 1 ? me.secLvl : me.thirdLvl)) { hit(100, y, 280, 74, () => { this.row = i; this.step(slot, -1); }); hit(380, y, 290, 74, () => { this.row = i; this.step(slot, 1); }); }
     });
-    let y = 350;
-    for (const key of ATTR_ORDER) { text(ATTRS[key].name, 120, y, { size: 25, color: C.orange }); text(ATTRS[key].desc, 290, y + 2, { size: 23, color: C.grey, weight: 500 }); y += 34; }
-    if (this.msg) text(this.msg, 500, 620, { size: 28, center: true });
-    this.footer("▲▼ pick slot  ·  ◀ ▶ choose Secondary  ·  Enter buy");
+    let y = 412;
+    for (const key of ATTR_ORDER) { text(ATTRS[key].name, 110, y, { size: 22, color: C.orange }); text(ATTRS[key].desc, 270, y + 2, { size: 20, color: C.grey, weight: 500 }); y += 30; }
+    if (this.msg) text(this.msg, 500, 600, { size: 24, center: true });
+    this.footer("▲▼ pick  ·  ◀ ▶ choose archetype  ·  Enter buy  ·  Main maxes out at the Throne");
   }
 }
 
