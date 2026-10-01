@@ -89,7 +89,7 @@ const S = {
   GAME_TO: 21, HALF: 11, SHOT_CLOCK: 10,
   PR: 14, BASE_SPEED: 165, SPEED_PER: 1.8, PASS_SPEED: 720, ACCEL: 11, SPRINT: 1.35, STAMINA_DRAIN: 0.42, STAMINA_REGEN: 0.22,
   METER_TIME: 0.5, METER_SWEET: 0.8, WIN_NEAR: 0.12, WIN_FAR: 0.04,
-  DUNK_RANGE: 85, DUNK_BASE: 0.9, LAYUP: 95, LAYUP_BASE: 0.72,
+  DUNK_RANGE: 85, DUNK_BASE: 0.9, LAYUP: 95, LAYUP_BASE: 0.66,
   STEAL_RANGE: 36, STEAL_BASE: 0.16, BLOCK_RANGE: 36, BLOCK_BASE: 0.10, GRAB: 20,
   MAIN_MAX: 5, SEC_MAX: 3, SEC_PCT: 0.5, SEC_UNLOCK: 1,
   CREW_MAX: 6, STAT_MAX: 99, STAT_STEP: 2,
@@ -101,7 +101,9 @@ const C = {
   red: "#e15046", orange: "#eb8228", blue: "#5096f0", black: "#0f0f12",
   team: ["#3c82eb", "#d7413c"], bg: "#12141a", bar: "#1e202a",
 };
-const SAVE_KEY = "streetball-kingdom-v1";
+const SAVE_KEY = "streetball-kingdom-v1";   // the old single save (moved into slot 1)
+const SLOTS = 5, slotKey = i => `streetball-kingdom-slot-${i}`;
+try { const old = localStorage.getItem(SAVE_KEY); if (old && !localStorage.getItem(slotKey(0))) { localStorage.setItem(slotKey(0), old); localStorage.removeItem(SAVE_KEY); } } catch (e) { /* no storage */ }
 // Player looks (picked from each player's name so they stay the same)
 const SKINS = ["#8d5524", "#c68642", "#e0ac69", "#f1c27d", "#5c3a1e", "#a0673c", "#3d2314", "#ffdbac"];
 const HAIRS = ["#1b1410", "#2e1d12", "#5a3a1c", "#0e0e0e", "#8a5a2b", "#d8b26a"];
@@ -349,6 +351,7 @@ class Match {
     if (mag > 1) { mx /= mag; my /= mag; }
     let speed = a.maxSpeed();
     if (this.ball.state === "held" && this.ball.holder === a) { speed *= 0.94; if (a === this.controlled && this.meter !== null) speed *= 0.3; }
+    else if (this.phase === "live" && a.team !== this.offense && this.ball.state === "held" && this.ball.holder === this.team(1 - a.team)[a.slot]) speed *= 1.1;   // on-ball D slides with the dribbler
     // players speed up and slow down smoothly instead of snapping
     const k = 1 - Math.exp(-S.ACCEL * dt);
     if (a.plant > 0 && !a.dash) {           // after a step-back: skid to a quick, smooth stop
@@ -518,14 +521,14 @@ class Match {
     const [dd, dfd] = this.nearestOpp(a);
     if (!dfd || dd >= 70) return 0;
     const scouted = a.team === 0 ? 1 + 0.5 * this.scout : coachOn(this, "lockdown") ? 1.25 : 1;
-    return (1 - dd / 70) * (0.12 + dfd.p.stats.defense / 99 * 0.2 + dfd.eff("contest")) * scouted * Math.max(0.4, 1 + 0.35 * this.edge(dfd));
+    return (1 - dd / 70) * (0.16 + dfd.p.stats.defense / 99 * 0.22 + dfd.eff("contest")) * scouted * Math.max(0.4, 1 + 0.35 * this.edge(dfd));
   }
   // Chance to make a shot that is NOT a green release.
   makeChance(a, kind, quality = 0) {
     const d = dist(a.pos, S.HOOP), sh = a.p.stats.shooting;
     let base;
     if (kind === "dunk") return clamp(S.DUNK_BASE + a.eff("dunk") - this.contest(a) * 0.3, 0.5, 0.98);
-    if (kind === "layup") base = S.LAYUP_BASE + a.eff("finish") + (sh - 50) / 99 * 0.15 - this.contest(a) * 0.7;
+    if (kind === "layup") base = S.LAYUP_BASE + a.eff("finish") + (sh - 50) / 99 * 0.15 - this.contest(a) * 1.15;   // finishing through a defender is hard
     else {
       if (d <= S.ARC) base = 0.52 - 0.12 * clamp((d - 60) / (S.ARC - 60), 0, 1);
       else base = 0.40 - 0.25 * Math.max(0, d - S.ARC - 30) / 150 + a.eff("deep");
@@ -802,12 +805,19 @@ const AI = (() => {
     const man = m.team(1 - a.team)[a.slot], b = m.ball, onBall = b.state === "held" && b.holder === man;
     const sc = a.team === 1 ? m.scout : 0;
     const lock = a.team === 0 && coachOn(m, "lockdown") ? 1 : 0;
-    const tight = onBall ? 26 - 6 * sc - 6 * lock : 55 - 18 * sc - 20 * lock, [ux, uy] = norm(S.HOOP[0] - man.x, S.HOOP[1] - man.y);
+    // man-to-man: stay attached to your guy (tight on the ball, denying off it) unless he crosses you up
+    const tight = onBall ? 18 - 4 * sc - 4 * lock : 38 - 12 * sc - 14 * lock, [ux, uy] = norm(S.HOOP[0] - man.x, S.HOOP[1] - man.y);
     let gp = [man.x + ux * tight, man.y + uy * tight];
+    // help D: when the ball gets near the rim, the closest teammate slides into the lane
+    if (!onBall && b.state === "held" && b.holder.team !== a.team && dist(b.holder.pos, S.HOOP) < 150) {
+      const helpers = m.team(a.team).filter(t => t !== m.team(a.team)[m.team(1 - a.team).indexOf(b.holder)] && t.stun <= 0);
+      const helper = helpers.sort((p, q) => dist(p.pos, b.holder.pos) - dist(q.pos, b.holder.pos))[0];
+      if (helper === a) { const h = b.holder; return I({ move: toward(a, [h.x + (S.HOOP[0] - h.x) * 0.45, h.y + (S.HOOP[1] - h.y) * 0.45], 5) }); }
+    }
     if (role(a) === "big" && !onBall && beyondArc(man.pos)) {    // stay home in the paint
       const k = 0.55; gp = [gp[0] + (S.HOOP[0] - gp[0]) * k, gp[1] + (S.HOOP[1] + 70 - gp[1]) * k];
     }
-    const it = I({ move: toward(a, gp, 10) });
+    const it = I({ move: toward(a, gp, onBall ? 5 : 8) });
     if (onBall && a.cool <= 0 && dist(a.pos, man.pos) < S.STEAL_RANGE) {
       const rate = 0.6 * (a.p.stats.defense / 99 + a.eff("steal") * 3) * (1 + sc) * (1 + lock) * Math.max(0.4, 1 + 0.9 * m.edge(a));   // better teams go for the ball more
       if (m.rng.random() < rate * dt) it.action = "steal";
@@ -865,6 +875,10 @@ const TIERS = [
   { name: "The Olympics", title: "Olympian", court: "Olympic Arena", tourney: "Olympic Basketball", base: 92, crews: ["Team Texas", "Team New York", "The Dream Team"] },
 ];
 const THRONE = 6, OLYMPICS = 7, HUSTLE = 1;
+// Fame marks for each level: reach the next level's mark and you get called up;
+// fall under 60% of your own level's mark and you get sent down a court.
+const LEVEL_FAME = [0, 0, 40, 220, 480, 820, 1250, 1700];
+const DEMOTE_AT = 0.6;
 const OLY_CUT = 85;   // Olympic selection: A grade from the scouts at the Throne, nothing less
 // Salary per game you play at your team's level (the Hustle League pays nothing)
 const SALARY = [0, 0, 15, 30, 60, 100, 160, 240];
@@ -967,7 +981,7 @@ const HS_MASCOTS = ["Owls", "Raiders", "Spartans", "Mavericks", "Bulldogs", "Pan
 const CITIES = ["Metro", "Harbor", "Uptown", "Westside", "Bayview", "Iron City", "Riverside", "Hilltop", "Southside", "Northgate", "Midtown", "Lakeshore", "Eastend", "Canal St", "Parkside", "Oldtown"];
 const NICKS = ["Hoopers", "Ballers", "Buckets", "Runners", "Bricklayers", "Swishers", "Dunkers", "Hustlers", "Ankle Takers", "Glass Crew", "Snipers", "Bigs", "Wolves", "Kings", "Flyers", "Bruisers"];
 const STATES = ["Alabama", "Arizona", "Colorado", "Connecticut", "Indiana", "Kansas", "Kentucky", "Louisiana", "Maryland", "Michigan", "Minnesota", "Missouri", "Nevada", "New Jersey", "N. Carolina", "Oklahoma", "Oregon", "Pennsylvania", "Tennessee", "Utah", "Virginia", "Wisconsin", "Iowa", "Arkansas", "Nebraska", "Hawaii", "Alaska", "Maine", "Vermont", "Idaho"];
-function myTeamName(c, tier) { return tier === 0 ? "Eastside High" : tier === HUSTLE ? `${c.me.name}'s Run` : c.team || "Your Crew"; }
+function myTeamName(c, tier) { return tier === 0 ? c.school || "Eastside High" : tier === HUSTLE ? `${c.me.name}'s Run` : c.team || "Your Crew"; }
 function makeField(c, t) {
   const rng = new Rng(`F|${t.tier}|${t.seed}`), path = bracket(t.tier, t.seed), base = TIERS[t.tier].base;
   const taken = new Set(path.map(g => g.name));
@@ -1103,7 +1117,7 @@ class Career {
   constructor(d) {
     Object.assign(this, { cash: 100, fame: 0, tier: 0, champion: false, starters: [0, 1], tourney: null, entries: 0, titles: 0, games: 0, market: null, moves: {},
       stage: "hs", team: null, startTier: 0, gamesAtDraft: 0, hsLog: [], hsDone: false, hsChamp: false, draftGrade: null, gold: false, ladder: 2, hustleLog: [], hustleChamp: false, hustlePending: false, throneLog: [], throneChamp: false, thronePending: false,
-      salary: 0, proLog: [], offers: null, gamesSinceOffers: 0, gym: null, gymDay: 0, hustlePicks: [], lastTourney: null }, d);
+      salary: 0, proLog: [], offers: null, gamesSinceOffers: 0, gym: null, gymDay: 0, hustlePicks: [], lastTourney: null, school: null }, d);
     // older saves: give everyone a position
     if (!this.me.pos) this.me.pos = "SF";
     for (const p of this.crew) if (!p.pos) p.pos = guessPos(p);
@@ -1125,13 +1139,14 @@ class Career {
     this.ladder = 3;
     if (this.stage === "pro" && !this.salary) this.salary = SALARY[this.tier] || 0;
   }
-  static fresh(name, main, pos = "SF") {
+  static fresh(name, main, pos = "SF", opts = {}) {
     const rng = new Rng();
     const stats = Object.fromEntries(S.STATS.map(s => [s, 40 + POS_SHAPE[pos][s]]));
     const me = makePlayer(name, rng.randint(0, 55), stats, main, 1); me.pos = pos;
+    if (opts.look) me.look = opts.look;   // the look you designed
     // every new baller starts with a point guard and a big man
     // your high school teammates: a point guard and a big who start, plus a forward off the bench
-    return new Career({ stage: "hs", me, crew: [generatePlayer(rng, 33, "PG"), generatePlayer(rng, 33, "C"), generatePlayer(rng, 31, "SF")] });
+    return new Career({ stage: "hs", school: opts.school || null, me, crew: [generatePlayer(rng, 33, "PG"), generatePlayer(rng, 33, "C"), generatePlayer(rng, 31, "SF")] });
   }
   get title() { return this.gold ? "Olympic Gold Medalist" : this.champion ? KING : TIERS[this.tier].title; }
   get lowestCourt() { return this.stage === "pro" ? 1 : 0; }
@@ -1159,7 +1174,7 @@ class Career {
   hustleVerdict(rep) {
     if (!this.hustlePending) return null;
     const to = rep.grade === "A" ? 3 : (rep.grade === "B" || rep.grade === "C") ? 2 : HUSTLE;
-    this.tier = Math.max(this.tier, to);
+    this.tier = Math.max(this.tier, to); this.fame = Math.max(this.fame, LEVEL_FAME[this.tier]);
     this.salary = Math.max(this.salary, SALARY[this.tier]);
     if (to >= 2 && this.crew.length < 2) { this.crew = [...this.teamRoster(to), ...this.crew]; this.starters = [0, 1]; }   // signed: a real roster
     this.hustlePending = false; this.hustleLog = []; this.hustleChamp = false;
@@ -1169,7 +1184,7 @@ class Career {
   throneVerdict(rep) {
     if (!this.thronePending) return null;
     const selected = rep.score >= OLY_CUT;
-    if (selected) { this.tier = OLYMPICS; this.salary = Math.max(this.salary, SALARY[OLYMPICS]); }
+    if (selected) { this.tier = OLYMPICS; this.arrive(); }
     this.thronePending = false; this.throneLog = []; this.throneChamp = false;
     return { selected };
   }
@@ -1191,7 +1206,7 @@ class Career {
   acceptOffer(i) {
     const o = this.offers && this.offers[i]; if (!o) return null;
     this.team = o.team; this.salary = o.salary; this.cash += o.bonus;
-    if (o.tier > this.tier) { this.tier = o.tier; this.tourney = null; }
+    if (o.tier > this.tier) { this.tier = o.tier; this.tourney = null; this.arrive(); }
     this.offers = null; this.gamesSinceOffers = 0;
     return o;
   }
@@ -1201,7 +1216,7 @@ class Career {
     if (this.stage !== "hs") return null;
     const rng = new Rng(), d = DRAFT[rep.grade];
     this.stage = "pro"; this.team = rng.choice(FRANCHISES); this.draftGrade = rep.grade;
-    this.tier = d.tier; this.startTier = d.tier; this.gamesAtDraft = this.games; this.tourney = null;
+    this.tier = d.tier; this.startTier = d.tier; this.gamesAtDraft = this.games; this.tourney = null; this.fame = Math.max(this.fame, LEVEL_FAME[d.tier]);
     this.cash += d.bonus; this.salary = SALARY[d.tier];
     // high school's over: your old teammates go their own way
     if (d.tier >= 2) { this.crew = this.teamRoster(d.tier); this.starters = [0, 1]; }
@@ -1291,6 +1306,20 @@ class Career {
   }
   secUnlocked() { return this.tier >= S.SEC_UNLOCK || this.champion; }
   crowdSize() { return clamp(Math.round(3 + this.fame * 0.18), 3, 140); }
+  // ---- fame and your level
+  demoteLine() { return this.stage === "pro" && this.tier > HUSTLE ? Math.floor(LEVEL_FAME[this.tier] * DEMOTE_AT) : null; }
+  fameCallUp() { return this.stage === "pro" && this.tier >= 2 && this.tier < THRONE ? LEVEL_FAME[this.tier + 1] : null; }   // the Hustle League and the Olympics stay with the scouts
+  arrive() { this.fame = Math.max(this.fame, LEVEL_FAME[this.tier]); this.salary = Math.max(this.salary, SALARY[this.tier]); }   // a new level comes with the buzz (and the pay)
+  endTourneyAt(tier) { if (this.tourney && this.tourney.tier === tier) { const t = this.tourney; t.over = true; t.outRound = t.round; this.tourney = null; } }
+  fameMove() {
+    const up = this.fameCallUp(), line = this.demoteLine(), from = this.tier;
+    if (up != null && this.fame >= up) { this.tier++; this.arrive(); this.endTourneyAt(from); return { up: true, from, to: this.tier }; }
+    if (line != null && this.fame < line) {
+      this.tier--; this.salary = Math.min(this.salary, SALARY[this.tier]); if (this.tier === HUSTLE) this.ensureGym();
+      this.endTourneyAt(from); return { up: false, from, to: this.tier };
+    }
+    return null;
+  }
   fameLoss() { return Math.min(this.fame, Math.round(2 + this.fame * 0.05)); }
   // Scouting: climb faster than expected (few games played, or a team rated under the level)
   // and other teams start studying you.
@@ -1366,6 +1395,11 @@ class Career {
     if (hs) { r.cash = 0; r.tips = 0; r.betWin = 0; }                 // amateurs: no money in high school
     this.fame = Math.max(0, this.fame + r.fame); this.cash += r.cash + r.betWin + r.tips + (r.salary || 0);
     if (this.tier > 1) this.salary = Math.max(this.salary, SALARY[this.tier]);   // promotions come with a raise
+    if (r.tierUp) this.arrive();
+    else if (!r.hsDone && !r.hustleDone && !r.throneDone) {   // big fame swings move you between courts
+      const mv = this.fameMove();
+      if (mv) { r.fameMove = mv; r.nextGame = r.nextRound = false; }
+    }
     r.offers = this.maybeOffers();
     Object.assign(r, this.afterGame(extra.played || [], extra.injured || [], ci, won, box));
     return r;
@@ -1428,8 +1462,8 @@ class Career {
   }
   toggleStarter(i) { if (!this.starters.includes(i)) this.starters = [this.starters[this.starters.length - 1], i]; }
   toJSON() {
-    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending } = this;
-    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending };
+    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school } = this;
+    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school };
   }
 }
 
@@ -1617,11 +1651,16 @@ const Sound = {
 const App = {
   career: null, screen: null, hits: [], keys: new Set(), edges: blankInputs(),
   touch: { up: false, down: false, left: false, right: false, shoot: false, sprint: false },
-  switch(s) { this.screen = s; nameInput.hidden = !(s instanceof CreateScreen); if (!nameInput.hidden) setTimeout(() => nameInput.focus(), 0); pad.classList.toggle("show", isTouch && s instanceof MatchScreen); },
-  save() { if (!this.career) return; try { localStorage.setItem(SAVE_KEY, JSON.stringify(this.career)); } catch (e) { /* storage unavailable: progress lasts this visit */ } },
-  load() { try { const raw = localStorage.getItem(SAVE_KEY); return raw ? new Career(JSON.parse(raw)) : null; } catch (e) { return null; } },
+  slot: 0,
+  switch(s) { this.screen = s; nameInput.hidden = true; if (s.syncInput) s.syncInput(); pad.classList.toggle("show", isTouch && s instanceof MatchScreen); },
+  // 5 career slots in this browser
+  save() { if (!this.career) return; try { localStorage.setItem(slotKey(this.slot), JSON.stringify(this.career)); } catch (e) { /* storage unavailable: progress lasts this visit */ } },
+  loadSlot(i) { try { const raw = localStorage.getItem(slotKey(i)); return raw ? new Career(JSON.parse(raw)) : null; } catch (e) { return null; } },
+  deleteSlot(i) { try { localStorage.removeItem(slotKey(i)); } catch (e) { /* nothing to delete */ } },
+  open(i, career) { this.slot = i; this.career = career; applySchool(career); },
 };
 const nameInput = document.getElementById("name-input");
+nameInput.addEventListener("input", () => { if (App.screen && App.screen.onInput) App.screen.onInput(nameInput.value); });
 const pad = document.getElementById("pad");
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 function hit(x, y, w, h, fn) { App.hits.push({ x, y, w, h, fn }); }
@@ -1674,65 +1713,196 @@ class Menu {
   }
 }
 
-// ---------------------------------------------------------------- title / create
+// ---------------------------------------------------------------- title: 5 career save slots
+// The school you pick names your high school gym and the banner on its floor.
+function applySchool(c) {
+  const s = (c && c.school) || "Eastside High";
+  TIERS[0].court = `${s} Gym`; THEMES[0].banner = s.toUpperCase();
+}
 class TitleScreen extends Screen {
   constructor() {
     super();
-    const items = [["New Career", () => App.switch(new CreateScreen())]];
-    const saved = App.load();
-    if (saved) items.unshift(["Continue", () => { App.career = saved; App.switch(new HubScreen()); }]);
-    this.menu = new Menu(items);
-    const rng = new Rng();
-    this.demo = new Match(crewPlayers(2, 0), crewPlayers(2, 1), rng, false);
+    App.career = null; applySchool(null);
+    this.i = 0; this.confirm = -1; this.refresh();
+    this.demo = new Match(crewPlayers(2, 0), crewPlayers(2, 1), new Rng(), false);
   }
-  key(k) { this.menu.key(k); }
+  refresh() { this.slots = Array.from({ length: SLOTS }, (_, i) => App.loadSlot(i)); }
+  pick(i) {
+    this.i = i; this.confirm = -1;
+    const c = this.slots[i];
+    if (c) { App.open(i, c); App.switch(new HubScreen()); }
+    else App.switch(new CreateScreen(i));
+  }
+  del(i) {
+    if (!this.slots[i]) return;
+    if (this.confirm !== i) { this.confirm = i; return; }   // second press deletes
+    App.deleteSlot(i); this.confirm = -1; this.refresh();
+  }
+  key(k) {
+    if (K.up(k)) { this.i = (this.i - 1 + SLOTS) % SLOTS; this.confirm = -1; }
+    else if (K.down(k)) { this.i = (this.i + 1) % SLOTS; this.confirm = -1; }
+    else if (K.ok(k)) this.pick(this.i);
+    else if (k === "x" || k === "X" || k === "Delete") this.del(this.i);
+    else if (K.back(k)) this.confirm = -1;
+  }
   update(dt) { this.demo.update(dt); if (this.demo.phase === "over") this.demo = new Match(crewPlayers(2, 0), crewPlayers(2, 1), new Rng(), false); }
   draw() {
     drawCourt(0); drawActors(this.demo);
-    ctx.fillStyle = "rgba(10,10,14,0.78)"; ctx.fillRect(0, 0, S.W, S.H);
-    text("STREETBALL", 500, 200, { size: 96, color: C.orange, center: true, display: true });
-    text("KINGDOM", 500, 272, { size: 96, color: C.gold, center: true, display: true });
-    text("Start as a nobody. Leave as the King of the Courts.", 500, 332, { size: 30, center: true, weight: 500 });
-    this.menu.draw(500, 410, 56, 44);
-    this.footer(isTouch ? "Tap to pick" : "Arrows or W/S to move  ·  Enter to pick");
+    ctx.fillStyle = "rgba(10,10,14,0.82)"; ctx.fillRect(0, 0, S.W, S.H);
+    text("STREETBALL", 500, 62, { size: 76, color: C.orange, center: true, display: true });
+    text("KINGDOM", 500, 120, { size: 76, color: C.gold, center: true, display: true });
+    text("Pick a career, or start a new one", 500, 166, { size: 26, color: C.grey, center: true, weight: 500 });
+    this.slots.forEach((c, i) => {
+      const y = 194 + i * 86, sel = i === this.i, x = 170, w = 580, h = 76;
+      rrect(x, y, w, h, 12, sel ? "#2c2a1c" : "rgba(28,30,38,0.95)", sel ? C.gold : "#3a3d4a", sel ? 3 : 1.5);
+      text(`SLOT ${i + 1}`, x + 14, y + 8, { size: 15, color: C.grey, display: true });
+      if (c) {
+        rrect(x + 14, y + 26, 44, 42, 6, "#1b1d26");
+        ctx.save(); ctx.beginPath(); ctx.rect(x + 14, y + 26, 44, 42); ctx.clip(); drawPortrait(c.me, x + 17, y + 27, 1.05); ctx.restore();
+        let nsz = 30; ctx.font = `700 ${Math.round(nsz * 0.72)}px ${FONT_BODY}`;
+        while (nsz > 18 && ctx.measureText(c.me.name).width > 300) { nsz--; ctx.font = `700 ${Math.round(nsz * 0.72)}px ${FONT_BODY}`; }
+        text(c.me.name, x + 70, y + 26, { size: nsz, color: sel ? C.gold : C.white });
+        const where = c.stage === "hs" ? `${c.school || "Eastside High"} · High School` : `${c.team} · ${TIERS[c.tier].name}`;
+        text(where, x + 70, y + 52, { size: 19, color: C.grey, weight: 500 });
+        text(`OVR ${overall(c.me)}`, x + w - 16, y + 16, { size: 24, color: C.white, right: true, display: true });
+        text(`Fame ${c.fame}  ·  $${c.cash}  ·  ${c.titles} title${c.titles === 1 ? "" : "s"}`, x + w - 16, y + 48, { size: 18, color: C.grey, right: true, weight: 500 });
+        hit(x, y, w, h, () => this.pick(i));
+        // delete (press twice)
+        const dx = x + w + 12, conf = this.confirm === i;
+        rrect(dx, y + 18, 96, 40, 8, conf ? "#5a1d1d" : "rgba(28,30,38,0.95)", conf ? C.red : "#3a3d4a", 1.5);
+        text(conf ? "Sure?" : "Delete", dx + 48, y + 38, { size: 20, color: conf ? "#ff8a7a" : C.grey, center: true });
+        hit(dx, y + 18, 96, 40, () => { this.i = i; this.del(i); });
+      } else {
+        text("+  New Career", x + w / 2, y + 42, { size: 30, color: sel ? C.gold : "#9aa0b4", center: true, display: true });
+        hit(x, y, w, h, () => this.pick(i));
+      }
+    });
+    this.footer(this.confirm >= 0 ? "Press X (or tap Sure?) again to delete that career for good  ·  Esc to cancel"
+      : isTouch ? "Tap a slot to play" : "▲▼ pick a slot  ·  Enter to play  ·  X to delete");
   }
 }
 
+// ---------------------------------------------------------------- create: name, school, position and your look
+const SKIN_TONES = ["#ffdbac", "#f6d2b3", "#f5d3ac", "#f1c27d", "#e8b88a", "#e0ac69", "#d8a06a", "#c68642", "#b97a45", "#a8693a", "#8d5524", "#7a4a2a", "#6e4426", "#5c3a1e", "#4a2c17", "#3d2314"];
+const HAIR_STYLES = [["Bald", "bald"], ["Buzz cut", "buzz"], ["Fade", "fade"], ["Crew cut", "crew"], ["Waves", "waves"], ["Afro", "afro"], ["High-top", "hightop"], ["Braids", "braids"], ["Dreads", "dreads"], ["Twists", "twists"], ["Mohawk", "mohawk"], ["Man bun", "manbun"], ["Long", "long"], ["Bowl cut", "bowl"], ["Undercut", "undercut"], ["Curly", "curly"], ["Slicked back", "slick"], ["Spiky", "spiky"], ["Messy", "messy"]];
+const HAIR_COLORS = [["Black", "#0e0e0e"], ["Dark brown", "#2e1d12"], ["Brown", "#5a3a1c"], ["Light brown", "#8a5a2b"], ["Auburn", "#b5651d"], ["Blonde", "#d8b26a"], ["Platinum", "#e6d49a"], ["Silver", "#c9c9d6"], ["Red dye", "#d9482b"], ["Blue dye", "#3d7cf0"], ["Pink dye", "#e07ab8"]];
+const FACE_HAIR = [["None", null], ["Beard", "beard"], ["Goatee", "goatee"], ["Mustache", "stache"]];
+const EARRINGS = [["None", null], ["Gold studs", { side: "both", metal: "gold", hoop: false }], ["Diamond studs", { side: "both", metal: "diamond", hoop: false }], ["Silver studs", { side: "both", metal: "silver", hoop: false }],
+  ["Gold hoops", { side: "both", metal: "gold", hoop: true }], ["Silver hoops", { side: "both", metal: "silver", hoop: true }], ["One diamond stud", { side: "L", metal: "diamond", hoop: false }], ["One gold hoop", { side: "R", metal: "gold", hoop: true }]];
+const TAT_INK = "#1d2733";
+const TATTOOS = [["None", []], ["Right sleeve", ["armR", "foreR"]], ["Left sleeve", ["armL", "foreL"]], ["Both sleeves", ["armL", "foreL", "armR", "foreR"]], ["Forearms", ["foreL", "foreR"]],
+  ["Neck", ["neck"]], ["Sleeves + neck", ["armL", "foreL", "armR", "foreR", "neck"]], ["Legs", ["legL", "legR"]], ["Covered", ["armL", "foreL", "armR", "foreR", "neck", "legL", "legR"]]];
+const EXTRAS = [["None", {}], ["Headband", { band: "team" }], ["Black headband", { band: "#141414" }], ["Arm sleeve", { sleeve: "R" }], ["Wristbands", { wrist: "#f2f2f2" }], ["Headband + wristbands", { band: "team", wrist: "#f2f2f2" }]];
+const SHOE_COLORS = [["White", "#f2f2f2"], ["Black", "#141414"], ["Red", "#e04a3a"], ["Blue", "#2f7de0"], ["Gold", "#f5c83c"], ["Green", "#3ecf7a"]];
+function customLook(sel) {
+  const tats = {}; for (const s of TATTOOS[sel.tat][1]) tats[s] = TAT_INK;
+  return { eth: "custom", skin: SKIN_TONES[sel.skin], style: HAIR_STYLES[sel.hair][1], hair: HAIR_COLORS[sel.hc][1], shoe: SHOE_COLORS[sel.shoe][1],
+    face: FACE_HAIR[sel.face][1], tats, ear: EARRINGS[sel.ear][1], band: null, sleeve: null, wrist: null, ...EXTRAS[sel.extra][1] };
+}
 class CreateScreen extends Screen {
-  constructor() { super(); this.pi = 2; this.ai = 0; this.row = 0; nameInput.value = ""; }
+  constructor(slot) {
+    super(); this.slot = slot; this.row = 0; this.pi = 2; this.ai = ATTR_ORDER.indexOf(POS_ATTRS.SF[0]);
+    this.fields = { first: "", last: "", school: "" };
+    this.randomize();
+  }
+  randomize() {
+    const r = new Rng();
+    this.sel = { skin: r.randint(0, SKIN_TONES.length - 1), hair: r.randint(0, HAIR_STYLES.length - 1), hc: r.randint(0, 3), face: r.randint(0, FACE_HAIR.length - 1),
+      ear: r.random() < 0.5 ? 0 : r.randint(1, EARRINGS.length - 1), tat: r.random() < 0.5 ? 0 : r.randint(1, TATTOOS.length - 1), extra: r.random() < 0.6 ? 0 : r.randint(1, EXTRAS.length - 1), shoe: r.randint(0, SHOE_COLORS.length - 1) };
+  }
   get pos() { return POSITIONS[this.pi]; }
-  start() { App.career = Career.fresh(nameInput.value.trim() || "Rookie", ATTR_ORDER[this.ai], this.pos); App.save(); App.switch(new HubScreen()); }
-  stepPos(d) { this.pi = (this.pi + d + POSITIONS.length) % POSITIONS.length; this.ai = ATTR_ORDER.indexOf(POS_ATTRS[this.pos][0]); }
-  stepAttr(d) { this.ai = (this.ai + d + ATTR_ORDER.length) % ATTR_ORDER.length; }
+  // the rows: [label, kind, value text, step(d)]
+  get rows() {
+    const s = this.sel, cyc = (k, n) => d => { s[k] = (s[k] + d + n) % n; };
+    return [
+      ["First name", "text", "first"], ["Last name", "text", "last"], ["High school team", "text", "school"],
+      ["Position", "pick", `${POS_NAMES[this.pos]} (${this.pos})`, d => { this.pi = (this.pi + d + POSITIONS.length) % POSITIONS.length; this.ai = ATTR_ORDER.indexOf(POS_ATTRS[this.pos][0]); }],
+      ["Main attribute", "pick", ATTRS[ATTR_ORDER[this.ai]].name, d => { this.ai = (this.ai + d + ATTR_ORDER.length) % ATTR_ORDER.length; }],
+      ["Skin tone", "pick", `Tone ${s.skin + 1} of ${SKIN_TONES.length}`, cyc("skin", SKIN_TONES.length)],
+      ["Hairstyle", "pick", HAIR_STYLES[s.hair][0], cyc("hair", HAIR_STYLES.length)],
+      ["Hair color", "pick", HAIR_COLORS[s.hc][0], cyc("hc", HAIR_COLORS.length)],
+      ["Facial hair", "pick", FACE_HAIR[s.face][0], cyc("face", FACE_HAIR.length)],
+      ["Earrings", "pick", EARRINGS[s.ear][0], cyc("ear", EARRINGS.length)],
+      ["Tattoos", "pick", TATTOOS[s.tat][0], cyc("tat", TATTOOS.length)],
+      ["Extras", "pick", EXTRAS[s.extra][0], cyc("extra", EXTRAS.length)],
+      ["Shoes", "pick", SHOE_COLORS[s.shoe][0], cyc("shoe", SHOE_COLORS.length)],
+    ];
+  }
+  rowY(i) { return 96 + i * 40; }
+  // the one text box moves to whichever name row you're on
+  syncInput() {
+    const r = this.rows[this.row];
+    if (!r || r[1] !== "text") { nameInput.hidden = true; nameInput.blur(); return; }
+    const y = this.rowY(this.row);
+    Object.assign(nameInput.style, { left: "23%", width: "36%", top: `${(y - 2) / S.H * 100}%`, height: `${34 / S.H * 100}%`, fontSize: "clamp(12px, 1.9vw, 20px)", textAlign: "left", paddingLeft: "10px" });
+    nameInput.maxLength = r[2] === "school" ? 20 : 12;
+    nameInput.placeholder = r[2] === "school" ? "Eastside High" : r[2] === "first" ? "First name" : "Last name";
+    nameInput.value = this.fields[r[2]];
+    nameInput.hidden = false; setTimeout(() => nameInput.focus(), 0);
+  }
+  onInput(v) { const r = this.rows[this.row]; if (r && r[1] === "text") this.fields[r[2]] = v; }
+  go(row) { this.row = clamp(row, 0, this.rows.length); this.syncInput(); }   // rows.length = the START button
+  start() {
+    const f = this.fields, name = `${f.first.trim()} ${f.last.trim()}`.trim() || "Rookie";
+    const c = Career.fresh(name, ATTR_ORDER[this.ai], this.pos, { school: f.school.trim() || "Eastside High", look: customLook(this.sel) });
+    nameInput.hidden = true; App.open(this.slot, c); App.save(); App.switch(new HubScreen());
+  }
   key(k) {
-    if (k === "Escape") App.switch(new TitleScreen());
-    else if (K.up(k) || K.down(k)) this.row = 1 - this.row;
-    else if (K.left(k)) this.row ? this.stepAttr(-1) : this.stepPos(-1);
-    else if (K.right(k)) this.row ? this.stepAttr(1) : this.stepPos(1);
-    else if (k === "Enter") this.start();
+    const n = this.rows.length, r = this.rows[this.row];
+    if (k === "Escape") { nameInput.hidden = true; App.switch(new TitleScreen()); }
+    else if (K.up(k)) this.go(this.row - 1);
+    else if (K.down(k) || k === "Tab") this.go(this.row >= n ? 0 : this.row + 1);
+    else if (r && r[1] === "pick" && K.left(k)) r[3](-1);
+    else if (r && r[1] === "pick" && K.right(k)) r[3](1);
+    else if (k === "Enter") { if (this.row >= n) this.start(); else this.go(this.row + 1); }
+    else if ((k === "r" || k === "R") && (!r || r[1] !== "text")) this.randomize();
   }
   draw() {
     ctx.fillStyle = C.bg; ctx.fillRect(0, 0, S.W, S.H);
-    text("Create Your Baller", 500, 70, { size: 56, color: C.gold, center: true, display: true });
-    text("Your name", 500, 150, { size: 28, color: C.grey, center: true });
-    const rows = [["Position", POS_NAMES[this.pos] + ` (${this.pos})`, () => this.stepPos(-1), () => this.stepPos(1)],
-                  ["Main attribute", ATTRS[ATTR_ORDER[this.ai]].name, () => this.stepAttr(-1), () => this.stepAttr(1)]];
-    rows.forEach(([label, val, prev, next], i) => {
-      const y = 262 + i * 100, sel = this.row === i;
-      rrect(170, y - 30, 660, 84, 12, sel ? "#2a2c38" : "#1c1e26", sel ? C.gold : null, 2);
-      text(label, 500, y - 16, { size: 24, color: C.grey, center: true });
-      text(val, 500, y + 20, { size: 42, color: C.orange, center: true, display: true });
-      text("◀", 215, y + 12, { size: 50, center: true }); hit(175, y - 28, 80, 80, () => { this.row = i; prev(); });
-      text("▶", 785, y + 12, { size: 50, center: true }); hit(745, y - 28, 80, 80, () => { this.row = i; next(); });
-      hit(255, y - 28, 490, 80, () => { this.row = i; });
+    text("Create Your Baller", 500, 46, { size: 48, color: C.gold, center: true, display: true });
+    text(`Career slot ${this.slot + 1}`, 500, 78, { size: 20, color: C.grey, center: true, weight: 500 });
+    const rows = this.rows;
+    rows.forEach((r, i) => {
+      const y = this.rowY(i), sel = this.row === i;
+      rrect(30, y - 4, 580, 36, 8, sel ? "#2a2c38" : "#1a1c24", sel ? C.gold : null, 2);
+      text(r[0], 46, y + 4, { size: 20, color: sel ? C.gold : C.grey, weight: 500 });
+      if (r[1] === "text") {
+        if (!(sel && !nameInput.hidden)) { const v = this.fields[r[2]]; text(v || (r[2] === "school" ? "Eastside High" : "—"), 240, y + 2, { size: 24, color: v ? C.white : "#5c5f6b" }); }
+      } else {
+        text("◀", 250, y + 14, { size: 26, center: true }); text("▶", 594, y + 14, { size: 26, center: true });
+        text(r[2], 422, y + 14, { size: 24, color: C.orange, center: true });
+        hit(230, y - 4, 40, 36, () => { this.go(i); r[3](-1); }); hit(574, y - 4, 36, 36, () => { this.go(i); r[3](1); });
+      }
+      hit(30, y - 4, 200, 36, () => this.go(i));
+      if (r[1] === "text") hit(230, y - 4, 380, 36, () => this.go(i));
     });
+    // skin swatch next to the tone name
+    const sy = this.rowY(5); rrect(520, sy + 3, 22, 22, 4, SKIN_TONES[this.sel.skin], "#000", 1);
+    // ---- preview: full body and a close-up
+    rrect(630, 92, 340, 448, 14, "#1b1d26", "#343747", 1.5);
+    const look = customLook(this.sel), me = { name: "preview", number: 23, pos: this.pos, look };
+    const P = { lift: 0, crouch: 0, lean: 0, L: [-11, -22], R: [11, -22], ball: null, stance: false, swing: 0, dir: 0 };
+    const g = sprCtx; g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, SPR.W, SPR.H);
+    g.translate(SPR.OX, SPR.OY); g.scale((POS_SIZE[this.pos] || 1) / PX, (POS_SIZE[this.pos] || 1) / PX);
+    drawBody(g, P, { p: me }, look, 0, true, false, false); pixelate(g);
+    ctx.imageSmoothingEnabled = false; ctx.drawImage(sprCanvas, 646, 128, SPR.W * 5.4, SPR.H * 5.4); ctx.imageSmoothingEnabled = true;
+    rrect(842, 112, 116, 110, 10, "#262935");
+    ctx.save(); ctx.beginPath(); ctx.rect(842, 112, 116, 110); ctx.clip(); drawPortrait(me, 845, 114, 2.9, 0); ctx.restore();
+    const full = `${this.fields.first.trim()} ${this.fields.last.trim()}`.trim() || "Rookie";
+    text(full, 800, 400, { size: 30, color: C.gold, center: true, display: true });
+    text(`${this.fields.school.trim() || "Eastside High"} · Senior · ${this.pos}`, 800, 432, { size: 20, color: C.grey, center: true, weight: 500 });
     const sh = POS_SHAPE[this.pos];
-    text(S.STATS.map(k => `${S.LABEL[k].slice(0, 3).toUpperCase()} ${40 + sh[k]}`).join("   "), 500, 440, { size: 26, center: true });
-    text(ATTRS[ATTR_ORDER[this.ai]].desc, 500, 474, { size: 25, color: C.grey, center: true, weight: 500 });
-    text("You're a high school senior with $100, a Point Guard and a Big Man. Scouts will be at your last tournament.", 500, 512, { size: 23, color: C.grey, center: true, weight: 500 });
-    rrect(390, 560, 220, 56, 10, C.gold); text("START CAREER", 500, 588, { size: 30, color: "#1a1406", center: true, display: true });
-    hit(390, 560, 220, 56, () => this.start());
-    this.footer("▲▼ pick row  ·  ◀ ▶ change  ·  Enter to start  ·  Esc back");
+    text(S.STATS.map(k => `${S.LABEL[k].slice(0, 3).toUpperCase()} ${40 + sh[k]}`).join("  "), 800, 462, { size: 19, center: true });
+    fitText(ATTRS[ATTR_ORDER[this.ai]].desc, 642, 482, 316, 18, C.grey);
+    rrect(700, 504, 200, 28, 8, "#262935"); text("🎲 Random look (R)", 800, 518, { size: 18, center: true });
+    hit(700, 504, 200, 28, () => this.randomize());
+    // start
+    const ss = this.row >= rows.length;
+    rrect(680, 560, 240, 56, 12, C.gold, ss ? "#ffffff" : null, 3);
+    text("START CAREER", 800, 588, { size: 28, color: "#1a1406", center: true, display: true });
+    hit(680, 560, 240, 56, () => this.start());
+    text("You're a high school senior. Scouts will be at your last tournament.", 320, 630, { size: 20, color: C.grey, center: true, weight: 500 });
+    this.footer("▲▼ pick row  ·  ◀ ▶ change  ·  type your names  ·  Enter = next  ·  Esc back");
   }
 }
 
@@ -1808,9 +1978,9 @@ class HubScreen extends Screen {
     }
     if (c.offers) {
       const pulse = 0.6 + 0.4 * Math.sin(performance.now() / 200);
-      rrect(36, 552, 470, 30, 8, `rgba(245,200,60,${0.18 + 0.12 * pulse})`, C.gold, 1.5);
-      text(`${c.offers.length} teams want you. See your offers ▸`, 271, 567, { size: 22, color: C.gold, center: true });
-      hit(36, 552, 470, 30, () => App.switch(new OffersScreen()));
+      rrect(540, 608, 430, 36, 8, `rgba(245,200,60,${0.18 + 0.12 * pulse})`, C.gold, 1.5);
+      text(`${c.offers.length} teams want you. See your offers ▸`, 755, 626, { size: 22, color: C.gold, center: true });
+      hit(540, 608, 430, 36, () => App.switch(new OffersScreen()));
     }
     // TEAM and SHOP sections
     const section = (label, r, y) => {
@@ -1837,16 +2007,17 @@ class HubScreen extends Screen {
       text(`OVR ${opp}`, 486, 516, { size: 26, color: opp > mine ? "#ff8a7a" : C.green, right: true, display: true });
       text(opp > mine ? `${opp - mine} better than you` : "you're favored", 271, 520, { size: 19, color: C.grey, center: true, weight: 500 });
     }
-    if (this.msgT) text(this.msg, 271, 564, { size: 22, color: C.gold, center: true });
+    if (this.msgT) text(this.msg, 271, 470, { size: 22, color: C.gold, center: true });
+    drawFameBar(c, 36, 552, 470);
     // quit sits quietly at the bottom
     const qs = this.isSel(3, 0);
-    rrect(36, 590, 150, 40, 8, qs ? "#343747" : null, qs ? C.gold : "#343747", 1.5);
-    text("Quit to Title", 111, 610, { size: 22, color: qs ? C.white : C.grey, center: true });
-    hit(36, 590, 150, 40, () => { this.r = 3; this.rows[3][0].go(); });
+    rrect(36, 604, 150, 40, 8, qs ? "#343747" : null, qs ? C.gold : "#343747", 1.5);
+    text("Quit to Title", 111, 624, { size: 22, color: qs ? C.white : C.grey, center: true });
+    hit(36, 604, 150, 40, () => { this.r = 3; this.rows[3][0].go(); });
     if (c.lastTourney && c.lastTourney.field) {   // the tournament bracket, any time
-      rrect(206, 590, 170, 40, 8, "#2a2214", C.gold, 1.5);
-      text(c.tourney ? "Bracket (B)" : "Last bracket (B)", 291, 610, { size: 22, color: C.gold, center: true });
-      hit(206, 590, 170, 40, () => App.switch(new BracketScreen(new HubScreen())));
+      rrect(206, 604, 170, 40, 8, "#2a2214", C.gold, 1.5);
+      text(c.tourney ? "Bracket (B)" : "Last bracket (B)", 291, 624, { size: 22, color: C.gold, center: true });
+      hit(206, 604, 170, 40, () => App.switch(new BracketScreen(new HubScreen())));
     }
     rrect(540, 100, 430, 500, 10, "#181a22", C.grey, 1.5);
     text("THE ROAD TO GOLD", 755, 126, { size: 30, color: C.gold, center: true, display: true });
@@ -1872,7 +2043,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 27 (classic bodies)");
+    this.footer("Progress saves automatically in this browser  ·  version 28 (career slots, fame levels, sticky D)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -1880,6 +2051,21 @@ function fitText(str, x, y, maxW, size, color) {
   let sz = size;
   while (sz > 12) { ctx.font = `500 ${Math.round(sz * 0.72)}px ${FONT_BODY}`; if (ctx.measureText(str).width <= maxW) break; sz -= 1; }
   text(str, x, y, { size: sz, color, weight: 500 });
+}
+// Fame toward the next level, with the line you get sent down under
+function drawFameBar(c, x, y, w) {
+  const up = c.fameCallUp(), line = c.demoteLine();
+  const top = up ?? Math.max(LEVEL_FAME[c.tier] * 1.5, c.fame, 1);
+  text(`FAME ${c.fame}`, x, y, { size: 18, color: C.gold, display: true });
+  const goal = c.stage !== "pro" ? "The scouts decide your draft"
+    : up != null ? `${Math.max(0, up - c.fame)} more to the ${TIERS[c.tier + 1].name}`
+    : c.tier === HUSTLE ? "Win the Hustle Classic to move up"
+    : c.tier === THRONE ? "Olympics: only the scouts decide" : "Top of the game";
+  text(goal + (line != null ? `  ·  sent down under ${line}` : ""), x + w, y + 2, { size: 17, color: C.grey, right: true, weight: 500 });
+  const by = y + 22;
+  rrect(x, by, w, 12, 6, "#262935");
+  rrect(x, by, Math.max(6, w * clamp(c.fame / top, 0, 1)), 12, 6, c.fame < (line ?? -1) * 1.15 ? C.orange : C.gold);
+  if (line != null) { const lx = x + w * clamp(line / top, 0, 1); ctx.fillStyle = C.red; ctx.fillRect(lx - 1.5, by - 4, 3, 20); }
 }
 function fmtTime(ms) { const s = Math.ceil(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
 
@@ -1966,7 +2152,7 @@ class CourtScreen extends Screen {
       }
     });
     if (this.ci < c.tier) text("Already won here. Pickup games are for cash and fame.", 500, 590, { size: 22, color: C.grey, center: true, weight: 500 });
-    this.footer("◀ ▶ change court  ·  ▲▼ pick  ·  Enter to play  ·  Tournaments move you up; pickup games don't");
+    this.footer("◀ ▶ change court  ·  ▲▼ pick  ·  Enter to play  ·  Win tournaments or build fame to move up");
   }
 }
 
@@ -2150,6 +2336,7 @@ const DYES = ["#e8d06a", "#d9482b", "#3d7cf0", "#c9c9d6", "#e07ab8"];
 const INK = ["#1d2733", "#22303a", "#2b1d33"];
 const METAL = { gold: "#f5c83c", silver: "#d8dde6", diamond: "#bff4ff" };
 function makeLook(p) {
+  if (p.look) return p.look;   // a look you designed yourself
   const rng = new Rng(`look|${p.name}|${p.number}`), kinds = Object.keys(ETHNIC);
   const eth = rng.choices(kinds, kinds.map(k => ETHNIC[k].w)), E = ETHNIC[eth];
   const style = rng.choice(E.styles);
@@ -2739,6 +2926,8 @@ class ResultScreen extends Screen {
     if (r.hustleDone) { text(r.champ ? "Hustle Classic champs! The scout is writing the report." : "Tournament's over. The scout has seen enough.", 500, y, { size: 26, color: C.gold, center: true }); y += 36; }
     else if (r.tierUp) { text(`You won the ${TIERS[this.crew.court].tourney}! Next stop: ${TIERS[c.tier].court} (${TIERS[c.tier].name}).`, 500, y, { size: 28, color: C.gold, center: true }); y += 38; }
     if (r.throneDone) { text(r.champ ? "Throne champions! The Olympic scouts are deciding." : "Your Throne run is over. The Olympic scouts are deciding.", 500, y, { size: 26, color: C.gold, center: true }); y += 36; }
+    if (r.fameMove && r.fameMove.up) { text(`CALLED UP! Your fame got you to the ${TIERS[r.fameMove.to].name} (${TIERS[r.fameMove.to].court}).`, 500, y, { size: 28, color: C.gold, center: true, display: true }); y += 40; }
+    if (r.fameMove && !r.fameMove.up) { text(`DEMOTED to the ${TIERS[r.fameMove.to].name} (${TIERS[r.fameMove.to].court}).`, 500, y, { size: 30, color: C.red, center: true, display: true }); y += 38; text("Your fame fell too far. Win to earn your way back up.", 500, y, { size: 24, color: "#ff9a8a", center: true }); y += 34; }
     if (r.crowned) { text(`YOU ARE THE ${KING.toUpperCase()}!`, 500, y, { size: 40, color: C.gold, center: true, display: true }); y += 44; }
     if (r.gold) { text("OLYMPIC GOLD MEDAL!", 500, y, { size: 48, color: C.gold, center: true, display: true }); y += 50; text("You beat the best in the country.", 500, y, { size: 26, center: true }); y += 36; }
     if (r.tierUp && c.scouting() >= 0.15) { text(`You moved up fast. Teams are scouting you (${Math.round(c.scouting() * 100)}%).`, 500, y, { size: 24, color: "#ff8a7a", center: true }); y += 34; }
@@ -3250,7 +3439,7 @@ window.addEventListener("keydown", e => {
   Sound.wake();
   if ((e.key === "m" || e.key === "M") && e.target !== nameInput) { Sound.on = !Sound.on; }
   if (e.target === nameInput) {
-    if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Enter" || e.key === "Escape") { e.preventDefault(); App.screen.key(e.key); }
+    if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "Enter" || e.key === "Escape" || e.key === "Tab") { e.preventDefault(); App.screen.key(e.key); }
     return;
   }
   if (GAME_KEYS.has(e.key)) e.preventDefault();
@@ -3303,7 +3492,7 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 function start(data) {
-  if (data && data.career) { App.career = new Career(data.career); App.switch(new HubScreen()); }
+  if (data && data.career) { App.open(0, new Career(data.career)); App.switch(new HubScreen()); }
   else App.switch(new TitleScreen());
   requestAnimationFrame(frame);
 }
