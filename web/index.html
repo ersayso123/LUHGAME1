@@ -512,6 +512,17 @@ class Match {
       this.meter = null;
       if (inp.movePressed) it.action = "steal";
       else if (inp.shootPressed) it.action = "jump";
+      // lock-on D: you stick to your man (between him and the rim); your keys steer on top of that
+      if (a.team !== this.offense && this.phase === "live" && b.state !== "shot" && b.state !== "loose") {
+        const man = this.team(1 - a.team)[a.slot], onBall = b.state === "held" && b.holder === man;
+        const [ux, uy] = norm(S.HOOP[0] - man.x, S.HOOP[1] - man.y), gap = onBall ? 18 : 34;
+        const dx = man.x + ux * gap - a.x, dy = man.y + uy * gap - a.y, d = Math.hypot(dx, dy);
+        const pull = d < 3 ? [0, 0] : [dx / d * Math.min(1, d / 14), dy / d * Math.min(1, d / 14)];
+        const [ix, iy] = inp.move;
+        const k = 0.6 + Math.min(1, d / 70);   // the farther you drift, the harder it pulls you back
+        it.move = Math.hypot(ix, iy) < 0.1 ? pull : [ix + pull[0] * k, iy + pull[1] * k];
+        this.lockMan = man;
+      } else this.lockMan = null;
     }
     return it;
   }
@@ -2135,7 +2146,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 30 (street rules: take it back)");
+    this.footer("Progress saves automatically in this browser  ·  version 31 (lock-on defense)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -2898,6 +2909,9 @@ class MatchScreen extends Screen {
     if (this.scoutWatching) drawScout(84, 340, m.elapsed);
     // show where the screen is being set
     if (coachOn(m, "screen") && !m.coach.used) { const scr = m.team(0).find(t => t.screening); if (scr) { ellipse(scr.x, scr.y + 2, 24, 10, null, C.gold, 2.5); text("SCREEN", scr.x, scr.y + 16, { size: 18, color: C.gold, center: true, display: true }); } }
+    if (m.lockMan && m.offense !== 0 && m.phase === "live") {   // who you're locked on
+      ctx.save(); ctx.setLineDash([5, 4]); ellipse(m.lockMan.x, m.lockMan.y + 1, 18, 8, null, `rgba(255,90,80,${0.6 + 0.3 * Math.sin(m.elapsed * 6)})`, 2.2); ctx.restore();
+    }
     drawActors(m, true);
     for (const q of this.parts) circle(q.x, q.y, q.r * Math.max(0.3, q.life / q.max), q.col);
     for (const q of this.rings) if (q.t > 0) { const k = q.t / 0.5; ellipse(S.HOOP[0], S.HOOP[1], 11 + k * 46, 7 + k * 26, null, `rgba(${q.col},${1 - k})`, 3 * (1 - k) + 1); }
