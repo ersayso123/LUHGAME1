@@ -221,7 +221,7 @@ class Actor {
     Object.assign(this, { p, team, slot, x: 0, y: 0, vx: 0, vy: 0, dash: null, plant: 0, moveTag: null, stepBackT: 0, sprinting: false, stamina: 1, streak: 0, bounces: 0, fx: 0, fy: -1, stun: 0, cool: 0, burst: 0, jump: 0, points: 0, think: 0, spot: null, spotT: 0, holdT: 0 });
     // animation only (never affects the rules)
     const h = hashStr(p.name + p.number);
-    this.look = { skin: SKINS[h % SKINS.length], hair: HAIRS[(h >>> 3) % HAIRS.length], style: (h >>> 6) % 4, shoe: SHOES[(h >>> 9) % SHOES.length] };
+    this.look = makeLook(p);
     this.anim = null; this.runPhase = 0; this.moveAmt = 0; this.hand = 1; this.dribble = (h % 100) / 10;
   }
   setAnim(kind, dur) { this.anim = { kind, t: 0, dur }; }
@@ -400,7 +400,7 @@ class Match {
     this.events.push({ type: "injury", team: a.team, name: hurt.name, sub: sub ? sub.name : null });
     if (sub) {
       this.subsLeft[a.team]--; a.p = sub; a.points = 0; a.streak = 0;
-      const h = hashStr(sub.name + sub.number); a.look = { skin: SKINS[h % SKINS.length], hair: HAIRS[(h >>> 3) % HAIRS.length], style: (h >>> 6) % 4, shoe: SHOES[(h >>> 9) % SHOES.length] };
+      a.look = makeLook(sub);
       if (a.team === 0) this.played.add(sub);
       this.say(`${hurt.name} is hurt! ${sub.name} checks in`, 2.2);
     } else { a.hurt = true; this.say(`${hurt.name} is hurt and playing through it`, 2.2); }
@@ -1872,7 +1872,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 24 (games to 21, Olympic scouts)");
+    this.footer("Progress saves automatically in this browser  ·  version 25 (NBA bodies, player faces)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -2002,9 +2002,13 @@ class MarketScreen extends Screen {
       rrect(x, y, w, h, 12, o.sold ? "#16171c" : "#20222c", sel && !eternal ? C.gold : r.color, eternal ? 5 : sel ? 3 : 2);
       if (eternal && !o.sold) { ctx.save(); ctx.globalAlpha = 0.12; rrect(x, y, w, h, 12, rainbow(x, y + h, w, -h)); ctx.restore(); }
       text(r.name.toUpperCase(), x + w / 2, y + 22, { size: 26, color: r.color, center: true, display: true });
-      text(p.name, x + w / 2, y + 56, { size: 30, center: true });
-      text(`${POS_NAMES[p.pos]}  ·  #${p.number}`, x + w / 2, y + 84, { size: 21, color: C.grey, center: true, weight: 500 });
-      text(`OVR ${overall(p)}`, x + w / 2, y + 122, { size: 44, color: r.color, center: true, display: true });
+      rrect(x + 10, y + 42, 84, 80, 8, "#2c2f3c");
+      ctx.save(); ctx.beginPath(); ctx.roundRect(x + 10, y + 42, 84, 80, 8); ctx.clip(); drawPortrait(p, x + 14, y + 46, 2.0, 0); ctx.restore();
+      let nsz = 28; ctx.font = `700 ${Math.round(nsz * 0.72)}px ${FONT_BODY}`;
+      while (nsz > 16 && ctx.measureText(p.name).width > w - 108) { nsz--; ctx.font = `700 ${Math.round(nsz * 0.72)}px ${FONT_BODY}`; }
+      text(p.name, x + 150, y + 56, { size: nsz, center: true });
+      text(`${p.pos}  ·  #${p.number}`, x + 150, y + 84, { size: 21, color: C.grey, center: true, weight: 500 });
+      text(`OVR ${overall(p)}`, x + 150, y + 118, { size: 32, color: r.color, center: true, display: true });
       S.STATS.forEach((k, j) => {
         const yy = y + 152 + j * 24;
         text(S.LABEL[k].slice(0, 3).toUpperCase(), x + 16, yy, { size: 20, color: C.grey });
@@ -2130,6 +2134,235 @@ function pose(m, a) {
   return { lift, crouch, lean, L, R, ball, stance, swing, dir };
 }
 
+// ---- player looks: every player gets a background, a hairstyle, and maybe facial hair, tattoos and jewelry
+// (picked from their name, so a player always looks the same)
+const ETHNIC = {
+  black: { w: 32, skins: ["#3d2314", "#4a2c17", "#5c3a1e", "#6e4426", "#7a4a2a", "#8d5524"], hairs: ["#0e0e0e", "#1b1410", "#241a12"],
+    styles: ["afro", "fade", "braids", "dreads", "buzz", "twists", "bald", "hightop", "waves", "fade", "buzz"] },
+  white: { w: 23, skins: ["#ffdbac", "#f6d2b3", "#f1c27d", "#eab68f", "#f3c9a4"], hairs: ["#2e1d12", "#5a3a1c", "#8a5a2b", "#d8b26a", "#b5651d", "#0e0e0e", "#e6d49a"],
+    styles: ["fade", "crew", "messy", "manbun", "buzz", "spiky", "long", "mohawk", "bald", "curly"] },
+  hispanic: { w: 23, skins: ["#c68642", "#d8a06a", "#b97a45", "#e0ac69", "#a8693a"], hairs: ["#0e0e0e", "#1b1410", "#2e1d12", "#4a2f17"],
+    styles: ["fade", "curly", "slick", "buzz", "manbun", "braids", "mohawk", "crew", "waves"] },
+  asian: { w: 22, skins: ["#f5d3ac", "#f0c89a", "#e8b88a", "#dca97a", "#d19e6e"], hairs: ["#0e0e0e", "#1b1410", "#26221e"],
+    styles: ["spiky", "bowl", "fade", "undercut", "long", "crew", "dyed", "manbun", "buzz"] },
+};
+const DYES = ["#e8d06a", "#d9482b", "#3d7cf0", "#c9c9d6", "#e07ab8"];
+const INK = ["#1d2733", "#22303a", "#2b1d33"];
+const METAL = { gold: "#f5c83c", silver: "#d8dde6", diamond: "#bff4ff" };
+function makeLook(p) {
+  const rng = new Rng(`look|${p.name}|${p.number}`), kinds = Object.keys(ETHNIC);
+  const eth = rng.choices(kinds, kinds.map(k => ETHNIC[k].w)), E = ETHNIC[eth];
+  const style = rng.choice(E.styles);
+  const look = {
+    eth, skin: rng.choice(E.skins), style,
+    hair: style === "dyed" ? rng.choice(DYES) : rng.choice(E.hairs),
+    shoe: rng.choice(SHOES),
+    face: rng.random() < (eth === "asian" ? 0.12 : 0.4) ? rng.choice(["beard", "goatee", "stache", "beard"]) : null,
+    tats: {}, ear: null, band: null, sleeve: null, wrist: null,
+  };
+  // tattoos: sleeves, forearms, neck, calves
+  if (rng.random() < 0.45) {
+    const ink = rng.choice(INK), accent = rng.random() < 0.3 ? rng.choice(["#b3362c", "#2e8b8b", "#6b3fa0"]) : null;
+    for (const spot of ["armL", "armR", "foreL", "foreR", "neck", "legL", "legR"]) if (rng.random() < (spot.startsWith("arm") ? 0.45 : spot === "neck" ? 0.18 : 0.25)) look.tats[spot] = accent && rng.random() < 0.4 ? accent : ink;
+    if (!Object.keys(look.tats).length) look.tats.armR = ink;
+  }
+  if (rng.random() < 0.38) look.ear = { side: rng.choice(["L", "R", "both", "both"]), metal: rng.choice(["gold", "silver", "diamond", "gold"]), hoop: rng.random() < 0.35 };
+  if (rng.random() < 0.16 && style !== "afro" && style !== "hightop") look.band = rng.random() < 0.5 ? "team" : rng.choice(["#f2f2f2", "#141414", "#e04a3a"]);
+  if (rng.random() < 0.14) look.sleeve = rng.random() < 0.5 ? "L" : "R";
+  if (rng.random() < 0.3) look.wrist = rng.choice(["#f2f2f2", "#141414", "#f5c83c", "team"]);
+  look.build = makeBuild(rng, p.pos);
+  return look;
+}
+
+// ---- pixel sprites: each player is drawn small into a scratch canvas, snapped to hard pixels with a dark
+// outline, then blown up. PX = screen pixels per sprite pixel.
+const PX = 2, SPR = { W: 40, H: 58, OX: 20, OY: 52 };   // sprite canvas size and where the feet go (sprite pixels)
+const sprCanvas = document.createElement("canvas"); sprCanvas.width = SPR.W; sprCanvas.height = SPR.H;
+const sprCtx = sprCanvas.getContext("2d", { willReadFrequently: true });
+const DIGITS = ["111101101101111", "010110010010111", "111001111100111", "111001111001111", "101101111001001", "111100111001111", "111100111101111", "111001010010010", "111101111101111", "111101111001111"];
+function shade(hex, k) {   // darker (k<1) or lighter (k>1) version of a color
+  const n = parseInt(hex.slice(1), 16), f = v => clamp(Math.round(v * k), 0, 255);
+  return `rgb(${f(n >> 16)},${f((n >> 8) & 255)},${f(n & 255)})`;
+}
+// Snap to hard pixels and add a 1-pixel outline (the classic sprite look)
+function pixelate(g, W = SPR.W, H = SPR.H) {
+  const img = g.getImageData(0, 0, W, H), d = img.data;
+  const solid = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) { if (d[i * 4 + 3] >= 110) { solid[i] = 1; d[i * 4 + 3] = 255; } else d[i * 4 + 3] = 0; }
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (solid[i]) continue;
+    if ((x > 0 && solid[i - 1]) || (x < W - 1 && solid[i + 1]) || (y > 0 && solid[i - W]) || (y < H - 1 && solid[i + W])) { d[i * 4] = 18; d[i * 4 + 1] = 14; d[i * 4 + 2] = 16; d[i * 4 + 3] = 235; }
+  }
+  g.putImageData(img, 0, 0);
+}
+// pose() was laid out for a short cartoon body; NBA bodies have long arms and a high shoulder line.
+// Map a pose point (hands, ball) onto the taller body: below the old shoulder stretch it, above it keep the reach.
+function bodyPt(pt) {
+  const [x, y] = pt;
+  const ny = y <= -34 ? -45 + (y + 34) * 1.05        // overhead: keep the reach
+    : y <= -18 ? -45 + (y + 34) * 2                  // at the side: long arms hang to mid-thigh
+    : y * 13 / 18;                                    // dribble height down to the floor
+  return [x * 1.1, ny];
+}
+// Body types by position, with every player a little different (lean guards, long wings, thick bigs)
+const BUILDS = {
+  PG: { sh: [9.4, 10.6], lt: [3.8, 4.4] }, SG: { sh: [9.8, 11.0], lt: [4.0, 4.6] }, SF: { sh: [10.4, 11.6], lt: [4.3, 5.0] },
+  PF: { sh: [11.0, 12.4], lt: [4.8, 5.6] }, C: { sh: [11.6, 13.2], lt: [5.2, 6.2] },
+};
+function makeBuild(rng, pos) {
+  const B = BUILDS[pos] || BUILDS.SF, t = rng.random(), u = rng.random();
+  return { sh: B.sh[0] + (B.sh[1] - B.sh[0]) * t, lt: B.lt[0] + (B.lt[1] - B.lt[0]) * (0.6 * t + 0.4 * u), waist: 0.56 + 0.08 * u };   // narrow hips: athletes are V-shaped
+}
+// The body, NBA proportions: feet at 0, knees -15, hips -29, shoulders -45, head centre -55 (about 1/8 of the height)
+function drawBody(g, P, a, look, team, front, stunned, celebrate) {
+  const skin = look.skin, dark = shade(skin, 0.78), lite = shade(skin, 1.18), bd = look.build || { sh: 10.8, lt: 4.6, waist: 0.6 };
+  const seg = (x1, y1, x2, y2, col, w) => { g.strokeStyle = col; g.lineWidth = w; g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke(); };
+  const dot = (x, y, r, col) => { g.fillStyle = col; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); };
+  const box = (x, y, w, h, col) => { g.fillStyle = col; g.fillRect(x, y, w, h); };
+  const poly = (pts, col) => { g.fillStyle = col; g.beginPath(); g.moveTo(pts[0], pts[1]); for (let i = 2; i < pts.length; i += 2) g.lineTo(pts[i], pts[i + 1]); g.closePath(); g.fill(); };
+  const teamCol = C.team[team], trim = TEAM_TRIM[team], tcol = c => c === "team" ? teamCol : c;
+  const ink = (x1, y1, x2, y2, col, w) => { g.setLineDash([2, 1.5]); seg(x1, y1, x2, y2, col, w); g.setLineDash([]); };
+  g.lineCap = "round"; g.lineJoin = "round";
+  const L = bodyPt(P.L), R = bodyPt(P.R), sh = bd.sh, lt = bd.lt, hipW = sh * bd.waist;
+  // ---- legs: thigh (mostly under the shorts), knee, calf, crew socks, high-tops
+  const spread = P.stance ? 10.5 : 6.5, air = P.lift > 0.05;
+  for (const side of [-1, 1]) {
+    const step = air ? 0 : side * P.swing * 7;
+    const fx = side * spread + P.dir * step, fy = air ? -5 : -Math.max(0, side * P.swing) * 5;
+    const hx = side * (hipW - 2), hy = -29.5 + P.crouch * 0.6;
+    const kx = (hx + fx) / 2 + side * 1.5 + P.dir * step * 0.2, ky = air ? -16.5 : -14.5 + P.crouch * 0.4 + fy * 0.3;
+    const col = side < 0 ? dark : skin;
+    seg(hx, hy, kx, ky, col, lt + 1.2);                                     // thigh
+    seg(kx - side * 0.4, ky - 1, kx, ky + 1, shade(skin, side < 0 ? 0.68 : 0.88), lt * 0.55);   // knee
+    seg(kx, ky, fx, fy - 6, col, lt + 0.6);                                  // calf
+    seg(kx + side * 0.6, ky + 3, (kx + fx) / 2 + side * 1.2, ky + 6.5, col, lt + 1.6);   // calf muscle
+    if (side > 0) seg(kx + 1, ky + 1, (kx + fx) / 2 + 1.6, (ky + fy) / 2, lite, 1.2);     // light on the shin
+    const tat = look.tats[side < 0 ? "legL" : "legR"];
+    if (tat) ink(kx, ky + 2, (kx + fx) / 2, (ky + fy - 6) / 2 + 1, tat, 2.4);
+    box(fx - lt / 2 - 0.6, fy - 9, lt + 1.2, 4, "#f2f2f2");                // crew socks
+    // high-top sneaker: ankle collar, toe box, white sole
+    g.fillStyle = look.shoe; g.beginPath(); g.roundRect(fx - 3.4, fy - 6, 6.8, 5, 1.5); g.fill();
+    g.beginPath(); g.ellipse(fx + P.dir * 2.4, fy - 1.8, 5.2, 2.6, 0, 0, Math.PI * 2); g.fill();
+    box(fx + P.dir * 2.4 - 5, fy - 0.6, 10, 1.4, "#f2f2f2");
+  }
+  // ---- baggy knee-length shorts with side stripes and a split between the legs
+  const sy = -33 + P.crouch * 0.6;   // waist: legs about half the body, like a real player
+  // shorts stop above the knee so the legs show
+  poly([-hipW - 0.6, sy, hipW + 0.6, sy, hipW + 1.2, -20.5, 0.8, -21.5, 0, -24, -0.8, -21.5, -hipW - 1.2, -20.5], TEAM_DARK[team]);
+  seg(-hipW - 0.7, sy + 1, -hipW - 1.1, -21.5, trim, 1.4); seg(hipW + 0.7, sy + 1, hipW + 1.1, -21.5, trim, 1.4);
+  box(-hipW - 0.6, sy, 2 * hipW + 1.2, 2, shade(TEAM_DARK[team], 0.75));   // waistband
+  // ---- arms: shoulder (deltoid) → elbow → hand; long, with muscle shading
+  const arm = (hand, s, which) => {
+    const sx = s * (sh - 1.5), sy0 = -45;
+    // two-bone arm: the elbow pops out sideways (away from the body) as much as the arm needs to bend
+    const ARM = 25, mx = (sx + hand[0]) / 2, my = (sy0 + hand[1]) / 2;
+    const len = Math.hypot(hand[0] - sx, hand[1] - sy0) || 1;
+    let nx = -(hand[1] - sy0) / len, ny = (hand[0] - sx) / len;
+    if (nx * s < 0) { nx = -nx; ny = -ny; }
+    const bend = Math.sqrt(Math.max(0, (ARM / 2) ** 2 - (Math.min(len, ARM) / 2) ** 2)) * 0.8 + 0.6;
+    const ex = mx + nx * bend, ey = my + ny * bend;
+    const col = which === "L" ? dark : skin, uw = lt * 0.62 + 0.5, fw = lt * 0.5 + 0.5;   // slim, long arms
+    seg(sx, sy0, ex, ey, col, uw);                                          // upper arm
+    seg(ex, ey, hand[0], hand[1], col, fw);                                 // forearm
+    if (which === "R") seg(sx + (ex - sx) * 0.3, sy0 + (ey - sy0) * 0.3, sx + (ex - sx) * 0.65, sy0 + (ey - sy0) * 0.65, lite, 0.8);   // a touch of light on the bicep
+    dot(sx, sy0 + 0.6, uw * 0.6 + 0.5, col);                                // shoulder
+    const upper = look.tats["arm" + which], fore = look.tats["fore" + which];
+    if (look.sleeve === which) { seg(sx, sy0 + 1, ex, ey, teamCol, uw); seg(ex, ey, hand[0] - (hand[0] - ex) * 0.25, hand[1] - (hand[1] - ey) * 0.25, teamCol, fw); }
+    else if (upper) ink(sx + (ex - sx) * 0.2, sy0 + (ey - sy0) * 0.2 + 1, ex, ey, upper, uw - 0.6);
+    if (fore && look.sleeve !== which) ink(ex + (hand[0] - ex) * 0.15, ey + (hand[1] - ey) * 0.15, hand[0] - (hand[0] - ex) * 0.2, hand[1] - (hand[1] - ey) * 0.2, fore, fw - 0.4);
+    if (look.wrist) dot(hand[0] - (hand[0] - ex) * 0.16, hand[1] - (hand[1] - ey) * 0.16, fw * 0.6 + 0.2, tcol(look.wrist));
+    dot(hand[0], hand[1], fw * 0.6 + 0.3, col);                             // hand
+  };
+  // ---- tank-top jersey: wide at the shoulders, tapered at the waist, arm holes show the shoulders
+  const back = !front;
+  if (back) arm(L, -1, "L"), arm(R, 1, "R");
+  poly([-sh + 3.2, -46.5, -3, -46.5, 0, -43.5, 3, -46.5, sh - 3.2, -46.5, sh - 1.2, -41, hipW + 1.2, -35, hipW + 1, sy + 1.5, -hipW - 1, sy + 1.5, -hipW - 1.2, -35, -sh + 1.2, -41], stunned ? TEAM_DARK[team] : teamCol);
+  seg(-sh + 3.2, -46.5, -3, -46.5, trim, 1.2); seg(3, -46.5, sh - 3.2, -46.5, trim, 1.2);
+  seg(-3, -46.5, 0, -43.5, trim, 1.2); seg(0, -43.5, 3, -46.5, trim, 1.2);   // V-neck trim
+  seg(-sh + 1.2, -41, -hipW - 1.2, -35, trim, 1); seg(sh - 1.2, -41, hipW + 1.2, -35, trim, 1);
+  seg(-hipW + 1, -40, -hipW + 1.5, -36.5, shade(teamCol, 0.8), 1.4);          // fold shading
+  const num = String(a.p.number).slice(-2), nw = num.length * 4 - 1;
+  for (let k = 0; k < num.length; k++) { const bits = DIGITS[+num[k]]; for (let i = 0; i < 15; i++) if (bits[i] === "1") box(-nw + k * 8 + (i % 3) * 2, -42 + Math.floor(i / 3) * 2, 2, 2, trim); }
+  if (front) arm(L, -1, "L"), arm(R, 1, "R");
+  // ---- neck and head (traps for the big guys)
+  const neckW = 3.6 + (lt - 4) * 0.7;
+  poly([-neckW - 2, -46.5, neckW + 2, -46.5, neckW, -49, -neckW, -49], skin);
+  box(-neckW, -51, neckW * 2, 4.6, skin);
+  if (look.tats.neck) { box(-neckW, -49.5, 1.8, 2, look.tats.neck); box(neckW - 1.8, -48.5, 1.8, 2, look.tats.neck); }
+  const hy = -55.5, q = 0.66;                                              // head centre; hair is drawn at 0.66 scale
+  const H = look.hair, st = look.style, hl = shade(H, 1.6);
+  g.save(); g.translate(0, hy); g.scale(q, q);
+  const hdot = (x, y, r, col) => dot(x, y, r, col), hbox = box;
+  if (st === "afro") hdot(0, -2, 10.5, H);
+  if (st === "dreads" || st === "long") { for (const s of [-1, 1]) hbox(s > 0 ? 4 : -8, -2, 4, st === "long" ? 13 : 16, H); if (!front) hbox(-7, -2, 14, st === "long" ? 13 : 16, H); }
+  // head: rounded skull with a squarer jaw, and ears
+  g.fillStyle = skin; g.beginPath(); g.roundRect(-6.6, -7.6, 13.2, 15.4, [7, 7, 5, 5]); g.fill();
+  hdot(-6.8, 0.5, 1.8, dark); hdot(6.8, 0.5, 1.8, skin);
+  g.restore();
+  if (front) {
+    const f = P.dir * 0.6;
+    box(-3 + f, hy - 1, 1.6, 1.6, "#141414"); box(1.4 + f, hy - 1, 1.6, 1.6, "#141414");          // eyes
+    box(-3.4 + f, hy - 2.6, 2.4, 1, shade(H, 0.9)); box(1.2 + f, hy - 2.6, 2.4, 1, shade(H, 0.9));   // brows
+    box(-0.5 + f + P.dir * 0.4, hy + 0.4, 1.2, 2, dark);                                          // nose
+    box(-1.6 + f, hy + 3.2, 3.2, 0.9, shade(skin, 0.6));                                          // mouth
+    if (look.face === "beard") { g.fillStyle = H; g.beginPath(); g.roundRect(-4.4, hy + 1.6, 8.8, 4, [0, 0, 3, 3]); g.fill(); box(-1.6 + f, hy + 3, 3.2, 0.9, shade(skin, 0.6)); }
+    else if (look.face === "goatee") box(-1.2 + f, hy + 3.8, 2.4, 2.2, H);
+    else if (look.face === "stache") box(-2 + f, hy + 2.2, 4, 1.1, H);
+    if (celebrate) box(-1.6 + f, hy + 3, 3.2, 2, "#5a1a1a");
+  }
+  if (look.ear) {
+    const col = METAL[look.ear.metal];
+    for (const s of look.ear.side === "both" ? [-1, 1] : [look.ear.side === "L" ? -1 : 1]) {
+      if (look.ear.hoop) { g.strokeStyle = col; g.lineWidth = 1; g.beginPath(); g.arc(s * 4.6, hy + 2.4, 1.3, 0, Math.PI * 2); g.stroke(); }
+      else box(s * 4.6 - 0.8, hy + 1.2, 1.6, 1.6, col);
+    }
+  }
+  // hair on top (same styles, scaled to the smaller head)
+  g.save(); g.translate(0, hy); g.scale(q, q);
+  const cap = (lo = 1.0, hi = 2.0, r = 7.2) => { g.fillStyle = H; g.beginPath(); g.arc(0, -0.6, r, Math.PI * lo, Math.PI * hi); g.closePath(); g.fill(); };
+  const full = () => { if (!front) { g.fillStyle = H; g.beginPath(); g.roundRect(-6.8, -7.8, 13.6, 13, 7); g.fill(); } };
+  const skinDark = shade(skin, 0.55);
+  switch (st) {
+    case "bald": box(-2, -6.5, 2.5, 1.5, lite); break;
+    case "buzz": g.fillStyle = skinDark; g.beginPath(); g.arc(0, -0.6, 7.1, Math.PI * 1.08, Math.PI * 1.92); g.fill(); if (!front) { g.beginPath(); g.roundRect(-6.8, -7.8, 13.6, 12, 7); g.fill(); } break;
+    case "fade": cap(1.12, 1.88); box(-6.8, -3, 1.8, 4, skinDark); box(5, -3, 1.8, 4, skinDark); full(); break;
+    case "waves": cap(1.1, 1.9); for (const yy of [-6, -4]) box(-4, yy, 8, 0.9, hl); full(); break;
+    case "crew": cap(1.05, 1.95); full(); break;
+    case "messy": cap(1.0, 2.0); for (const x of [-5, -1, 3]) box(x, -10, 3, 3, H); full(); break;
+    case "spiky": case "dyed": cap(1.0, 2.0); for (const x of [-6, -3, 0, 3]) { g.fillStyle = H; g.beginPath(); g.moveTo(x, -6); g.lineTo(x + 1.5, -12); g.lineTo(x + 3, -6); g.fill(); } full(); break;
+    case "afro": if (front) cap(1.0, 2.0, 7.6); else full(); break;
+    case "hightop": cap(1.05, 1.95); box(-6, -16, 12, 10, H); box(-6, -16, 12, 1.5, hl); full(); break;
+    case "braids": cap(1.0, 2.0); for (const x of [-4, -1, 2]) box(x, -8, 1, 6, hl); for (const bx of [-6, -3, 3, 6]) box(bx - 0.5, 0, 1.6, 10, H); full(); break;
+    case "dreads": cap(1.0, 2.0); for (const x of [-5, -2, 1, 4]) dot(x + 0.5, -8, 1.6, H); full(); break;
+    case "twists": cap(1.0, 2.0); for (const x of [-5, -2, 1, 4]) dot(x + 0.5, -9, 2, H); full(); break;
+    case "mohawk": g.fillStyle = skinDark; g.beginPath(); g.arc(0, -0.6, 7.1, Math.PI * 1.1, Math.PI * 1.9); g.fill(); box(-2, -13, 4, 9, H); break;
+    case "manbun": cap(1.0, 2.0); dot(0, -10, 3, H); full(); break;
+    case "long": cap(0.95, 2.05); full(); break;
+    case "bowl": cap(0.92, 2.08); box(-7, -4, 14, 2.5, H); full(); break;
+    case "undercut": g.fillStyle = skinDark; g.beginPath(); g.arc(0, -0.6, 7.1, Math.PI * 1.05, Math.PI * 1.95); g.fill(); poly([-6, -5, 8, -10, 7, -4, -6, -3], H); full(); break;
+    case "curly": cap(1.0, 2.0); for (const x of [-6, -3, 0, 3, 6]) dot(x, -7, 2.2, H); full(); break;
+    case "slick": cap(1.02, 1.98); box(-3, -7, 6, 1, hl); full(); break;
+    default: cap(); full();
+  }
+  if (look.band) box(-7.2, -4, 14.4, 2.6, tcol(look.band));
+  g.restore();
+}
+
+// A pixel head-and-shoulders portrait of a player (for the shop and Mystery Baller cards)
+// drawn at twice the in-game detail and cropped to the head and shoulders so the face reads
+const portCanvas = document.createElement("canvas"); portCanvas.width = 38; portCanvas.height = 36;
+const portCtx = portCanvas.getContext("2d", { willReadFrequently: true });
+function drawPortrait(p, x, y, scale, team = 0) {
+  const look = makeLook(p), g = portCtx;
+  const P = { lift: 0, crouch: 0, lean: 0, L: [-11, -22], R: [11, -22], ball: null, stance: false, swing: 0, dir: 0 };
+  g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, 38, 36);
+  g.translate(19, 69);   // head centre (-55.5) lands near the top third
+  drawBody(g, P, { p }, look, team, true, false, false);
+  pixelate(g, 38, 36);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(portCanvas, x, y, 38 * scale, 36 * scale);
+  ctx.imageSmoothingEnabled = true;
+}
 function drawPerson(m, a, highlight) {
   const P = pose(m, a), look = a.look, team = a.team;
   const up = P.lift * 24, x = a.x, y = a.y;
@@ -2148,68 +2381,33 @@ function drawPerson(m, a, highlight) {
   if (isMain) ellipse(x, y + 1, 17, 7, null, C.gold, 2.5);
   if (highlight) { const pulse = 1.5 + 1.5 * Math.sin(m.elapsed * 8); ellipse(x, y + 1, 20 + pulse, 9 + pulse / 2, null, "rgba(255,255,255,0.9)", 2); }
 
-  ctx.save();
-  const sz = POS_SIZE[a.p.pos] || 1;
-  ctx.translate(x, y - up + P.crouch);
-  ctx.scale(sz, sz);
-  if (a.stun > 0) ctx.rotate(Math.sin(m.elapsed * 24) * 0.18);
-  else if (P.lean) ctx.transform(1, 0, -P.lean / 40, 1, 0, 0);   // lean into the move
-  ctx.lineCap = "round"; ctx.lineJoin = "round";
-  // legs: stride while running, wide in a defensive stance, tucked in the air
-  const spread = P.stance ? 9 : 5, air = P.lift > 0.05;
-  for (const side of [-1, 1]) {
-    const step = air ? 0 : side * P.swing * 6;
-    const fx = side * spread + P.dir * step, fy = air ? -4 : -Math.max(0, side * P.swing) * 4;
-    ctx.strokeStyle = look.skin; ctx.lineWidth = 5;
-    ctx.beginPath(); ctx.moveTo(side * 4, -17 + P.crouch * 0.5); ctx.quadraticCurveTo(side * (spread + 1) + P.dir * step * 0.5, -9, fx, fy - 3); ctx.stroke();
-    ctx.fillStyle = look.shoe; ctx.beginPath(); ctx.ellipse(fx + P.dir * 2, fy - 1.5, 4.8, 2.6, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = "rgba(0,0,0,0.45)"; ctx.lineWidth = 1; ctx.stroke();
-  }
-  // shorts
-  ctx.fillStyle = TEAM_DARK[team]; ctx.beginPath(); ctx.roundRect(-9, -22, 18, 9, 3); ctx.fill();
-  // back arm first when facing away, so it sits behind the body
-  const arm = (hx, hy, sx) => {
-    ctx.strokeStyle = look.skin; ctx.lineWidth = 4.5;
-    ctx.beginPath(); ctx.moveTo(sx, -34); ctx.quadraticCurveTo(sx + (hx - sx) * 0.4 + Math.sign(sx) * 3, (hy - 34) / 2 - 4, hx, hy); ctx.stroke();
-    circle(hx, hy, 3, look.skin, "rgba(0,0,0,0.35)", 1);
-  };
-  // jersey
-  ctx.fillStyle = a.stun > 0 ? TEAM_DARK[team] : C.team[team];
-  ctx.beginPath(); ctx.moveTo(-9, -37); ctx.lineTo(9, -37); ctx.lineTo(10, -21); ctx.lineTo(-10, -21); ctx.closePath(); ctx.fill();
-  ctx.strokeStyle = TEAM_TRIM[team]; ctx.lineWidth = 1.2; ctx.stroke();
-  ctx.fillStyle = TEAM_TRIM[team]; ctx.font = `700 10px ${FONT_BODY}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText(String(a.p.number), 0, -28.5);
-  arm(P.L[0], P.L[1], -9); arm(P.R[0], P.R[1], 9);
-  // neck, head and hair
-  ctx.fillStyle = look.skin; ctx.fillRect(-2, -41, 4, 5);
-  const hy = -46;
-  if (look.style === 1) circle(0, hy - 1, 9.5, look.hair);                                   // afro sits behind the face
-  circle(0, hy, 7, look.skin, "rgba(0,0,0,0.3)", 1);
-  if (front) {
-    ctx.fillStyle = look.hair;
-    if (look.style !== 1) { ctx.beginPath(); ctx.arc(0, hy, 7, Math.PI * 1.05, Math.PI * 1.95); ctx.fill(); }
-    ctx.fillStyle = "#1a1a1a"; circle(-2.5 + P.dir, hy + 0.5, 1.1, "#1a1a1a"); circle(2.5 + P.dir, hy + 0.5, 1.1, "#1a1a1a");
-    if (a.anim && a.anim.kind === "celebrate") { ctx.beginPath(); ctx.arc(P.dir, hy + 3, 2.4, 0, Math.PI); ctx.fill(); }
-  } else if (look.style !== 1) { circle(0, hy, 7, look.hair); }
-  if (look.style === 2) { ctx.strokeStyle = team === 0 ? "#ffffff" : "#ffd23c"; ctx.lineWidth = 2.4; ctx.beginPath(); ctx.moveTo(-7, hy - 2); ctx.lineTo(7, hy - 2); ctx.stroke(); }  // headband
-  if (look.style === 3) { ctx.strokeStyle = look.hair; ctx.lineWidth = 1.8; for (const bx of [-5, -2, 2, 5]) { ctx.beginPath(); ctx.moveTo(bx, hy + 2); ctx.lineTo(bx * 1.2, hy + 9); ctx.stroke(); } } // braids
-  ctx.restore();
+  // the body is a pixel sprite: drawn small, snapped to hard pixels with an outline, then scaled up
+  const sz = POS_SIZE[a.p.pos] || 1, g = sprCtx;
+  g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, SPR.W, SPR.H);
+  g.translate(SPR.OX, SPR.OY); g.scale(sz / PX, sz / PX);
+  if (a.stun > 0) g.rotate(Math.sin(m.elapsed * 24) * 0.18);
+  else if (P.lean) g.transform(1, 0, -P.lean / 40, 1, 0, 0);   // lean into the move
+  drawBody(g, P, a, look, team, front, a.stun > 0, !!(a.anim && a.anim.kind === "celebrate"));
+  pixelate(g);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(sprCanvas, Math.round(x - SPR.OX * PX), Math.round(y - up + P.crouch - SPR.OY * PX), SPR.W * PX, SPR.H * PX);
+  ctx.imageSmoothingEnabled = true;
 
   if (a.stun > 0) {   // ankles broken: stars spin around the head
-    for (let i = 0; i < 3; i++) { const t = m.elapsed * 6 + i * 2.1; text("✦", x + Math.cos(t) * 12, y - 58 + Math.sin(t) * 4, { size: 18, color: C.gold, center: true }); }
+    for (let i = 0; i < 3; i++) { const t = m.elapsed * 6 + i * 2.1; text("✦", x + Math.cos(t) * 12, y - 74 + Math.sin(t) * 4, { size: 18, color: C.gold, center: true }); }
   }
   if (highlight) {
-    const ty = y - up - 64;
+    const ty = y - up - 80;
     ctx.beginPath(); ctx.moveTo(x - 7, ty); ctx.lineTo(x + 7, ty); ctx.lineTo(x, ty + 9); ctx.closePath(); ctx.fillStyle = C.gold; ctx.fill();
     text(a.p.name, x, y + 16, { size: 20, center: true });
   }
   if (a.moveTag) {   // name of the dribble move pops above the player
     const k = a.moveTag.t / 0.8;
     ctx.globalAlpha = Math.min(1, k * 2);
-    text(a.moveTag.text, x, y - up - 74 - (1 - k) * 14, { size: 22, color: a.team === 0 ? C.gold : "#ffb3aa", center: true, display: true });
+    text(a.moveTag.text, x, y - up - 90 - (1 - k) * 14, { size: 22, color: a.team === 0 ? C.gold : "#ffb3aa", center: true, display: true });
     ctx.globalAlpha = 1;
   }
-  if (P.ball) return { x: x + (P.ball[0] - (P.lean || 0) * P.ball[1] / 40) * sz, y: y - up + P.crouch + P.ball[1] * sz };
+  if (P.ball) { const [bx, by] = bodyPt(P.ball); return { x: x + (bx - (P.lean || 0) * by / 40) * sz, y: y - up + P.crouch + by * sz }; }
   return null;
 }
 
@@ -3083,11 +3281,18 @@ class MysteryScreen extends Screen {
       if (top) { ctx.save(); ctx.shadowColor = rc; ctx.shadowBlur = 28; }
       rrect(250, 364, 500, 180, 14, "#262835", et ? rainbow(250, 364, 500, 180) : rc, et ? 6 : 4);
       if (top) ctx.restore();
-      text(rarity.toUpperCase(), 500, 396, { size: 44, color: et ? rainbow(380, 380, 240, 30) : rc, center: true, display: true });
+      rrect(262, 380, 116, 150, 10, "#1b1d26");
+      ctx.save(); ctx.beginPath(); ctx.roundRect(262, 380, 116, 150, 10); ctx.clip(); drawPortrait(p, 263, 394, 3.0, 0); ctx.restore();
+      text(rarity.toUpperCase(), 560, 394, { size: 40, color: et ? rainbow(440, 380, 240, 30) : rc, center: true, display: true });
       if (et) shine(250, 364, 500, 180, 14);
-      text(`#${p.number} ${p.name}  OVR ${overall(p)}`, 500, 442, { size: 34, center: true });
-      text(statLine(p), 500, 482, { size: 22, color: C.grey, center: true, weight: 500 });
-      text(attrLabel(p), 500, 512, { size: 22, color: C.grey, center: true, weight: 500 });
+      text(`#${p.number} ${p.name}  ·  ${p.pos}  ·  OVR ${overall(p)}`, 560, 432, { size: 28, center: true });
+      S.STATS.forEach((k, j) => {   // stat bars
+        const xx = 392 + (j % 3) * 120, yy = 456 + Math.floor(j / 3) * 26;
+        text(S.LABEL[k].slice(0, 3).toUpperCase(), xx, yy, { size: 18, color: C.grey });
+        rrect(xx + 34, yy + 3, 50, 8, 4, "#30323e"); rrect(xx + 34, yy + 3, 50 * p.stats[k] / 99, 8, 4, rc);
+        text(p.stats[k], xx + 112, yy, { size: 18, right: true });
+      });
+      text(attrLabel(p), 560, 516, { size: 20, color: C.grey, center: true, weight: 500 });
     }
     rrect(400, 560, 200, 52, 10, C.gold); text(`ROLL $${cost}`, 500, 586, { size: 28, color: "#1a1406", center: true, display: true }); hit(400, 560, 200, 52, () => this.roll());
     if (this.msg) text(this.msg, 500, 636, { size: 26, color: C.red, center: true });
