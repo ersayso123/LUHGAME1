@@ -198,7 +198,7 @@ class Ball {
     this.z = Math.sin(Math.PI * f) * this.peak + 20 * f;
     return f >= 1;
   }
-  setLoose(x, y, vx, vy, z = 20, delay = 0.15, vz = 0) { Object.assign(this, { state: "loose", holder: null, passer: null, receiver: null, x, y, z, vx, vy, vz, grabDelay: delay, rimmed: false }); }
+  setLoose(x, y, vx, vy, z = 20, delay = 0.15, vz = 0) { this.victim = null; Object.assign(this, { state: "loose", holder: null, passer: null, receiver: null, x, y, z, vx, vy, vz, grabDelay: delay, rimmed: false }); }
   updateLoose(dt) {
     this.grabDelay = Math.max(0, this.grabDelay - dt);
     this.x += this.vx * dt; this.y += this.vy * dt;
@@ -239,6 +239,11 @@ class Actor {
 }
 const MOVE_LABEL = { cross: "crossover", drive: "cross & drive", stepback: "step-back", sidestep: "step-back", go: "hesi-go", hesi: "hesi" };
 function toward2(a, pt) { const dx = pt[0] - a.x, dy = pt[1] - a.y, d = Math.hypot(dx, dy); return d < 4 ? [0, 0] : [dx / d * Math.min(1, d / 14), dy / d * Math.min(1, d / 14)]; }
+// dunk styles: flight time, name, how hard it shakes the place
+const DUNK_STYLES = {
+  two: { t: 0.4, name: "SLAM!", shake: 0.35 }, tomahawk: { t: 0.46, name: "TOMAHAWK!", shake: 0.45 }, windmill: { t: 0.52, name: "WINDMILL!", shake: 0.5 },
+  "360": { t: 0.58, name: "360 JAM!", shake: 0.55, slow: 0.35 }, poster: { t: 0.44, name: "POSTERIZED!", shake: 0.6, slow: 0.35 },
+};
 const blankInputs = () => ({ move: [0, 0], shootPressed: false, shootDown: false, passPressed: false, movePressed: false, switchPressed: false, sprint: false, coachAccept: false, coachIgnore: false });
 
 // Coach's calls: team tactics your teammates carry out on their own.
@@ -457,6 +462,13 @@ class Match {
     const label = c < 0.04 ? "WIDE OPEN" : c < 0.11 ? "OPEN" : c < 0.2 ? "CONTESTED" : "SMOTHERED";
     return { kind, pct, label, c };
   }
+  dunkStyle(a) {
+    const p = a.p, [dd] = this.nearestOpp(a);
+    if (dd < 34) return "poster";                                   // somebody's in the way: put him on a poster
+    const lvl = canDunk(p) ? (p.main === "dunker" ? p.mainLvl : p.secLvl) : 0;
+    const q = p.stats.speed / 99 * 0.35 + clamp(((p.ht || 79) - 74) / 13, 0, 1) * 0.25 + lvl / 5 * 0.3 + this.rng.random() * 0.25;
+    return q > 0.78 ? "360" : q > 0.62 ? "windmill" : q > 0.46 ? "tomahawk" : "two";
+  }
   // how far out you can take off for a dunk: faster, taller and lighter = farther
   dunkRadius(a) {
     const p = physOf(a.p);
@@ -665,13 +677,20 @@ class Match {
       }
     }
     const made = green || this.rng.random() < this.makeChance(a, kind, quality);
-    const dur = kind === "dunk" ? 0.28 : kind === "layup" ? 0.4 : 0.38 + d / 900;
+    let style = null;
+    if (kind === "dunk") {   // how good the dunk is decides how it looks
+      style = this.forceStyle || this.dunkStyle(a); a.dunkStyle = style;
+      const [tx, ty] = [S.HOOP[0] + (a.x - S.HOOP[0]) * 0.15, S.HOOP[1] + 26], dl = Math.max(1, dist(a.pos, [tx, ty])), lt = DUNK_STYLES[style].t * 0.7;
+      a.dash = { vx: (tx - a.x) / dl * (dl / lt), vy: (ty - a.y) / dl * (dl / lt), t: lt, T: lt, plant: false };   // lunge to the rim
+      if (style === "poster") { const [, v] = this.nearestOpp(a); if (v) { this.ball.victim = v; } }
+    }
+    const dur = kind === "dunk" ? DUNK_STYLES[style].t : kind === "layup" ? 0.4 : 0.38 + d / 900;
     this.ball.startShot(a, S.HOOP, dur, made, pts, kind === "dunk");
     this.ball.green = green; this.ball.kind = kind;
     this.ball.swish = made && (green || (kind === "jumper" && this.rng.random() < 0.45));
-    this.ball.fire = a.onFire; this.ball.trail = [];
+    this.ball.fire = a.onFire; this.ball.trail = []; this.ball.dunkStyle = style;
     this.events.push({ type: "release", green, kind, team: a.team, human: this.human && a === this.controlled, x: a.x, y: a.y });
-    a.setAnim(kind, kind === "dunk" ? 0.55 : kind === "layup" ? 0.5 : 0.5);
+    a.setAnim(kind, kind === "dunk" ? DUNK_STYLES[style].t + 0.1 : kind === "layup" ? 0.5 : 0.5);
     if (kind === "dunk") this.say(made ? `${a.p.name} throws it down!` : "Dunk rattles out!");
     else if (green && a.team === 0) this.say("GREEN!", 1.0);
     // a nearby defender contests the shot
@@ -770,10 +789,13 @@ class Match {
       this.say(`${sh.p.name} +${b.points}`);
       b.setMade(S.HOOP[0], S.HOOP[1], b.dunk ? "dunk" : b.swish ? "swish" : "rim", this.elapsed);
       this.fx.swish = b.swish ? 0.8 : 0.5; if (b.dunk) this.fx.shake = 0.45;
-      sh.setAnim("celebrate", 1.1);
+      if (b.dunk) {   // hang on the rim; a poster victim gets knocked down
+        sh.setAnim("hang", 0.5);
+        if (b.victim) { const v = b.victim, [ux, uy] = norm(v.x - S.HOOP[0], v.y - S.HOOP[1]); v.stun = 0.9; v.dash = { vx: ux * 260, vy: uy * 260, t: 0.18, T: 0.18, plant: true }; }
+      } else sh.setAnim("celebrate", 1.1);
       const wasHot = sh.onFire;
       if (b.swish) sh.streak++;
-      this.events.push({ type: "make", kind: b.kind, green: b.green, swish: b.swish, points: b.points, team: sh.team, fire: sh.onFire, newFire: sh.onFire && !wasHot, name: sh.p.name });
+      this.events.push({ type: "make", kind: b.kind, green: b.green, swish: b.swish, points: b.points, team: sh.team, fire: sh.onFire, newFire: sh.onFire && !wasHot, name: sh.p.name, style: b.dunkStyle, x: sh.x, y: sh.y });
       if (sh.team === 0) { this.nerves(b.green ? -0.25 : b.kind === "dunk" ? -0.2 : -0.12); this.dry = 0; this.possOpen = false; }
       else this.nerves(0.12);
       if (sh.onFire && !wasHot) this.say(`${sh.p.name} is ON FIRE!`, 2);
@@ -785,7 +807,7 @@ class Match {
       }
       this.offense = sh.team; this.phase = "scored"; this.phaseT = 1.0;
     } else {
-      if (sh.onFire) this.say(`${sh.p.name} cooled off`, 1.2);
+      if (sh.onFire) { this.say(`${sh.p.name} cooled off`, 1.2); this.events.push({ type: "cooled", x: sh.x, y: sh.y }); }
       sh.streak = 0;
       this.events.push({ type: "miss", team: sh.team });
       if (sh.team === 0) this.nerves(0.07);
@@ -2474,10 +2496,23 @@ function pose(m, a) {
   const swing = Math.sin(a.runPhase) * a.moveAmt;
   let lift = 0, crouch = 0, lean = 0, L = [-11, -22 + swing * 4], R = [11, -22 - swing * 4], ball = null, stance = false;
   const shoot = a.animK("shoot"), dunk = a.animK("dunk"), jump = a.animK("jump"), block = a.animK("block");
-  const pass = a.animK("pass"), cross = a.animK("cross"), reach = a.animK("reach"), cele = a.animK("celebrate");
+  const pass = a.animK("pass"), cross = a.animK("cross"), reach = a.animK("reach"), cele = a.animK("celebrate"), hang = a.animK("hang");
   const metering = holding && m.meter !== null && a === m.controlled;
   const layup = a.animK("layup");
-  if (dunk >= 0) { lift = ease(dunk); L = [-4, -62]; R = [4, -62]; }
+  if (dunk >= 0) {   // the ball rides in the hand(s) all the way to the rim
+    const st = a.dunkStyle || "two", k = dunk, up = Math.min(1, k * 2.2);
+    lift = Math.min(1, k * 2.4) * (st === "360" || st === "windmill" ? 1.2 : 1.05);
+    if (st === "tomahawk") {          // cock it back behind the head, then hammer it down
+      R = k < 0.55 ? [-dir * 7 * (k / 0.55), -60 - 10 * (k / 0.55)] : [dir * 9, -70 + 22 * (k - 0.55) / 0.45]; L = [-12, -36]; ball = [R[0], R[1] - 5, 0];
+    } else if (st === "windmill") {   // the arm goes all the way around
+      const th = -Math.PI / 2 + k * Math.PI * 2 * dir; R = [Math.cos(th) * 18, -46 + Math.sin(th) * 22]; L = [-8, -62]; ball = [R[0], R[1] - 5, 0];
+    } else if (st === "poster") {     // lean into him, two hands
+      L = [dir * 6 - 5, -66]; R = [dir * 6 + 5, -66]; lean = dir * 10; ball = [dir * 6, -71, 0];
+    } else {                          // two-hand slam (and the 360 spins around it)
+      L = [-5, -34 - 30 * up]; R = [5, -34 - 30 * up]; ball = [0, -39 - 30 * up, 0];
+    }
+  }
+  else if (hang >= 0) { lift = 1.05 - 0.6 * hang; L = [-6, -66]; R = [6, -66]; }   // hanging on the rim
   else if (layup >= 0) { lift = ease(layup) * 0.75; L = [-10, -34]; R = [dir * 6, -62]; }
   else if (shoot >= 0) { lift = ease(shoot) * 0.6; L = [-4, -56]; R = [5, -58]; }
   else if (block >= 0) { lift = ease(block) * 0.9; L = [-13, -58]; R = [13, -58]; }
@@ -2687,12 +2722,10 @@ function drawPerson(m, a, highlight) {
   const P = pose(m, a), look = a.look, team = a.team;
   const up = P.lift * 24, x = a.x, y = a.y;
   const front = a.fy > -0.2;          // facing the camera (down the screen) shows the face
-  if (a.onFire) {   // flames lick up around a player who's on fire
-    for (let i = 0; i < 7; i++) {
-      const t = m.elapsed * 7 + i * 1.7, fx = Math.sin(t * 1.3 + i) * 9, h = 18 + (Math.sin(t) * 0.5 + 0.5) * 22;
-      ctx.beginPath(); ctx.moveTo(x + fx - 5, y); ctx.quadraticCurveTo(x + fx * 1.4, y - h * 0.6, x + fx * 0.6, y - h); ctx.quadraticCurveTo(x + fx * 0.2, y - h * 0.5, x + fx + 5, y); ctx.closePath();
-      ctx.fillStyle = i % 2 ? "rgba(255,90,20,0.55)" : "rgba(255,200,40,0.5)"; ctx.fill();
-    }
+  if (a.onFire) {   // the floor burns under a player who's on fire (the flames are particles, see MatchScreen)
+    const fl = 0.75 + 0.25 * Math.sin(m.elapsed * 23 + x), g = ctx.createRadialGradient(x, y + 1, 2, x, y + 1, 30);
+    g.addColorStop(0, `rgba(255,220,120,${0.55 * fl})`); g.addColorStop(0.45, `rgba(255,110,30,${0.35 * fl})`); g.addColorStop(1, "rgba(255,60,0,0)");
+    ctx.save(); ctx.globalCompositeOperation = "lighter"; ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(x, y + 1, 30, 12, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
   }
   if (a.dash) { for (let i = 1; i <= 3; i++) ellipse(x - a.dash.vx * 0.018 * i, y - a.dash.vy * 0.018 * i + 1, 10 - i * 2, 4 - i * 0.8, `rgba(255,255,255,${0.16 - i * 0.04})`); }
   // shadow on the court
@@ -2710,7 +2743,10 @@ function drawPerson(m, a, highlight) {
   drawBody(g, P, a, look, team, front, a.stun > 0, !!(a.anim && a.anim.kind === "celebrate"));
   pixelate(g);
   ctx.imageSmoothingEnabled = false;
+  const spin = a.anim && a.anim.kind === "dunk" && a.dunkStyle === "360" ? Math.cos(a.anim.t / a.anim.dur * Math.PI * 2) : 1;   // 360: turns all the way around
+  if (spin !== 1) { ctx.save(); ctx.translate(x, 0); ctx.scale(Math.abs(spin) < 0.12 ? 0.12 * Math.sign(spin || 1) : spin, 1); ctx.translate(-x, 0); }
   ctx.drawImage(sprCanvas, Math.round(x - SPR.OX * PX), Math.round(y - up + P.crouch - SPR.OY * PX), SPR.W * PX, SPR.H * PX);
+  if (spin !== 1) ctx.restore();
   ctx.imageSmoothingEnabled = true;
 
   if (a.stun > 0) {   // ankles broken: stars spin around the head
@@ -2787,13 +2823,24 @@ function drawActors(m, controlled) {
   const order = [...m.actors].sort((p, q) => p.y - q.y);
   let held = null;
   drawRimFx(m);
-  for (const a of order) { const hb = drawPerson(m, a, controlled && a === m.controlled); if (hb) held = hb; }
+  let dunkHand = null;
+  for (const a of order) {
+    const hb = drawPerson(m, a, controlled && a === m.controlled);
+    if (hb) { if (b.state === "shot" && b.dunk && a === b.shooter) dunkHand = hb; else held = hb; }
+  }
   if (b.state === "held" && held) drawBall(held.x, b.holder.y, b.holder.y - held.y, m.elapsed);
+  else if (b.state === "shot" && b.dunk && dunkHand) drawBall(dunkHand.x, b.shooter.y, b.shooter.y - dunkHand.y, m.elapsed, 6.5, 4);
   else if (b.state === "shot") {
     const f = Math.min(1, b.t / b.dur), h = 50 * (1 - f) + Math.sin(Math.PI * f) * b.peak * 0.9;   // from the hands, up, and down into the rim
     b.trail = b.trail || []; b.trail.push([b.x, b.y - h]); if (b.trail.length > 12) b.trail.shift();
     const col = b.fire ? "255,120,30" : b.green ? "255,215,80" : "255,255,255";
-    b.trail.forEach(([tx, ty], i) => circle(tx, ty, 2 + i * (b.green || b.fire ? 0.7 : 0.35), `rgba(${col},${(i / b.trail.length) * (b.green || b.fire ? 0.55 : 0.2)})`));
+    if (b.green || b.fire) {   // a glowing comet tail
+      ctx.save(); ctx.globalCompositeOperation = "lighter"; ctx.lineCap = "round";
+      const cc = b.green ? "125,255,154" : "255,140,40";
+      for (let i = 1; i < b.trail.length; i++) { const k = i / b.trail.length; ctx.strokeStyle = `rgba(${cc},${k * 0.7})`; ctx.lineWidth = 2 + k * 11; ctx.beginPath(); ctx.moveTo(b.trail[i - 1][0], b.trail[i - 1][1]); ctx.lineTo(b.trail[i][0], b.trail[i][1]); ctx.stroke(); }
+      for (let i = 1; i < b.trail.length; i++) { const k = i / b.trail.length; ctx.strokeStyle = `rgba(255,255,255,${k * 0.6})`; ctx.lineWidth = 1 + k * 3; ctx.beginPath(); ctx.moveTo(b.trail[i - 1][0], b.trail[i - 1][1]); ctx.lineTo(b.trail[i][0], b.trail[i][1]); ctx.stroke(); }
+      ctx.restore();
+    } else b.trail.forEach(([tx, ty], i) => circle(tx, ty, 2 + i * 0.35, `rgba(${col},${(i / b.trail.length) * 0.2})`));
     if (b.green || b.fire) circle(b.x, b.y - h, 13, `rgba(${col},0.25)`);
     drawBall(b.x, b.y, h, m.elapsed, 6.5, -9);   // backspin on the way up
   }
@@ -2865,7 +2912,7 @@ class MatchScreen extends Screen {
     this.crowd = makeCrowd(this.crowdN, crew.id + ":" + this.c.fame, this.hsGym);
     this.exciteHome = 0.15; this.booT = 3;
     this.scoutWatching = crew.mode === "tourney" && (this.c.stage === "hs" || ci === HUSTLE || (ci === THRONE && this.c.tier === THRONE));
-    this.parts = []; this.pops = []; this.rings = []; this.excite = 0.15; this.shake = 0; this.flash = 0; this.freeze = null; this.lastBounce = 0;
+    this.parts = []; this.pops = []; this.rings = []; this.fxp = []; this.fx = []; this.slowmo = 0; this.vig = 0; this.white = 0; this.excite = 0.15; this.shake = 0; this.flash = 0; this.freeze = null; this.lastBounce = 0;
   }
   burst(x, y, n, colors, speed = 160, up = 60) {
     for (let i = 0; i < n; i++) { const a = Math.random() * Math.PI * 2, sp = speed * (0.4 + Math.random() * 0.8);
@@ -2884,16 +2931,37 @@ class MatchScreen extends Screen {
       if (e.type === "release" && e.human) {
         const a = m.controlled;
         this.freeze = { t: 0.5, green: e.green };
-        if (e.green) { Sound.green(); this.flash = 0.35; this.shake = Math.max(this.shake, 0.12); this.pop("GREEN!", a.x, a.y - 100, C.green, 54, 1.0); this.burst(a.x, a.y - 60, 16, ["#7dff9a", "#e8ffe9", C.gold], 140, 40); }
+        if (e.green) {   // green release: light beam, floor shockwave, green sparks, glowing edges, PERFECT on the meter
+          Sound.green(); this.vig = 0.55; this.shake = Math.max(this.shake, 0.12);
+          this.fx.push({ type: "beam", x: a.x, y: a.y, t: 0, dur: 0.75 }, { type: "shock", x: a.x, y: a.y + 1, t: 0, dur: 0.55, R: 80, col: "125,255,154" }, { type: "shock", x: a.x, y: a.y + 1, t: -0.12, dur: 0.55, R: 54, col: "230,255,235" });
+          this.sparks(a.x, a.y - 50, 30, "125,255,154", 210, 0.8, "star");
+          this.fx.push({ type: "stamp", text: "PERFECT", x: a.x + 44, y: a.y - 84, t: 0, dur: 0.75, size: 24, col: "#7dff9a" });
+        }
       } else if (e.type === "make") {
         const mine = e.team === 0;
         this.rings.push({ t: 0, col: e.green ? "245,200,60" : e.kind === "dunk" ? "235,130,40" : "255,255,255" });
-        if (e.green) this.rings.push({ t: -0.12, col: "125,255,154" });
-        if (e.kind === "dunk") { Sound.dunk(); this.shake = Math.max(this.shake, 0.4); this.burst(hx, hy, 30, [C.orange, C.gold, "#fff"], 260, 30); this.pop("SLAM!", hx, hy + 40, C.orange, 60); }
-        else if (e.swish) { Sound.swish(); this.burst(hx, hy + 6, e.green ? 28 : 16, e.green ? [C.gold, "#fff5c4", "#7dff9a"] : ["#ffffff", "#cfe3ff"], e.green ? 220 : 150, 20); this.pop(e.green ? "SPLASH!" : "SWISH", hx, hy + 44, e.green ? C.gold : C.white, e.green ? 52 : 40); }
+        if (e.green) {   // GREEN: rings, a fountain of sparks from the rim, a big glowing stamp, a beat of slow motion
+          this.rings.push({ t: -0.12, col: "125,255,154" }, { t: -0.24, col: "230,255,235" });
+          this.sparks(hx, hy, 46, "125,255,154", 260, 1.0, "star", -160); this.sparks(hx, hy, 20, "255,230,140", 200, 0.8, "spark", -120);
+          this.fx.push({ type: "stamp", text: "GREEN!", x: hx, y: hy + 74, t: 0, dur: 1.15, size: 64, col: "#7dff9a" });
+          this.vig = Math.max(this.vig, 0.6); this.slowmo = Math.max(this.slowmo, 0.22);
+        }
+        if (e.kind === "dunk") {   // the dunk: shake by style, shockwaves, dust, sparks, a stamp (and slow motion + flash for the big ones)
+          const D = DUNK_STYLES[e.style] || DUNK_STYLES.two;
+          Sound.dunk(); this.shake = Math.max(this.shake, D.shake); m.fx.shake = Math.max(m.fx.shake, 0.3 + D.shake * 0.5);
+          this.fx.push({ type: "shock", x: hx, y: hy + 6, t: 0, dur: 0.5, R: 90, col: "255,160,60" }, { type: "shock", x: hx, y: hy + 6, t: -0.1, dur: 0.5, R: 60, col: "255,240,200" });
+          this.sparks(hx, hy, 34, "255,170,60", 280, 0.7, "spark", -60); this.sparks(hx, hy + 44, 18, "160,150,140", 70, 0.9, "smoke", -20);
+          this.fx.push({ type: "stamp", text: D.name, x: hx, y: hy + 78, t: 0, dur: 1.2, size: e.style === "two" ? 58 : 52, col: e.style === "poster" ? "#ff5a4e" : "#ffb347" });
+          if (D.slow) { this.slowmo = Math.max(this.slowmo, D.slow); this.white = 0.3; }
+        }
+        else if (e.swish) { Sound.swish(); this.burst(hx, hy + 6, e.green ? 28 : 16, e.green ? [C.gold, "#fff5c4", "#7dff9a"] : ["#ffffff", "#cfe3ff"], e.green ? 220 : 150, 20); if (!e.green) this.pop("SWISH", hx, hy + 44, C.white, 40); }
         else { Sound.rimIn(); this.burst(hx, hy, 10, [C.orange, "#fff"], 120, 10); }
-        this.pop(`+${e.points}`, hx + 50, hy + 10, mine ? C.team[0] : C.team[1], 46, 0.9);
-        if (e.newFire) { Sound.fire(); this.pop("ON FIRE!", 500, 330, "#ff7a1a", 70, 1.6); this.shake = Math.max(this.shake, 0.3); }
+        this.pop(`+${e.points}`, hx + 96, hy + 6, mine ? C.team[0] : C.team[1], 46, 0.9);
+        if (e.newFire) {   // ignition: a flame explosion and a burning stamp
+          Sound.fire(); this.shake = Math.max(this.shake, 0.32);
+          this.flames(e.x, e.y, 70, 50, 60, 1.6); for (let i = 0; i < 24; i++) this.spawn("ember", e.x + (Math.random() - 0.5) * 40, e.y - Math.random() * 50, { vx: (Math.random() - 0.5) * 120, vy: -120 - Math.random() * 160, life: 1.2, max: 1.2, r: 1.6 });
+          this.fx.push({ type: "stamp", text: "ON FIRE!", x: 500, y: 330, t: 0, dur: 1.6, size: 76, col: "#ff8a1a", fire: true });
+        } else if (e.fire) this.flames(hx, hy + 8, 18, 22, 10, 0.8);
         const big = e.kind === "dunk" || e.green || e.newFire || e.points === 2;
         if (mine) { this.excite = Math.min(1.4, this.excite + (big ? 1.2 : 0.7)); Sound.cheer(this.hsGym ? crowd / 2 : crowd, big); if (this.hsGym) Sound.boo(0.4); }
         else if (this.hsGym) { this.exciteHome = Math.min(1.5, this.exciteHome + 1.2); Sound.cheer(crowd, true); this.shake = Math.max(this.shake, 0.25); }
@@ -2904,6 +2972,7 @@ class MatchScreen extends Screen {
       else if (e.type === "ankles") { Sound.ankles(); this.shake = Math.max(this.shake, 0.22); this.pop("ANKLES!", e.x, e.y - 70, C.gold, 40, 0.9); this.burst(e.x, e.y, 10, [C.gold, "#fff"], 90, 60); if (e.team === 0) { this.excite = Math.min(1.4, this.excite + 0.8); Sound.cheer(crowd, false); } }
       else if (e.type === "block") { Sound.clank(); this.shake = Math.max(this.shake, 0.2); this.pop("REJECTED!", e.x, e.y - 90, C.red, 44); }
       else if (e.type === "steal") { Sound.steal(); }
+      else if (e.type === "cooled") { for (let i = 0; i < 18; i++) this.spawn("smoke", e.x + (Math.random() - 0.5) * 24, e.y - 20 - Math.random() * 30, { vx: (Math.random() - 0.5) * 30, vy: -30 - Math.random() * 40, life: 1.2, max: 1.2, r: 5 + Math.random() * 4 }); this.pop("COOLED OFF", e.x, e.y - 84, "#b8bcc8", 28, 1.0); }
       else if (e.type === "half") { Sound.cheer(Math.max(20, this.crowdN), true); }
       else if (e.type === "move") {
         if (e.human || e.team === 0) Sound.whoosh(e.kind === "stepback" || e.kind === "sidestep");
@@ -2912,6 +2981,79 @@ class MatchScreen extends Screen {
       }
     }
     m.events.length = 0;
+  }
+  // ---- effects: particles (flame, ember, spark, star, smoke) and one-shot effects (beam, shock, stamp)
+  spawn(kind, x, y, o = {}) { if (this.fxp.length < 480) this.fxp.push({ kind, x, y, vx: 0, vy: 0, life: 0.5, max: 0.5, r: 4, g: 0, ...o }); }
+  flames(x, y, n, spread = 14, height = 40, power = 1) {
+    for (let i = 0; i < n; i++) { const l = 0.3 + Math.random() * 0.32; this.spawn("flame", x + (Math.random() - 0.5) * spread, y - Math.random() * height, { vx: (Math.random() - 0.5) * 36 * power, vy: -(70 + Math.random() * 80) * power, life: l, max: l, r: (3.5 + Math.random() * 4) * Math.sqrt(power) }); }
+  }
+  sparks(x, y, n, col, speed = 180, life = 0.7, kind = "spark", lift = 0) {
+    for (let i = 0; i < n; i++) { const an = Math.random() * Math.PI * 2, v = speed * (0.35 + Math.random() * 0.65), l = life * (0.6 + Math.random() * 0.4); this.spawn(kind, x, y, { vx: Math.cos(an) * v, vy: Math.sin(an) * v * 0.7 + lift, life: l, max: l, r: kind === "smoke" ? 5 + Math.random() * 5 : 1.5 + Math.random() * 2.4, col, g: kind === "smoke" ? -10 : 320 }); }
+  }
+  stepFx(dt) {
+    const m = this.match, b = m.ball;
+    for (const a of m.actors) if (a.onFire) {
+      for (let i = 0; i < 3; i++) { const side = Math.random() < 0.5 ? -1 : 1, l = 0.28 + Math.random() * 0.3; this.spawn("flame", a.x + side * (9 + Math.random() * 9), a.y - Math.random() * 40, { vx: side * 8 + (Math.random() - 0.5) * 20, vy: -(60 + Math.random() * 70), life: l, max: l, r: 3 + Math.random() * 3.5, body: true }); }
+      if (Math.random() < 0.45) this.spawn("ember", a.x + (Math.random() - 0.5) * 20, a.y - 30 - Math.random() * 20, { vx: (Math.random() - 0.5) * 30, vy: -90 - Math.random() * 90, life: 1, max: 1, r: 1.4 });
+    }
+    if (b.state === "shot" && !b.dunk) {   // fire and green trails on the ball
+      const f = Math.min(1, b.t / b.dur), h = 50 * (1 - f) + Math.sin(Math.PI * f) * b.peak * 0.9, bx = b.x, by = b.y - h;
+      if (b.fire) { this.flames(bx, by + 6, 4, 8, 6, 0.7); if (Math.random() < 0.6) this.spawn("ember", bx, by, { vx: (Math.random() - 0.5) * 50, vy: -30 - Math.random() * 60, life: 0.7, max: 0.7, r: 1.4 }); }
+      if (b.green) { this.spawn("star", bx + (Math.random() - 0.5) * 10, by + (Math.random() - 0.5) * 10, { vx: (Math.random() - 0.5) * 60, vy: (Math.random() - 0.5) * 60, life: 0.5, max: 0.5, r: 2 + Math.random() * 2, col: "125,255,154" }); }
+    }
+    for (const q of this.fxp) {
+      q.life -= dt;
+      if (q.kind === "flame") { q.vx *= 1 - 3 * dt; q.vy *= 1 - 1.2 * dt; q.x += (q.vx + Math.sin(q.life * 24 + q.y) * 18) * dt; q.y += q.vy * dt; }
+      else if (q.kind === "ember") { q.vy += 30 * dt; q.x += (q.vx + Math.sin(q.life * 9) * 25) * dt; q.y += q.vy * dt; }
+      else if (q.kind === "smoke") { q.vx *= 1 - 1.5 * dt; q.vy *= 1 - 1.2 * dt; q.x += q.vx * dt; q.y += q.vy * dt; q.r += 9 * dt; }
+      else { q.vx *= 1 - 1.6 * dt; q.vy += q.g * dt; q.x += q.vx * dt; q.y += q.vy * dt; }
+    }
+    this.fxp = this.fxp.filter(q => q.life > 0);
+    for (const e of this.fx) e.t += dt;
+    this.fx = this.fx.filter(e => e.t < e.dur);
+    this.vig = Math.max(0, this.vig - dt * 0.9); this.white = Math.max(0, this.white - dt);
+  }
+  drawFloorFx() {   // under the players: shockwaves on the court
+    for (const e of this.fx) if (e.type === "shock" && e.t > 0) {
+      const k = e.t / e.dur; ellipse(e.x, e.y, 8 + k * e.R, (8 + k * e.R) * 0.45, null, `rgba(${e.col},${(1 - k) * 0.9})`, 4 * (1 - k) + 1);
+    }
+  }
+  drawTopFx() {     // over the players: beams, particles, stamps
+    ctx.save(); ctx.globalCompositeOperation = "lighter";
+    for (const e of this.fx) if (e.type === "beam") {   // the green light column
+      const k = e.t / e.dur, w = 30 * (1 - k * 0.6), g = ctx.createLinearGradient(0, e.y, 0, e.y - 190);
+      g.addColorStop(0, `rgba(125,255,154,${0.55 * (1 - k)})`); g.addColorStop(0.5, `rgba(180,255,200,${0.3 * (1 - k)})`); g.addColorStop(1, "rgba(125,255,154,0)");
+      ctx.fillStyle = g; ctx.fillRect(e.x - w / 2, e.y - 190, w, 190);
+      ctx.fillStyle = `rgba(255,255,255,${0.35 * (1 - k)})`; ctx.fillRect(e.x - w / 6, e.y - 190, w / 3, 190);
+    }
+    for (const q of this.fxp) {
+      const t = 1 - q.life / q.max;
+      if (q.kind === "flame") {   // white-hot core -> orange -> deep red
+        const c = t < 0.22 ? (q.body ? "255,205,110" : "255,244,200") : t < 0.5 ? "255,150,40" : "225,65,20", rr = q.r * (1.15 - t * 0.6);
+        const g = ctx.createRadialGradient(q.x, q.y, 0, q.x, q.y, rr * 2);
+        g.addColorStop(0, `rgba(${c},${(q.body ? 0.55 : 0.85) * (1 - t)})`); g.addColorStop(1, `rgba(${c},0)`);
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(q.x, q.y, rr * 2, 0, Math.PI * 2); ctx.fill();
+      } else if (q.kind === "ember") { circle(q.x, q.y, q.r, `rgba(255,${200 - t * 120},${90 - t * 60},${1 - t})`); }
+      else if (q.kind === "spark") { circle(q.x, q.y, q.r * (1 - t * 0.5), `rgba(${q.col},${1 - t})`); circle(q.x, q.y, q.r * 0.45, `rgba(255,255,255,${1 - t})`); }
+      else if (q.kind === "star") {   // a four-point twinkle
+        const r = q.r * (1.3 - t * 0.6), al = 1 - t; ctx.strokeStyle = `rgba(${q.col},${al})`; ctx.lineWidth = 1.6;
+        ctx.beginPath(); ctx.moveTo(q.x - r * 2, q.y); ctx.lineTo(q.x + r * 2, q.y); ctx.moveTo(q.x, q.y - r * 2); ctx.lineTo(q.x, q.y + r * 2); ctx.stroke();
+        circle(q.x, q.y, r * 0.6, `rgba(255,255,255,${al})`);
+      }
+    }
+    ctx.restore();
+    for (const q of this.fxp) if (q.kind === "smoke") { const t = 1 - q.life / q.max; circle(q.x, q.y, q.r, `rgba(120,120,130,${0.3 * (1 - t)})`); }
+    for (const e of this.fx) if (e.type === "stamp" && e.t > 0) {   // glowing text that slams in and settles
+      const k = e.t / e.dur, sc = 1 + 0.7 * Math.exp(-e.t * 12) * Math.cos(e.t * 26), al = k > 0.7 ? (1 - k) / 0.3 : 1;
+      const px = Math.round(e.size * 0.72);
+      ctx.save(); ctx.globalAlpha = al; ctx.translate(e.x, e.y - k * 14); ctx.scale(sc, sc);
+      ctx.font = `700 ${px}px ${FONT_DISPLAY}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.lineWidth = 7; ctx.lineJoin = "round"; ctx.strokeStyle = "rgba(10,10,14,0.75)"; ctx.strokeText(e.text, 0, 0);
+      ctx.shadowColor = e.col; ctx.shadowBlur = 24;
+      if (e.fire) { const g = ctx.createLinearGradient(0, -px / 2, 0, px / 2); const fl = Math.sin(this.match.elapsed * 30) * 0.08; g.addColorStop(0, "#fff3b0"); g.addColorStop(0.45 + fl, "#ffae2a"); g.addColorStop(1, "#ff3d1a"); ctx.fillStyle = g; }
+      else ctx.fillStyle = e.col;
+      ctx.fillText(e.text, 0, 0); ctx.shadowBlur = 0; ctx.fillStyle = "rgba(255,255,255,0.35)"; ctx.fillText(e.text, 0, -2); ctx.restore();
+    }
   }
   finish(forfeit = false) {
     if (this.match.benched) this.match.unbench(true);   // the result is about you, not your sub
@@ -2929,9 +3071,11 @@ class MatchScreen extends Screen {
     const my = ((ks.has("s") || ks.has("arrowdown") || t.down) ? 1 : 0) - ((ks.has("w") || ks.has("arrowup") || t.up) ? 1 : 0);
     const inp = App.edges; inp.move = [mx, my]; inp.shootDown = ks.has(" ") || t.shoot;
     inp.sprint = ks.has("shift") || t.sprint;
-    this.match.update(Math.min(dt, 1 / 30), inp);
+    const sdt = this.slowmo > 0 ? dt * 0.3 : dt; this.slowmo = Math.max(0, this.slowmo - dt);   // a beat of slow motion on the big moments
+    this.match.update(Math.min(sdt, 1 / 30), inp);
     App.edges = blankInputs();
     this.handleEvents();
+    this.stepFx(dt);
     // dribble sound for the ball you're holding
     const m = this.match, b = m.ball;
     if (b.state === "held" && b.holder === m.controlled && m.phase === "live" && m.meter === null) {
@@ -3010,7 +3154,9 @@ class MatchScreen extends Screen {
       ctx.restore();
       if (inside && !can && !a.sprinting) text("SPRINT TO DUNK", S.HOOP[0], S.HOOP[1] + r + 12, { size: 16, color: "#ffcf8a", center: true, display: true });
     }
+    this.drawFloorFx();
     drawActors(m, true);
+    this.drawTopFx();
     for (const t of m.team(0)) if (t.calledOpen && m.coach && !m.coach.used && m.ball.state === "held" && m.ball.holder !== t) {   // who the coach wants you to hit
       const bob = Math.sin(m.elapsed * 8) * 3;
       text("OPEN ▼", t.x, t.y - 80 + bob, { size: 20, color: C.gold, center: true, display: true });
@@ -3043,7 +3189,11 @@ class MatchScreen extends Screen {
       ctx.globalAlpha = 1;
     }
     ctx.restore();
-    if (this.flash > 0) { ctx.fillStyle = `rgba(125,255,154,${this.flash * 0.35})`; ctx.fillRect(0, 0, S.W, S.H); }
+    if (this.vig > 0) {   // green glow around the edges of the screen
+      const g = ctx.createRadialGradient(500, 350, 230, 500, 350, 640); g.addColorStop(0, "rgba(90,255,140,0)"); g.addColorStop(1, `rgba(90,255,140,${this.vig * 0.55})`);
+      ctx.fillStyle = g; ctx.fillRect(0, 0, S.W, S.H);
+    }
+    if (this.white > 0) { ctx.fillStyle = `rgba(255,255,255,${this.white * 0.8})`; ctx.fillRect(0, 0, S.W, S.H); }
     if (m.pressureOn) this.drawPressure(m);
     this.drawCoach(m);
     ctx.fillStyle = "#0f0f14"; ctx.fillRect(0, 0, S.W, 44);
