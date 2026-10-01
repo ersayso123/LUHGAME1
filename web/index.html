@@ -241,6 +241,9 @@ const PLAYS = [
   { id: "screen", side: "off", name: "Set a screen", desc: "Your big steps up to screen your defender. Run them into it." },
   { id: "spread", side: "off", name: "Spread the floor", desc: "Teammates fill the corners and wings. Attack the open lane." },
   { id: "crash", side: "off", name: "Crash the boards", desc: "Everyone hits the glass when you shoot." },
+  // help calls: the coach only makes these when your offense is stuck
+  { id: "cut", side: "off", help: true, name: "Cut to the rim", desc: "Teammate cuts to the rim. Pass it (J)!" },
+  { id: "getopen", side: "off", help: true, name: "Get open", desc: "Teammates find space. Hit the open man (J)." },
   { id: "boxout", side: "def", name: "Box out", desc: "Seal your man on every shot. Win the rebound." },
   { id: "lockdown", side: "def", name: "Lock down", desc: "Get up in their jerseys. Tight D, active hands." },
 ];
@@ -344,7 +347,10 @@ class Match {
     if (this.phase !== "live") return;
     b = this.ball;
     if (this.needsClear && b.state === "held" && b.holder.team === this.offense && beyondArc(b.holder.pos, 5)) { this.needsClear = false; this.say("Cleared", 0.8); }
-    if (this.human && b.state === "held" && b.holder.team === 0) this.controlled = b.holder;
+    if (this.human && b.state === "held" && b.holder.team === 0) {
+      this.controlled = b.holder;
+      if (!this.needsClear && !this.poss.helped && (b.holder.holdT > 3.5 || this.shotClock < 4)) this.callHelp("Stuck.");
+    }
   }
   moveActor(a, move, dt) {
     let [mx, my] = move; const mag = Math.hypot(mx, my);
@@ -486,13 +492,32 @@ class Match {
   // ---- coach calls (the team carries them out on its own)
   callPlay(side) {
     if (!this.human || !this.coachEnabled || this.coachCool > 0 || this.rng.random() > 0.5) return;
-    const play = this.rng.choice(PLAYS.filter(p => p.side === side));
+    const play = this.rng.choice(PLAYS.filter(p => p.side === side && !p.help));
     this.coach = { play, state: "active", t: 2.6, used: false };
     this.say(`Coach: "${play.name}!"`, 1.8);
   }
-  startPossession() { this.poss = { passes: 0 }; this.coach = null; this.callPlay("off"); }
+  startPossession() {
+    this.poss = { passes: 0, helped: false }; this.coach = null; this.possOpen = true;
+    if ((this.dry || 0) >= 2) this.callHelp("Nothing's falling."); else this.callPlay("off");
+  }
   endPossession() { if (this.coach) { this.coach = null; this.coachCool = 5; } }
-  startDefense() { this.coach = null; this.callPlay("def"); }
+  startDefense() {
+    if (this.possOpen) { this.dry = (this.dry || 0) + 1; this.possOpen = false; }   // your trip ended without a bucket
+    this.coach = null; this.callPlay("def");
+  }
+  // when your offense is stuck, the coach gets your teammates moving: a hard cut, or everybody gets open
+  callHelp(why) {
+    if (!this.human || !this.coachEnabled || this.poss.helped) return;
+    this.poss.helped = true;
+    const id = this.rng.random() < 0.5 ? "cut" : "getopen", play = PLAYS.find(p => p.id === id);
+    this.coach = { play, state: "active", t: 2.6, used: false };
+    this.say(`Coach: "${play.name}!"`, 1.8);
+    if (play.id === "cut") {   // the cutter explodes to the rim
+      const h = this.ball.holder, mates = this.team(0).filter(t => t !== h);
+      const cutter = mates.reduce((p, q) => this.openness(q) > this.openness(p) ? q : p);
+      this.coach.cutter = cutter; cutter.burst = 1.4; cutter.spot = null;
+    }
+  }
   // a call that pays off calms your nerves and the scout notices
   callPaid(text) { this.box.plays++; this.nerves(-0.12); this.say(text, 1.2); this.events.push({ type: "play", ok: true, text }); }
   // screens: your defender runs into the screener and gets hung up
@@ -655,7 +680,11 @@ class Match {
           if (this.rng.random() < clamp(ch, 0.02, 0.7)) { if (b.passer === this.mainGuy) this.box.to++; if (b.passer.team === 0) this.nerves(0.15); b.setHeld(dfd); this.turnover(dfd.team); this.say(`Picked off by ${dfd.p.name}!`); return; }
         }
       }
-      if (dist([b.x, b.y], b.receiver.pos) < 16) b.setHeld(b.receiver);
+      if (dist([b.x, b.y], b.receiver.pos) < 16) {
+        const rcv = b.receiver; b.setHeld(rcv);
+        const c = this.coach;
+        if (c && !c.used && rcv.team === 0 && (c.play.id === "getopen" || (c.play.id === "cut" && rcv === c.cutter))) { c.used = true; this.callPaid(c.play.id === "cut" ? "Great cut! Finish it!" : "Found the open man!"); }
+      }
     } else if (b.state === "shot") { if (b.updateShot(dt)) this.resolveShot(); }
     else if (b.state === "loose") { b.updateLoose(dt); if (b.grabDelay <= 0 && b.z < 32) this.tryGrab(); }
   }
@@ -671,7 +700,7 @@ class Match {
       const wasHot = sh.onFire;
       if (b.swish) sh.streak++;
       this.events.push({ type: "make", kind: b.kind, green: b.green, swish: b.swish, points: b.points, team: sh.team, fire: sh.onFire, newFire: sh.onFire && !wasHot, name: sh.p.name });
-      if (sh.team === 0) this.nerves(b.green ? -0.25 : b.kind === "dunk" ? -0.2 : -0.12);
+      if (sh.team === 0) { this.nerves(b.green ? -0.25 : b.kind === "dunk" ? -0.2 : -0.12); this.dry = 0; this.possOpen = false; }
       else this.nerves(0.12);
       if (sh.onFire && !wasHot) this.say(`${sh.p.name} is ON FIRE!`, 2);
       if (this.score[sh.team] >= this.gameTo) { this.phase = "over"; this.winner = sh.team; return; }
@@ -791,6 +820,7 @@ const AI = (() => {
   }
   function offBall(m, a, dt) {
     const c = m.coach, b = m.ball;
+    a.calledOpen = false;
     if (c && a.team === 0 && !m.needsClear && b.state === "held" && b.holder.team === 0) {
       if (c.play.id === "screen" && !c.used) {                          // the screener: your big (or closest teammate)
         const mates = m.team(0).filter(t => t !== b.holder);
@@ -803,6 +833,19 @@ const AI = (() => {
       }
       if (c.play.id === "screen" && c.used && (a.p.pos === "C" || a.p.pos === "PF")) return I({ move: toward(a, [S.HOOP[0], S.HOOP[1] + 60]) });   // roll to the rim
       if (c.play.id === "spread") { if (!a.spot || !beyondArc(a.spot)) { a.spot = m.rng.choice(DEEP); a.spotT = 4; } }
+      if (c.play.id === "cut" && !c.used && a === c.cutter) {   // hard cut to the rim, away from the ball side
+        a.calledOpen = true;
+        return I({ move: toward(a, [S.HOOP[0] + (a.x < S.HOOP[0] ? -26 : 26), S.HOOP[1] + 48], 4) });
+      }
+      if (c.play.id === "getopen" && !c.used) {   // find the spot farthest from any defender
+        a.calledOpen = true; a.spotT -= dt;
+        if (!a.spot || a.spotT <= 0) {
+          const opts = [...OFF, ...DEEP].filter(sp => dist(sp, b.holder.pos) > 110);
+          const score = sp => Math.min(...m.team(1).map(d => dist(d.pos, sp))) - 0.15 * dist(a.pos, sp);
+          a.spot = opts.reduce((p, q) => score(q) > score(p) ? q : p); a.spotT = 0.8;
+        }
+        return I({ move: toward(a, a.spot, 6) });
+      }
     }
     a.spotT -= dt;
     if (!a.spot || a.spotT <= 0) {
@@ -2078,7 +2121,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 33 (no defensive reads)");
+    this.footer("Progress saves automatically in this browser  ·  version 34 (coach help calls)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -2845,6 +2888,10 @@ class MatchScreen extends Screen {
       ctx.save(); ctx.setLineDash([5, 4]); ellipse(m.lockMan.x, m.lockMan.y + 1, 18, 8, null, `rgba(255,90,80,${0.6 + 0.3 * Math.sin(m.elapsed * 6)})`, 2.2); ctx.restore();
     }
     drawActors(m, true);
+    for (const t of m.team(0)) if (t.calledOpen && m.coach && !m.coach.used && m.ball.state === "held" && m.ball.holder !== t) {   // who the coach wants you to hit
+      const bob = Math.sin(m.elapsed * 8) * 3;
+      text("OPEN ▼", t.x, t.y - 80 + bob, { size: 20, color: C.gold, center: true, display: true });
+    }
     for (const q of this.parts) circle(q.x, q.y, q.r * Math.max(0.3, q.life / q.max), q.col);
     for (const q of this.rings) if (q.t > 0) { const k = q.t / 0.5; ellipse(S.HOOP[0], S.HOOP[1], 11 + k * 46, 7 + k * 26, null, `rgba(${q.col},${1 - k})`, 3 * (1 - k) + 1); }
     // shot meter: fills while you hold, then freezes for a moment where you let go
