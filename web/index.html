@@ -1872,7 +1872,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 26 (tougher player odds)");
+    this.footer("Progress saves automatically in this browser  ·  version 27 (classic bodies)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -2170,13 +2170,12 @@ function makeLook(p) {
   if (rng.random() < 0.16 && style !== "afro" && style !== "hightop") look.band = rng.random() < 0.5 ? "team" : rng.choice(["#f2f2f2", "#141414", "#e04a3a"]);
   if (rng.random() < 0.14) look.sleeve = rng.random() < 0.5 ? "L" : "R";
   if (rng.random() < 0.3) look.wrist = rng.choice(["#f2f2f2", "#141414", "#f5c83c", "team"]);
-  look.build = makeBuild(rng, p.pos);
   return look;
 }
 
 // ---- pixel sprites: each player is drawn small into a scratch canvas, snapped to hard pixels with a dark
 // outline, then blown up. PX = screen pixels per sprite pixel.
-const PX = 2, SPR = { W: 40, H: 58, OX: 20, OY: 52 };   // sprite canvas size and where the feet go (sprite pixels)
+const PX = 2, SPR = { W: 36, H: 48, OX: 18, OY: 42 };   // sprite canvas size and where the feet go (sprite pixels)
 const sprCanvas = document.createElement("canvas"); sprCanvas.width = SPR.W; sprCanvas.height = SPR.H;
 const sprCtx = sprCanvas.getContext("2d", { willReadFrequently: true });
 const DIGITS = ["111101101101111", "010110010010111", "111001111100111", "111001111001111", "101101111001001", "111100111001111", "111100111101111", "111001010010010", "111101111101111", "111101111001111"];
@@ -2195,157 +2194,101 @@ function pixelate(g, W = SPR.W, H = SPR.H) {
   }
   g.putImageData(img, 0, 0);
 }
-// pose() was laid out for a short cartoon body; NBA bodies have long arms and a high shoulder line.
-// Map a pose point (hands, ball) onto the taller body: below the old shoulder stretch it, above it keep the reach.
-function bodyPt(pt) {
-  const [x, y] = pt;
-  const ny = y <= -34 ? -45 + (y + 34) * 1.05        // overhead: keep the reach
-    : y <= -18 ? -45 + (y + 34) * 2                  // at the side: long arms hang to mid-thigh
-    : y * 13 / 18;                                    // dribble height down to the floor
-  return [x * 1.1, ny];
-}
-// Body types by position, with every player a little different (lean guards, long wings, thick bigs)
-const BUILDS = {
-  PG: { sh: [9.4, 10.6], lt: [3.8, 4.4] }, SG: { sh: [9.8, 11.0], lt: [4.0, 4.6] }, SF: { sh: [10.4, 11.6], lt: [4.3, 5.0] },
-  PF: { sh: [11.0, 12.4], lt: [4.8, 5.6] }, C: { sh: [11.6, 13.2], lt: [5.2, 6.2] },
-};
-function makeBuild(rng, pos) {
-  const B = BUILDS[pos] || BUILDS.SF, t = rng.random(), u = rng.random();
-  return { sh: B.sh[0] + (B.sh[1] - B.sh[0]) * t, lt: B.lt[0] + (B.lt[1] - B.lt[0]) * (0.6 * t + 0.4 * u), waist: 0.56 + 0.08 * u };   // narrow hips: athletes are V-shaped
-}
-// The body, NBA proportions: feet at 0, knees -15, hips -29, shoulders -45, head centre -55 (about 1/8 of the height)
+// The body, in the same units as pose() (feet at 0,0, head around y = -46)
 function drawBody(g, P, a, look, team, front, stunned, celebrate) {
-  const skin = look.skin, dark = shade(skin, 0.78), lite = shade(skin, 1.18), bd = look.build || { sh: 10.8, lt: 4.6, waist: 0.6 };
-  const seg = (x1, y1, x2, y2, col, w) => { g.strokeStyle = col; g.lineWidth = w; g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke(); };
+  const skin = look.skin, dark = shade(skin, 0.8);
+  const line = (pts, col, w) => { g.strokeStyle = col; g.lineWidth = w; g.beginPath(); g.moveTo(pts[0], pts[1]); g.quadraticCurveTo(pts[2], pts[3], pts[4], pts[5]); g.stroke(); };
   const dot = (x, y, r, col) => { g.fillStyle = col; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); };
   const box = (x, y, w, h, col) => { g.fillStyle = col; g.fillRect(x, y, w, h); };
-  const poly = (pts, col) => { g.fillStyle = col; g.beginPath(); g.moveTo(pts[0], pts[1]); for (let i = 2; i < pts.length; i += 2) g.lineTo(pts[i], pts[i + 1]); g.closePath(); g.fill(); };
   const teamCol = C.team[team], trim = TEAM_TRIM[team], tcol = c => c === "team" ? teamCol : c;
-  const ink = (x1, y1, x2, y2, col, w) => { g.setLineDash([2, 1.5]); seg(x1, y1, x2, y2, col, w); g.setLineDash([]); };
   g.lineCap = "round"; g.lineJoin = "round";
-  const L = bodyPt(P.L), R = bodyPt(P.R), sh = bd.sh, lt = bd.lt, hipW = sh * bd.waist;
-  // ---- legs: thigh (mostly under the shorts), knee, calf, crew socks, high-tops
-  const spread = P.stance ? 10.5 : 6.5, air = P.lift > 0.05;
+  // legs, socks and shoes
+  const spread = P.stance ? 9 : 5, air = P.lift > 0.05;
   for (const side of [-1, 1]) {
-    const step = air ? 0 : side * P.swing * 7;
-    const fx = side * spread + P.dir * step, fy = air ? -5 : -Math.max(0, side * P.swing) * 5;
-    const hx = side * (hipW - 2), hy = -29.5 + P.crouch * 0.6;
-    const kx = (hx + fx) / 2 + side * 1.5 + P.dir * step * 0.2, ky = air ? -16.5 : -14.5 + P.crouch * 0.4 + fy * 0.3;
-    const col = side < 0 ? dark : skin;
-    seg(hx, hy, kx, ky, col, lt + 1.2);                                     // thigh
-    seg(kx - side * 0.4, ky - 1, kx, ky + 1, shade(skin, side < 0 ? 0.68 : 0.88), lt * 0.55);   // knee
-    seg(kx, ky, fx, fy - 6, col, lt + 0.6);                                  // calf
-    seg(kx + side * 0.6, ky + 3, (kx + fx) / 2 + side * 1.2, ky + 6.5, col, lt + 1.6);   // calf muscle
-    if (side > 0) seg(kx + 1, ky + 1, (kx + fx) / 2 + 1.6, (ky + fy) / 2, lite, 1.2);     // light on the shin
+    const step = air ? 0 : side * P.swing * 6;
+    const fx = side * spread + P.dir * step, fy = air ? -4 : -Math.max(0, side * P.swing) * 4;
+    const leg = [side * 4, -17 + P.crouch * 0.5, side * (spread + 1) + P.dir * step * 0.5, -9, fx, fy - 3];
+    line(leg, side < 0 ? dark : skin, 5.5);
     const tat = look.tats[side < 0 ? "legL" : "legR"];
-    if (tat) ink(kx, ky + 2, (kx + fx) / 2, (ky + fy - 6) / 2 + 1, tat, 2.4);
-    box(fx - lt / 2 - 0.6, fy - 9, lt + 1.2, 4, "#f2f2f2");                // crew socks
-    // high-top sneaker: ankle collar, toe box, white sole
-    g.fillStyle = look.shoe; g.beginPath(); g.roundRect(fx - 3.4, fy - 6, 6.8, 5, 1.5); g.fill();
-    g.beginPath(); g.ellipse(fx + P.dir * 2.4, fy - 1.8, 5.2, 2.6, 0, 0, Math.PI * 2); g.fill();
-    box(fx + P.dir * 2.4 - 5, fy - 0.6, 10, 1.4, "#f2f2f2");
+    if (tat) { g.setLineDash([2, 2]); line([leg[0] + (leg[4] - leg[0]) * 0.35, -12, (leg[2] + leg[4]) / 2, -8, leg[4], fy - 6], tat, 3); g.setLineDash([]); }
+    box(fx - 2.5, fy - 6, 5, 3, "#f2f2f2");                                   // socks
+    g.fillStyle = look.shoe; g.beginPath(); g.ellipse(fx + P.dir * 2, fy - 1.5, 5, 2.8, 0, 0, Math.PI * 2); g.fill();
+    box(fx + P.dir * 2 - 4, fy - 0.5, 8, 1.2, "#f2f2f2");                     // sole
   }
-  // ---- baggy knee-length shorts with side stripes and a split between the legs
-  const sy = -33 + P.crouch * 0.6;   // waist: legs about half the body, like a real player
-  // shorts stop above the knee so the legs show
-  poly([-hipW - 0.6, sy, hipW + 0.6, sy, hipW + 1.2, -20.5, 0.8, -21.5, 0, -24, -0.8, -21.5, -hipW - 1.2, -20.5], TEAM_DARK[team]);
-  seg(-hipW - 0.7, sy + 1, -hipW - 1.1, -21.5, trim, 1.4); seg(hipW + 0.7, sy + 1, hipW + 1.1, -21.5, trim, 1.4);
-  box(-hipW - 0.6, sy, 2 * hipW + 1.2, 2, shade(TEAM_DARK[team], 0.75));   // waistband
-  // ---- arms: shoulder (deltoid) → elbow → hand; long, with muscle shading
-  const arm = (hand, s, which) => {
-    const sx = s * (sh - 1.5), sy0 = -45;
-    // two-bone arm: the elbow pops out sideways (away from the body) as much as the arm needs to bend
-    const ARM = 25, mx = (sx + hand[0]) / 2, my = (sy0 + hand[1]) / 2;
-    const len = Math.hypot(hand[0] - sx, hand[1] - sy0) || 1;
-    let nx = -(hand[1] - sy0) / len, ny = (hand[0] - sx) / len;
-    if (nx * s < 0) { nx = -nx; ny = -ny; }
-    const bend = Math.sqrt(Math.max(0, (ARM / 2) ** 2 - (Math.min(len, ARM) / 2) ** 2)) * 0.8 + 0.6;
-    const ex = mx + nx * bend, ey = my + ny * bend;
-    const col = which === "L" ? dark : skin, uw = lt * 0.62 + 0.5, fw = lt * 0.5 + 0.5;   // slim, long arms
-    seg(sx, sy0, ex, ey, col, uw);                                          // upper arm
-    seg(ex, ey, hand[0], hand[1], col, fw);                                 // forearm
-    if (which === "R") seg(sx + (ex - sx) * 0.3, sy0 + (ey - sy0) * 0.3, sx + (ex - sx) * 0.65, sy0 + (ey - sy0) * 0.65, lite, 0.8);   // a touch of light on the bicep
-    dot(sx, sy0 + 0.6, uw * 0.6 + 0.5, col);                                // shoulder
+  // shorts with a side stripe
+  g.fillStyle = TEAM_DARK[team]; g.beginPath(); g.roundRect(-9.5, -22, 19, 10, 2); g.fill();
+  box(-9.5, -22, 2, 10, trim); box(7.5, -22, 2, 10, trim);
+  // arms (tattoos, sleeves and wristbands ride on them)
+  const arm = (hx, hy, sx, which) => {
+    const pts = [sx, -34, sx + (hx - sx) * 0.4 + Math.sign(sx) * 3, (hy - 34) / 2 - 4, hx, hy];
+    line(pts, which === "L" ? dark : skin, 4.8);
     const upper = look.tats["arm" + which], fore = look.tats["fore" + which];
-    if (look.sleeve === which) { seg(sx, sy0 + 1, ex, ey, teamCol, uw); seg(ex, ey, hand[0] - (hand[0] - ex) * 0.25, hand[1] - (hand[1] - ey) * 0.25, teamCol, fw); }
-    else if (upper) ink(sx + (ex - sx) * 0.2, sy0 + (ey - sy0) * 0.2 + 1, ex, ey, upper, uw - 0.6);
-    if (fore && look.sleeve !== which) ink(ex + (hand[0] - ex) * 0.15, ey + (hand[1] - ey) * 0.15, hand[0] - (hand[0] - ex) * 0.2, hand[1] - (hand[1] - ey) * 0.2, fore, fw - 0.4);
-    if (look.wrist) dot(hand[0] - (hand[0] - ex) * 0.16, hand[1] - (hand[1] - ey) * 0.16, fw * 0.6 + 0.2, tcol(look.wrist));
-    dot(hand[0], hand[1], fw * 0.6 + 0.3, col);                             // hand
+    const mid = [(pts[0] + pts[2]) / 2, (pts[1] + pts[3]) / 2];
+    if (look.sleeve === which) line([pts[0], pts[1], mid[0], mid[1], pts[2] * 0.5 + hx * 0.5, pts[3] * 0.5 + hy * 0.5], teamCol, 5.2);
+    else if (upper) { g.setLineDash([2.5, 1.5]); line([pts[0], pts[1] + 1, mid[0], mid[1], pts[2], pts[3]], upper, 3.2); g.setLineDash([]); }
+    if (fore) { g.setLineDash([1.5, 2]); line([pts[2], pts[3], (pts[2] + hx) / 2, (pts[3] + hy) / 2, hx - (hx - pts[2]) * 0.2, hy - (hy - pts[3]) * 0.2], fore, 3); g.setLineDash([]); }
+    if (look.wrist) dot(hx - (hx - pts[2]) * 0.18, hy - (hy - pts[3]) * 0.18, 2.6, tcol(look.wrist));
+    dot(hx, hy, 3, which === "L" ? dark : skin);
   };
-  // ---- tank-top jersey: wide at the shoulders, tapered at the waist, arm holes show the shoulders
-  const back = !front;
-  if (back) arm(L, -1, "L"), arm(R, 1, "R");
-  poly([-sh + 3.2, -46.5, -3, -46.5, 0, -43.5, 3, -46.5, sh - 3.2, -46.5, sh - 1.2, -41, hipW + 1.2, -35, hipW + 1, sy + 1.5, -hipW - 1, sy + 1.5, -hipW - 1.2, -35, -sh + 1.2, -41], stunned ? TEAM_DARK[team] : teamCol);
-  seg(-sh + 3.2, -46.5, -3, -46.5, trim, 1.2); seg(3, -46.5, sh - 3.2, -46.5, trim, 1.2);
-  seg(-3, -46.5, 0, -43.5, trim, 1.2); seg(0, -43.5, 3, -46.5, trim, 1.2);   // V-neck trim
-  seg(-sh + 1.2, -41, -hipW - 1.2, -35, trim, 1); seg(sh - 1.2, -41, hipW + 1.2, -35, trim, 1);
-  seg(-hipW + 1, -40, -hipW + 1.5, -36.5, shade(teamCol, 0.8), 1.4);          // fold shading
+  // jersey: body, arm holes, trim and a pixel number
+  g.fillStyle = stunned ? TEAM_DARK[team] : teamCol;
+  g.beginPath(); g.moveTo(-9, -38); g.lineTo(9, -38); g.lineTo(10.5, -21); g.lineTo(-10.5, -21); g.closePath(); g.fill();
+  box(-9, -38, 18, 1.6, trim); box(-10.5, -22.5, 21, 1.5, trim);
+  box(-3, -38, 6, 2.4, skin);                                                 // neckline
   const num = String(a.p.number).slice(-2), nw = num.length * 4 - 1;
-  for (let k = 0; k < num.length; k++) { const bits = DIGITS[+num[k]]; for (let i = 0; i < 15; i++) if (bits[i] === "1") box(-nw + k * 8 + (i % 3) * 2, -42 + Math.floor(i / 3) * 2, 2, 2, trim); }
-  if (front) arm(L, -1, "L"), arm(R, 1, "R");
-  // ---- neck and head (traps for the big guys)
-  const neckW = 3.6 + (lt - 4) * 0.7;
-  poly([-neckW - 2, -46.5, neckW + 2, -46.5, neckW, -49, -neckW, -49], skin);
-  box(-neckW, -51, neckW * 2, 4.6, skin);
-  if (look.tats.neck) { box(-neckW, -49.5, 1.8, 2, look.tats.neck); box(neckW - 1.8, -48.5, 1.8, 2, look.tats.neck); }
-  const hy = -55.5, q = 0.66;                                              // head centre; hair is drawn at 0.66 scale
-  const H = look.hair, st = look.style, hl = shade(H, 1.6);
-  g.save(); g.translate(0, hy); g.scale(q, q);
-  const hdot = (x, y, r, col) => dot(x, y, r, col), hbox = box;
-  if (st === "afro") hdot(0, -2, 10.5, H);
-  if (st === "dreads" || st === "long") { for (const s of [-1, 1]) hbox(s > 0 ? 4 : -8, -2, 4, st === "long" ? 13 : 16, H); if (!front) hbox(-7, -2, 14, st === "long" ? 13 : 16, H); }
-  // head: rounded skull with a squarer jaw, and ears
-  g.fillStyle = skin; g.beginPath(); g.roundRect(-6.6, -7.6, 13.2, 15.4, [7, 7, 5, 5]); g.fill();
-  hdot(-6.8, 0.5, 1.8, dark); hdot(6.8, 0.5, 1.8, skin);
-  g.restore();
+  for (let k = 0; k < num.length; k++) { const bits = DIGITS[+num[k]]; for (let i = 0; i < 15; i++) if (bits[i] === "1") box(-nw + k * 8 + (i % 3) * 2, -34 + Math.floor(i / 3) * 2, 2, 2, trim); }
+  arm(P.L[0], P.L[1], -9, "L"); arm(P.R[0], P.R[1], 9, "R");
+  // neck and head
+  box(-2.5, -42, 5, 5, skin);
+  if (look.tats.neck) { box(-2.5, -41, 2, 2, look.tats.neck); box(1, -39, 2, 2, look.tats.neck); }
+  const hy = -47, H = look.hair, st = look.style, hl = shade(H.startsWith("#") ? H : "#222222", 1.6);
+  // hair that sits behind the head
+  if (st === "afro") dot(0, hy - 2, 10.5, H);
+  if (st === "dreads" || st === "long") { for (const s of [-1, 1]) box(s > 0 ? 4 : -8, hy - 2, 4, st === "long" ? 12 : 14, H); if (!front) box(-7, hy - 2, 14, st === "long" ? 12 : 14, H); }
+  dot(0, hy, 7.2, skin);
+  // face
   if (front) {
-    const f = P.dir * 0.6;
-    box(-3 + f, hy - 1, 1.6, 1.6, "#141414"); box(1.4 + f, hy - 1, 1.6, 1.6, "#141414");          // eyes
-    box(-3.4 + f, hy - 2.6, 2.4, 1, shade(H, 0.9)); box(1.2 + f, hy - 2.6, 2.4, 1, shade(H, 0.9));   // brows
-    box(-0.5 + f + P.dir * 0.4, hy + 0.4, 1.2, 2, dark);                                          // nose
-    box(-1.6 + f, hy + 3.2, 3.2, 0.9, shade(skin, 0.6));                                          // mouth
-    if (look.face === "beard") { g.fillStyle = H; g.beginPath(); g.roundRect(-4.4, hy + 1.6, 8.8, 4, [0, 0, 3, 3]); g.fill(); box(-1.6 + f, hy + 3, 3.2, 0.9, shade(skin, 0.6)); }
-    else if (look.face === "goatee") box(-1.2 + f, hy + 3.8, 2.4, 2.2, H);
-    else if (look.face === "stache") box(-2 + f, hy + 2.2, 4, 1.1, H);
-    if (celebrate) box(-1.6 + f, hy + 3, 3.2, 2, "#5a1a1a");
+    box(-3.5 + P.dir, hy, 2, 2, "#141414"); box(1.5 + P.dir, hy, 2, 2, "#141414");               // eyes
+    box(-4 + P.dir, hy - 2, 3, 1, shade(H.startsWith("#") ? H : "#222222", 1)); box(1 + P.dir, hy - 2, 3, 1, shade(H.startsWith("#") ? H : "#222222", 1));
+    if (look.face === "beard") { g.fillStyle = H; g.beginPath(); g.arc(0, hy + 1, 7.2, 0.15 * Math.PI, 0.85 * Math.PI); g.fill(); box(-2 + P.dir, hy + 3, 4, 1.5, skin); }
+    else if (look.face === "goatee") box(-1.5 + P.dir, hy + 4, 3, 3, H);
+    else if (look.face === "stache") box(-2.5 + P.dir, hy + 3, 5, 1.5, H);
+    if (celebrate) box(-2 + P.dir, hy + 4, 4, 2, "#5a1a1a");
   }
+  // earrings
   if (look.ear) {
     const col = METAL[look.ear.metal];
     for (const s of look.ear.side === "both" ? [-1, 1] : [look.ear.side === "L" ? -1 : 1]) {
-      if (look.ear.hoop) { g.strokeStyle = col; g.lineWidth = 1; g.beginPath(); g.arc(s * 4.6, hy + 2.4, 1.3, 0, Math.PI * 2); g.stroke(); }
-      else box(s * 4.6 - 0.8, hy + 1.2, 1.6, 1.6, col);
+      if (look.ear.hoop) { g.strokeStyle = col; g.lineWidth = 1.4; g.beginPath(); g.arc(s * 7.4, hy + 4, 1.8, 0, Math.PI * 2); g.stroke(); }
+      else box(s * 7.4 - 1, hy + 1.5, 2, 2, col);
     }
   }
-  // hair on top (same styles, scaled to the smaller head)
-  g.save(); g.translate(0, hy); g.scale(q, q);
-  const cap = (lo = 1.0, hi = 2.0, r = 7.2) => { g.fillStyle = H; g.beginPath(); g.arc(0, -0.6, r, Math.PI * lo, Math.PI * hi); g.closePath(); g.fill(); };
-  const full = () => { if (!front) { g.fillStyle = H; g.beginPath(); g.roundRect(-6.8, -7.8, 13.6, 13, 7); g.fill(); } };
-  const skinDark = shade(skin, 0.55);
+  // hair on top
+  const cap = (lo = 1.0, hi = 2.0, r = 7.4) => { g.fillStyle = H; g.beginPath(); g.arc(0, hy, r, Math.PI * lo, Math.PI * hi); g.closePath(); g.fill(); };
+  const full = () => { if (!front) dot(0, hy, 7.4, H); };
   switch (st) {
-    case "bald": box(-2, -6.5, 2.5, 1.5, lite); break;
-    case "buzz": g.fillStyle = skinDark; g.beginPath(); g.arc(0, -0.6, 7.1, Math.PI * 1.08, Math.PI * 1.92); g.fill(); if (!front) { g.beginPath(); g.roundRect(-6.8, -7.8, 13.6, 12, 7); g.fill(); } break;
-    case "fade": cap(1.12, 1.88); box(-6.8, -3, 1.8, 4, skinDark); box(5, -3, 1.8, 4, skinDark); full(); break;
-    case "waves": cap(1.1, 1.9); for (const yy of [-6, -4]) box(-4, yy, 8, 0.9, hl); full(); break;
+    case "bald": box(-2, hy - 6, 2, 1.5, shade(skin, 1.25)); break;
+    case "buzz": g.fillStyle = shade(skin, 0.55); g.beginPath(); g.arc(0, hy, 7.3, Math.PI * 1.08, Math.PI * 1.92); g.fill(); if (!front) dot(0, hy, 7.3, shade(skin, 0.55)); break;
+    case "fade": cap(1.12, 1.88); box(-7, hy - 2, 2, 3, shade(skin, 0.6)); box(5, hy - 2, 2, 3, shade(skin, 0.6)); full(); break;
+    case "waves": cap(1.1, 1.9); for (const yy of [-5, -3]) box(-4, hy + yy, 8, 0.8, hl); full(); break;
     case "crew": cap(1.05, 1.95); full(); break;
-    case "messy": cap(1.0, 2.0); for (const x of [-5, -1, 3]) box(x, -10, 3, 3, H); full(); break;
-    case "spiky": case "dyed": cap(1.0, 2.0); for (const x of [-6, -3, 0, 3]) { g.fillStyle = H; g.beginPath(); g.moveTo(x, -6); g.lineTo(x + 1.5, -12); g.lineTo(x + 3, -6); g.fill(); } full(); break;
-    case "afro": if (front) cap(1.0, 2.0, 7.6); else full(); break;
-    case "hightop": cap(1.05, 1.95); box(-6, -16, 12, 10, H); box(-6, -16, 12, 1.5, hl); full(); break;
-    case "braids": cap(1.0, 2.0); for (const x of [-4, -1, 2]) box(x, -8, 1, 6, hl); for (const bx of [-6, -3, 3, 6]) box(bx - 0.5, 0, 1.6, 10, H); full(); break;
-    case "dreads": cap(1.0, 2.0); for (const x of [-5, -2, 1, 4]) dot(x + 0.5, -8, 1.6, H); full(); break;
-    case "twists": cap(1.0, 2.0); for (const x of [-5, -2, 1, 4]) dot(x + 0.5, -9, 2, H); full(); break;
-    case "mohawk": g.fillStyle = skinDark; g.beginPath(); g.arc(0, -0.6, 7.1, Math.PI * 1.1, Math.PI * 1.9); g.fill(); box(-2, -13, 4, 9, H); break;
-    case "manbun": cap(1.0, 2.0); dot(0, -10, 3, H); full(); break;
+    case "messy": cap(1.0, 2.0); for (const x of [-5, -1, 3]) box(x, hy - 9, 3, 3, H); full(); break;
+    case "spiky": case "dyed": cap(1.0, 2.0); for (const x of [-6, -3, 0, 3]) { g.fillStyle = H; g.beginPath(); g.moveTo(x, hy - 5); g.lineTo(x + 1.5, hy - 11); g.lineTo(x + 3, hy - 5); g.fill(); } full(); break;
+    case "afro": if (!front) dot(0, hy, 7.4, H); else cap(1.0, 2.0, 7.6); break;
+    case "hightop": cap(1.05, 1.95); box(-6, hy - 15, 12, 10, H); box(-6, hy - 15, 12, 1.5, hl); full(); break;
+    case "braids": cap(1.0, 2.0); for (const x of [-4, -1, 2]) box(x, hy - 7, 1, 6, hl); for (const bx of [-6, -3, 3, 6]) box(bx - 0.5, hy, 1.6, 9, H); full(); break;
+    case "dreads": cap(1.0, 2.0); for (const x of [-5, -2, 1, 4]) dot(x + 0.5, hy - 7, 1.6, H); full(); break;
+    case "twists": cap(1.0, 2.0); for (const x of [-5, -2, 1, 4]) dot(x + 0.5, hy - 8, 2, H); full(); break;
+    case "mohawk": box(-2, hy - 12, 4, 7, H); g.fillStyle = shade(skin, 0.6); g.beginPath(); g.arc(0, hy, 7.3, Math.PI * 1.1, Math.PI * 1.9); g.fill(); box(-2, hy - 12, 4, 9, H); break;
+    case "manbun": cap(1.0, 2.0); dot(0, hy - 9, 3, H); full(); break;
     case "long": cap(0.95, 2.05); full(); break;
-    case "bowl": cap(0.92, 2.08); box(-7, -4, 14, 2.5, H); full(); break;
-    case "undercut": g.fillStyle = skinDark; g.beginPath(); g.arc(0, -0.6, 7.1, Math.PI * 1.05, Math.PI * 1.95); g.fill(); poly([-6, -5, 8, -10, 7, -4, -6, -3], H); full(); break;
-    case "curly": cap(1.0, 2.0); for (const x of [-6, -3, 0, 3, 6]) dot(x, -7, 2.2, H); full(); break;
-    case "slick": cap(1.02, 1.98); box(-3, -7, 6, 1, hl); full(); break;
+    case "bowl": cap(0.92, 2.08); box(-7, hy - 3, 14, 2.5, H); full(); break;
+    case "undercut": g.fillStyle = shade(skin, 0.6); g.beginPath(); g.arc(0, hy, 7.3, Math.PI * 1.05, Math.PI * 1.95); g.fill(); g.fillStyle = H; g.beginPath(); g.moveTo(-6, hy - 4); g.lineTo(8, hy - 9); g.lineTo(7, hy - 3); g.lineTo(-6, hy - 2); g.fill(); full(); break;
+    case "curly": cap(1.0, 2.0); for (const x of [-6, -3, 0, 3, 6]) dot(x, hy - 6, 2.2, H); full(); break;
+    case "slick": cap(1.02, 1.98); box(-3, hy - 6, 6, 1, hl); full(); break;
     default: cap(); full();
   }
-  if (look.band) box(-7.2, -4, 14.4, 2.6, tcol(look.band));
-  g.restore();
+  if (look.band) box(-7.4, hy - 3, 14.8, 2.4, tcol(look.band));
 }
 
 // A pixel head-and-shoulders portrait of a player (for the shop and Mystery Baller cards)
@@ -2356,7 +2299,7 @@ function drawPortrait(p, x, y, scale, team = 0) {
   const look = makeLook(p), g = portCtx;
   const P = { lift: 0, crouch: 0, lean: 0, L: [-11, -22], R: [11, -22], ball: null, stance: false, swing: 0, dir: 0 };
   g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, 38, 36);
-  g.translate(19, 69);   // head centre (-55.5) lands near the top third
+  g.translate(19, 61);   // head centre (-47) lands near the top third
   drawBody(g, P, { p }, look, team, true, false, false);
   pixelate(g, 38, 36);
   ctx.imageSmoothingEnabled = false;
@@ -2394,20 +2337,20 @@ function drawPerson(m, a, highlight) {
   ctx.imageSmoothingEnabled = true;
 
   if (a.stun > 0) {   // ankles broken: stars spin around the head
-    for (let i = 0; i < 3; i++) { const t = m.elapsed * 6 + i * 2.1; text("✦", x + Math.cos(t) * 12, y - 74 + Math.sin(t) * 4, { size: 18, color: C.gold, center: true }); }
+    for (let i = 0; i < 3; i++) { const t = m.elapsed * 6 + i * 2.1; text("✦", x + Math.cos(t) * 12, y - 58 + Math.sin(t) * 4, { size: 18, color: C.gold, center: true }); }
   }
   if (highlight) {
-    const ty = y - up - 80;
+    const ty = y - up - 64;
     ctx.beginPath(); ctx.moveTo(x - 7, ty); ctx.lineTo(x + 7, ty); ctx.lineTo(x, ty + 9); ctx.closePath(); ctx.fillStyle = C.gold; ctx.fill();
     text(a.p.name, x, y + 16, { size: 20, center: true });
   }
   if (a.moveTag) {   // name of the dribble move pops above the player
     const k = a.moveTag.t / 0.8;
     ctx.globalAlpha = Math.min(1, k * 2);
-    text(a.moveTag.text, x, y - up - 90 - (1 - k) * 14, { size: 22, color: a.team === 0 ? C.gold : "#ffb3aa", center: true, display: true });
+    text(a.moveTag.text, x, y - up - 74 - (1 - k) * 14, { size: 22, color: a.team === 0 ? C.gold : "#ffb3aa", center: true, display: true });
     ctx.globalAlpha = 1;
   }
-  if (P.ball) { const [bx, by] = bodyPt(P.ball); return { x: x + (bx - (P.lean || 0) * by / 40) * sz, y: y - up + P.crouch + by * sz }; }
+  if (P.ball) return { x: x + (P.ball[0] - (P.lean || 0) * P.ball[1] / 40) * sz, y: y - up + P.crouch + P.ball[1] * sz };
   return null;
 }
 
