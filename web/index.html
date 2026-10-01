@@ -1037,11 +1037,11 @@ const MARKET_MS = 5 * 60 * 1000;
 // stats: how many of the player's 5 stats get a rarity boost · amt: size of that boost · lvl: extra attribute levels
 const RARITY = [
   { name: "Common", w: 62, boost: 0, off: -6, stats: 0, amt: 0, lvl: 0, price: 4, color: "#b9bcc6" },
-  { name: "Rare", w: 26, boost: 1, off: -2, stats: 1, amt: 5, lvl: 0, price: 6, color: "#5096f0" },
-  { name: "Epic", w: 9, boost: 2, off: 1, stats: 2, amt: 6, lvl: 0, price: 9, color: "#b36bff" },
-  { name: "Legend", w: 2.5, boost: 3, off: 4, stats: 3, amt: 8, lvl: 1, price: 14, color: "#f5c83c" },
-  { name: "Mythic", w: 0.5, boost: 4, off: 7, stats: 4, amt: 9, lvl: 1, price: 20, color: "#ff3b5c", glow: true },
-  { name: "Eternal", w: 0.08, boost: 6, off: 10, stats: 5, amt: 11, lvl: 2, price: 30, color: "#7ff9ff", glow: true, rainbow: true },
+  { name: "Rare", w: 22, boost: 0.8, off: -2, stats: 1, amt: 5, lvl: 0, price: 6, color: "#5096f0" },
+  { name: "Epic", w: 7, boost: 1.6, off: 1, stats: 2, amt: 6, lvl: 0, price: 9, color: "#b36bff" },
+  { name: "Legend", w: 1.8, boost: 2.4, off: 4, stats: 3, amt: 8, lvl: 1, price: 14, color: "#f5c83c" },
+  { name: "Mythic", w: 0.35, boost: 3.2, off: 7, stats: 4, amt: 9, lvl: 1, price: 20, color: "#ff3b5c", glow: true },
+  { name: "Eternal", w: 0.05, boost: 4.5, off: 10, stats: 5, amt: 11, lvl: 2, price: 30, color: "#7ff9ff", glow: true, rainbow: true },
 ];
 // Build a player of a given rarity around an anchor rating (your player's OVR).
 // Rarer players are boosted in more stats, starting with what their position is good at. Nothing is guaranteed:
@@ -1438,7 +1438,7 @@ class Career {
 // =====================================================================
 const Luck = {
   SYMBOLS: ["BRICK", "BALL", "SHOE", "CASH", "CROWN", "MYTHIC", "ETERNAL"], WEIGHTS: [35, 25, 20, 13, 7, 4, 1.5], BETS: [10, 25, 50, 100, 250, 500],
-  RARITIES: [["Bum", 40, "Common"], ["Solid", 34.5, "Rare"], ["Baller", 19.8, "Epic"], ["Legend", 4.7, "Legend"], ["Mythic", 0.8, "Mythic"], ["Eternal", 0.2, "Eternal"]],
+  RARITIES: [["Bum", 46, "Common"], ["Solid", 34, "Rare"], ["Baller", 16, "Epic"], ["Legend", 3.4, "Legend"], ["Mythic", 0.5, "Mythic"], ["Eternal", 0.1, "Eternal"]],
   spin(rng) { return [0, 1, 2].map(() => rng.choices(this.SYMBOLS, this.WEIGHTS)); },
   payout(reels) {
     const counts = {}; for (const s of reels) counts[s] = (counts[s] || 0) + 1;
@@ -1872,7 +1872,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 25 (NBA bodies, player faces)");
+    this.footer("Progress saves automatically in this browser  ·  version 26 (tougher player odds)");
   }
 }
 // Draw text that shrinks until it fits a width.
