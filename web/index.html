@@ -71,6 +71,7 @@ body {
       <button class="pb" id="b-sprint">SPRINT</button>
       <button class="pb" id="b-switch">SWITCH</button>
       <button class="pb" id="b-move">MOVE / STEAL</button>
+      <button class="pb" id="b-spin">SPIN</button>
       <button class="pb" id="b-pass">PASS</button>
       <button class="pb big" id="b-shoot">SHOOT</button>
     </div>
@@ -156,11 +157,46 @@ function effect(p, key) {
   return t;
 }
 const canDunk = p => (p.main === "dunker" && p.mainLvl > 0) || (p.sec === "dunker" && p.secLvl > 0);
+// ---- Attributes (badge-style): you earn them at OVR milestones and equip them in limited slots.
+// Teammates can buy them; better opponents come with them. (Your Sharpshooter/Dunker/etc. pick is your Archetype.)
+const BADGES = {
+  combo: { name: "Combo Dribbler", short: "Combo", ovr: 48, price: 400, pos: ["PG", "SG", "SF"], desc: "Chain two dribble moves with no delay, then a longer cooldown." },
+  firststep: { name: "Quick First Step", short: "1st Step", ovr: 50, price: 350, pos: ["PG", "SG", "SF"], desc: "Crossovers, cross & drives and hesi-gos explode into a burst of speed." },
+  ankles: { name: "Ankle Breaker", short: "Ankles", ovr: 53, price: 450, pos: ["PG", "SG"], desc: "Your moves break ankles 30% more, and defenders stay down longer." },
+  deadeye: { name: "Deadeye", short: "Deadeye", ovr: 56, price: 500, pos: ["SG", "SF", "PG"], desc: "Contests hurt your shots 30% less." },
+  range: { name: "Limitless Range", short: "Range", ovr: 59, price: 550, pos: ["SG", "PG", "SF"], desc: "Deep shots fall more, and your green window holds up from range." },
+  poster: { name: "Posterizer", short: "Poster", ovr: 62, price: 500, pos: ["SF", "PF", "C"], desc: "Bigger dunk radius; your dunks are 40% harder to stop." },
+  lockdown: { name: "Lockdown Defender", short: "Lockdown", ovr: 65, price: 500, pos: ["SG", "SF", "PF"], desc: "Steal timing is more forgiving and your contests are 15% stronger." },
+  boards: { name: "Rebound Chaser", short: "Boards", ovr: 68, price: 400, pos: ["PF", "C", "SF"], desc: "Grab rebounds from farther away." },
+  clutch: { name: "Clutch", short: "Clutch", ovr: 72, price: 600, pos: ["PG", "SG", "SF", "PF", "C"], desc: "Bigger green window when the game is close late." },
+};
+const BADGE_ORDER = Object.keys(BADGES);
+const hasBadge = (p, id) => !!(p && p.badges && p.badges.includes(id));
+const badgeLabel = p => (p.badges || []).map(b => BADGES[b].short).join(", ");
+// OVR milestones for your player: attributes, attribute slots, stamina, new moves, crew slots, cash and fame
+const MILESTONES = [
+  { ovr: 45, stamina: true }, { ovr: 48, badge: "combo", slot: true }, { ovr: 50, badge: "firststep" }, { ovr: 52, move: "spin" },
+  { ovr: 53, badge: "ankles" }, { ovr: 55, stamina: true }, { ovr: 56, badge: "deadeye", crew: true }, { ovr: 58, slot: true },
+  { ovr: 59, badge: "range" }, { ovr: 60, move: "behind" }, { ovr: 62, badge: "poster" }, { ovr: 65, badge: "lockdown", stamina: true },
+  { ovr: 68, badge: "boards" }, { ovr: 70, slot: true }, { ovr: 72, badge: "clutch" }, { ovr: 75, stamina: true, crew: true },
+  { ovr: 80 }, { ovr: 82, slot: true }, { ovr: 85 }, { ovr: 90 },
+];
+const MOVE_NAMES = { spin: "Spin move", behind: "Behind-the-back" };
+const milestoneText = ms => [ms.badge && BADGES[ms.badge].name, ms.slot && "+1 attribute slot", ms.move && MOVE_NAMES[ms.move], ms.stamina && "+stamina", ms.crew && "+1 crew slot"].filter(Boolean).join(" · ") || "cash & fame";
+// Opponents and generated players: the better they are, the more attributes (and moves) they have
+function giveBadges(p) {
+  if (p.badges) return p;
+  const o = overall(p), n = o >= 85 ? 3 : o >= 70 ? 2 : o >= 55 ? 1 : 0, rng = new Rng(`badge|${p.name}|${p.number}|${p.pos}`);
+  const pool = BADGE_ORDER.filter(b => BADGES[b].pos.includes(p.pos || "SF")); p.badges = [];
+  while (p.badges.length < n && pool.length) p.badges.push(pool.splice(rng.randint(0, pool.length - 1), 1)[0]);
+  p.moves = o >= 70 ? ["spin", "behind"] : o >= 60 ? ["spin"] : [];
+  return p;
+}
 function attrLabel(p) {
   const parts = [];
   if (p.main && p.mainLvl) parts.push(`${ATTRS[p.main].name} ${p.mainLvl}`);
   if (p.sec && p.secLvl) parts.push(`${ATTRS[p.sec].name} ${p.secLvl} (2nd)`);
-  return parts.join(" / ") || "No attributes";
+  return parts.join(" / ") || "No archetype";
 }
 
 // =====================================================================
@@ -244,7 +280,7 @@ const DUNK_STYLES = {
   two: { t: 0.4, name: "SLAM!", shake: 0.35 }, tomahawk: { t: 0.46, name: "TOMAHAWK!", shake: 0.45 }, windmill: { t: 0.52, name: "WINDMILL!", shake: 0.5 },
   "360": { t: 0.58, name: "360 JAM!", shake: 0.55, slow: 0.35 }, poster: { t: 0.44, name: "POSTERIZED!", shake: 0.6, slow: 0.35 },
 };
-const blankInputs = () => ({ move: [0, 0], shootPressed: false, shootDown: false, passPressed: false, movePressed: false, switchPressed: false, sprint: false, coachAccept: false, coachIgnore: false });
+const blankInputs = () => ({ move: [0, 0], shootPressed: false, shootDown: false, passPressed: false, movePressed: false, specialPressed: false, switchPressed: false, sprint: false, coachAccept: false, coachIgnore: false });
 
 // Coach's calls: team tactics your teammates carry out on their own.
 const PLAYS = [
@@ -316,7 +352,7 @@ class Match {
       if (a.anim) { a.anim.t += dt; if (a.anim.t >= a.anim.dur) a.anim = null; }
       if (a.moveTag) { a.moveTag.t -= dt; if (a.moveTag.t <= 0) a.moveTag = null; }
       a.stepBackT = Math.max(0, (a.stepBackT || 0) - dt);
-      if (this.phase === "live" && a.sprinting && a.moveAmt > 0.3) { a.stamina = Math.max(0, a.stamina - S.STAMINA_DRAIN * dt); if (a.stamina <= 0) a.sprinting = false; }
+      if (this.phase === "live" && a.sprinting && a.moveAmt > 0.3) { a.stamina = Math.max(0, a.stamina - S.STAMINA_DRAIN * (1 - (a.p.stamBonus || 0)) * dt); if (a.stamina <= 0) a.sprinting = false; }
       else a.stamina = Math.min(1, a.stamina + S.STAMINA_REGEN * dt);
       a.dribble += dt * 9;
       if (this.phase !== "live") a.moveAmt = Math.max(0, a.moveAmt - dt * 4);
@@ -464,7 +500,7 @@ class Match {
   }
   dunkStyle(a) {
     const p = a.p, [dd] = this.nearestOpp(a);
-    if (dd < 34) return "poster";                                   // somebody's in the way: put him on a poster
+    if (dd < (hasBadge(p, "poster") ? 46 : 34)) return "poster";                                   // somebody's in the way: put him on a poster
     const lvl = canDunk(p) ? (p.main === "dunker" ? p.mainLvl : p.secLvl) : 0;
     const q = p.stats.speed / 99 * 0.35 + clamp(((p.ht || 79) - 74) / 13, 0, 1) * 0.25 + lvl / 5 * 0.3 + this.rng.random() * 0.25;
     return q > 0.78 ? "360" : q > 0.62 ? "windmill" : q > 0.46 ? "tomahawk" : "two";
@@ -472,7 +508,7 @@ class Match {
   // how far out you can take off for a dunk: faster, taller and lighter = farther
   dunkRadius(a) {
     const p = physOf(a.p);
-    return clamp(62 + (p.stats.speed - 50) * 1.2 + (p.ht - 78) * 5 - (p.wt - 215) * 0.3 + (canDunk(p) ? 25 : 0), 36, 150);
+    return clamp(62 + (p.stats.speed - 50) * 1.2 + (p.ht - 78) * 5 - (p.wt - 215) * 0.3 + (canDunk(p) ? 25 : 0) + (hasBadge(p, "poster") ? 15 : 0), 36, 165);
   }
   shotKind(a) {
     if (this.dunkOpen(a)) return "dunk";
@@ -503,6 +539,12 @@ class Match {
       if (!it.action && this.meter === null) {
         if (inp.passPressed) { it.action = "pass"; it.target = this.pickPassTarget(a, inp.move); }
         else if (inp.movePressed) it.action = "cross";
+        else if (inp.specialPressed) {   // L: spin (or behind-the-back while holding back), once you've unlocked them
+          const mv = a.p.moves || [], back = inp.move[1] > 0.3;
+          if (back && mv.includes("behind")) { it.action = "cross"; it.moveType = "behind"; }
+          else if (mv.includes("spin")) { it.action = "cross"; it.moveType = "spin"; }
+          else this.say(back ? "Behind-the-back unlocks at OVR 60" : "Spin move unlocks at OVR 52", 1.2);
+        }
       }
     } else {
       this.meter = null;
@@ -610,11 +652,12 @@ class Match {
     }
   }
   meterWindow(a) {
-    const t = clamp((dist(a.pos, S.HOOP) - 60) / (S.ARC + 90 - 60), 0, 1);
-    const skill = 0.4 + a.p.stats.shooting / 99 * 0.9;            // 40 shooting ≈ 0.76x, 80 ≈ 1.13x
+    const t = clamp((dist(a.pos, S.HOOP) - 60) / (S.ARC + 90 - 60), 0, 1) * (hasBadge(a.p, "range") ? 0.5 : 1);   // Limitless Range: distance hurts half as much
+    const skill = 0.4 + a.p.stats.shooting / 99 * 0.9;
+    const clutch = hasBadge(a.p, "clutch") && Math.max(...this.score) >= this.gameTo - 4 && Math.abs(this.score[0] - this.score[1]) <= 3 ? 1.25 : 1;            // 40 shooting ≈ 0.76x, 80 ≈ 1.13x
     const nervous = this.pressureOn && a.team === 0 ? (this.pressure >= 0.7 ? 0.7 : this.pressure >= 0.5 ? 0.86 : 1) : 1;
     const cls = Math.max(0.5, 1 + 0.3 * this.edge(a));   // outclassed: the green gets a lot tighter
-    return (S.WIN_NEAR + (S.WIN_FAR - S.WIN_NEAR) * t) * skill * nervous * cls + a.eff("meter") + (a.stepBackT > 0 ? 0.015 : 0) + (a.onFire ? 0.012 : 0);
+    return (S.WIN_NEAR + (S.WIN_FAR - S.WIN_NEAR) * t) * skill * nervous * cls * clutch + a.eff("meter") + (a.stepBackT > 0 ? 0.015 : 0) + (a.onFire ? 0.012 : 0);
   }
   meterQuality(a, m) { const w = this.meterWindow(a), off = Math.abs(m - S.METER_SWEET); return off <= w ? 1 - 0.5 * off / w : Math.max(-1, -(off - w) / 0.25); }
   pickPassTarget(a, dir) {
@@ -636,20 +679,20 @@ class Match {
     if (!dfd || dd >= 70) return 0;
     const scouted = a.team === 0 ? 1 + 0.5 * this.scout : coachOn(this, "lockdown") ? 1.25 : 1;
     const size = clamp(1 + ((dfd.p.ht || 79) - (a.p.ht || 79)) * 0.02, 0.7, 1.3) * (this.human && dfd === this.controlled ? 1.25 : 1);   // a bigger defender bothers shots more (and you, hands up, count extra)
-    const guard = clamp(1 + (dfd.p.stats.defense - a.p.stats.shooting) / 110, 0.6, 1.5);   // a better defender than you are a shooter = a tougher look
+    const guard = clamp(1 + (dfd.p.stats.defense - a.p.stats.shooting) / 110, 0.6, 1.5) * (hasBadge(dfd.p, "lockdown") ? 1.15 : 1);   // a better defender than you are a shooter = a tougher look
     return (1 - dd / 70) * (0.16 + dfd.p.stats.defense / 99 * 0.22 + dfd.eff("contest")) * scouted * Math.max(0.4, 1 + 0.35 * this.edge(dfd)) * size * guard;
   }
   // Chance to make a shot that is NOT a green release.
   makeChance(a, kind, quality = 0) {
-    const d = dist(a.pos, S.HOOP), sh = a.p.stats.shooting;
+    const d = dist(a.pos, S.HOOP), sh = a.p.stats.shooting, eye = hasBadge(a.p, "deadeye") ? 0.7 : 1;   // Deadeye: contests hurt 30% less
     let base;
-    if (kind === "dunk") return clamp(S.DUNK_BASE + a.eff("dunk") - this.contest(a) * 1.15, 0.4, 0.93);
-    if (kind === "layup") base = S.LAYUP_BASE + a.eff("finish") + (sh - 50) / 99 * 0.15 - this.contest(a) * 1.15 * (a.team === 0 && this.oppOn("paint") ? 1.4 : 1);   // finishing through a defender is hard
+    if (kind === "dunk") return clamp(S.DUNK_BASE + a.eff("dunk") - this.contest(a) * 1.15 * (hasBadge(a.p, "poster") ? 0.6 : 1), 0.4, 0.93);
+    if (kind === "layup") base = S.LAYUP_BASE + a.eff("finish") + (sh - 50) / 99 * 0.15 - this.contest(a) * 1.15 * eye * (a.team === 0 && this.oppOn("paint") ? 1.4 : 1);   // finishing through a defender is hard
     else {
       if (d <= S.ARC) base = 0.52 - 0.12 * clamp((d - 60) / (S.ARC - 60), 0, 1);
-      else base = 0.40 - 0.25 * Math.max(0, d - S.ARC - 30) / 150 + a.eff("deep");
+      else base = 0.40 - 0.25 * (hasBadge(a.p, "range") ? 0.5 : 1) * Math.max(0, d - S.ARC - 30) / 150 + a.eff("deep");
       // just missing the green barely hurts; a way-off release hurts a lot (but never guarantees a miss)
-      base += (sh - 50) / 99 * 0.3 + quality * 0.18 - this.contest(a) * (a.team === 0 && this.oppOn("closeout") ? 1.3 : 1);
+      base += (sh - 50) / 99 * 0.3 + quality * 0.18 - this.contest(a) * eye * (a.team === 0 && this.oppOn("closeout") ? 1.3 : 1);
     }
     base += 0.03 * this.edge(a);
     return clamp(base, 0.02, 0.95);
@@ -664,7 +707,7 @@ class Match {
         if (dd < S.BLOCK_RANGE && dfd.stun <= 0) {
           let ch = S.BLOCK_BASE * dfd.p.stats.defense / 70 * (dfd.jump > 0 ? 1.8 : 1) * (1 - 0.5 * dd / S.BLOCK_RANGE) * Math.max(0.4, 1 + 0.4 * this.edge(dfd))
             * clamp(1 + ((dfd.p.ht || 79) - (a.p.ht || 79)) * 0.04 + ((dfd.p.ws || 82) - (dfd.p.ht || 79) - 3) * 0.03, 0.5, 1.8);   // length blocks shots
-          if (kind === "dunk") ch *= 0.3 + clamp(((dfd.p.ht || 79) - (a.p.ht || 79)) * 0.05, 0, 0.35); if (pts === 2) ch *= 0.6;   // a taller man can meet you at the rim
+          if (kind === "dunk") ch *= (0.3 + clamp(((dfd.p.ht || 79) - (a.p.ht || 79)) * 0.05, 0, 0.35)) * (hasBadge(a.p, "poster") ? 0.6 : 1); if (pts === 2) ch *= 0.6;   // a taller man can meet you at the rim
           if (this.rng.random() < ch) {
             this.say(`BLOCKED by ${dfd.p.name}!`); if (dfd === this.mainGuy) this.box.blk++;
             this.events.push({ type: "block", x: a.x, y: a.y }); a.streak = 0;
@@ -717,6 +760,8 @@ class Match {
       sidestep: { v: [side * 0.72, 0.7], sp: 400, t: 0.17, odds: 0.8, stun: 0.5, label: side > 0 ? "STEP BACK ↘" : "↙ STEP BACK", plant: true },
       go: { v: [0, -1], sp: 380, t: 0.15, odds: 0.6, stun: 0.5, label: "HESI-GO" },
       hesi: { v: [0, 0], sp: 0, t: 0, odds: 0.55, stun: 0.55, label: "HESI" },
+      spin: { v: [side * 0.75, -0.66], sp: 360, t: 0.22, odds: 1.15, stun: 0.75, label: "SPIN MOVE" },                 // high odds, slower recovery
+      behind: { v: [side, 0.12], sp: 400, t: 0.14, odds: 1.05, stun: 0.6, label: "BEHIND THE BACK" },                 // quick and hard to read
     };
     const mv = MOVES[type];
     if ((type === "stepback" || type === "sidestep") && !(this.human && a === this.controlled)) {   // AI steps back away from the rim
@@ -725,24 +770,30 @@ class Match {
     }
     if (this.human && a === this.controlled) this.moveUse[type] = (this.moveUse[type] || 0) + 1;
     // a scouting report: they've seen your favorite move before
-    const read = a.team === 0 && this.scout > 0 && type === this.favMove;
+    const read = a.team === 0 && this.scout > 0 && type === this.favMove && type !== "behind";
     if (read) mv.odds *= 1 - 0.6 * this.scout;
     if (this.human && a === this.controlled && a.team === 0) this.habits.moves[type] = (this.habits.moves[type] || 0) + 1;
     const sitting = this.oppOn("move:" + type) && a.team === 0;   // their coach called this move out
     if (sitting) mv.odds *= 0.4;
-    a.cool = 0.9;
-    if (type === "cross" || type === "drive" || type === "sidestep") a.hand = side;
+    // Combo Dribbler: the 1st move chains straight into a 2nd, then a longer cooldown
+    if (hasBadge(a.p, "combo")) { a.chain = this.elapsed - (a.lastMoveT ?? -9) < 1.2 ? (a.chain || 0) + 1 : 1; a.cool = a.chain % 2 === 1 ? 0.12 : 1.6; }
+    else a.cool = 0.9;
+    if (type === "spin") a.cool += 0.3;
+    a.lastMoveT = this.elapsed;
+    if (hasBadge(a.p, "firststep") && (type === "cross" || type === "drive" || type === "go")) a.burst = 0.45;
+    if (hasBadge(a.p, "ankles")) mv.odds *= 1.3;
+    if (type === "cross" || type === "drive" || type === "sidestep" || type === "behind" || type === "spin") a.hand = side;
     else if (type === "hesi") a.hand = -a.hand;
     if (mv.sp) { const [vx, vy] = norm(mv.v[0], mv.v[1]); a.dash = { vx: vx * mv.sp, vy: vy * mv.sp, t: mv.t, T: mv.t, plant: !!mv.plant }; }
     this.events.push({ type: "move", kind: type, x: a.x, y: a.y, team: a.team, human: this.human && a === this.controlled });
-    a.setAnim(type === "drive" ? "cross" : type === "sidestep" ? "stepback" : type, type === "stepback" || type === "sidestep" ? 0.34 : type === "hesi" ? 0.4 : 0.32);
+    a.setAnim(type === "drive" || type === "behind" ? "cross" : type === "sidestep" ? "stepback" : type, type === "stepback" || type === "sidestep" || type === "spin" ? 0.34 : type === "hesi" ? 0.4 : 0.32);
     a.moveTag = { text: mv.label, t: 0.8 };
     if (type === "stepback" || type === "sidestep") a.stepBackT = 0.9;
     const [dd, dfd] = this.nearestOpp(a);
     if (dfd && dd < 55 && dfd.stun <= 0) {
       const ch = (0.25 + (a.p.stats.handles - dfd.p.stats.defense) / 200 + a.eff("cross") + 0.08 * this.edge(a)) * mv.odds;
       if (this.rng.random() < clamp(ch, 0.04, 0.8)) {
-        dfd.stun = mv.stun; dfd.vx *= 0.2; dfd.vy *= 0.2;
+        dfd.stun = mv.stun * (hasBadge(a.p, "ankles") ? 1.4 : 1); dfd.vx *= 0.2; dfd.vy *= 0.2;
         this.events.push({ type: "ankles", x: dfd.x, y: dfd.y, team: a.team });
         if (a === this.mainGuy) this.box.ankles++;
         if (a.team === 0) this.nerves(-0.1);
@@ -758,7 +809,8 @@ class Match {
     a.cool = 1.4; a.setAnim("reach", 0.3);
     // timing matters: reach when the ball is on your side of the dribbler; reaching across him rarely works
     const exposed = h.hand * (a.x - h.x) > 0 || Math.abs(a.x - h.x) < 6;
-    const ch = (S.STEAL_BASE + (a.p.stats.defense - h.p.stats.handles) / 250 + a.eff("steal") + 0.16 * this.edge(a) + arms * 0.006) * (exposed ? 1.2 : 0.35);
+    const lock = hasBadge(a.p, "lockdown");
+    const ch = (S.STEAL_BASE + (a.p.stats.defense - h.p.stats.handles) / 250 + a.eff("steal") + 0.16 * this.edge(a) + arms * 0.006) * (exposed ? (lock ? 1.5 : 1.2) : (lock ? 0.5 : 0.35));
     if (this.rng.random() < clamp(ch, 0.02, 0.7)) { if (h === this.mainGuy) this.box.to++; if (a === this.mainGuy) this.box.stl++; if (h.team === 0) this.nerves(0.15); this.ball.setHeld(a); this.turnover(a.team); this.say(`Stolen by ${a.p.name}!`); this.events.push({ type: "steal", x: a.x, y: a.y, team: a.team }); }
     else {   // missed reach: you're off balance and he gets a step on you
       a.stun = 0.45; a.vx *= 0.2; a.vy *= 0.2;
@@ -829,7 +881,7 @@ class Match {
     for (const a of this.actors) {
       if (a.stun > 0 || a.landT > 0) continue;
       const boost = a.team === 0 && (coachOn(this, "boxout") || coachOn(this, "crash"));
-      const reach = S.GRAB + a.eff("reach") + (a.jump > 0 ? 6 : 0) + (boost ? 6 : 0) + ((a.p.ht || 79) - 79) * 0.7;   // taller = more reach
+      const reach = S.GRAB + a.eff("reach") + (a.jump > 0 ? 6 : 0) + (boost ? 6 : 0) + ((a.p.ht || 79) - 79) * 0.7 + (hasBadge(a.p, "boards") ? 8 : 0);   // taller = more reach (Rebound Chaser: more)
       const def = a.team !== this.offense, inside = def ? 3.0 : 1;   // defenders have inside position on the glass
       if (dist(a.pos, [b.x, b.y]) <= reach + (def ? 9 : 0)) cands.push([a, Math.max(1, a.p.stats.rebounding * (1 + a.eff("rebound")) * (boost ? 1.6 : 1) * inside * Math.max(0.4, 1 + 0.35 * this.edge(a)))]);
     }
@@ -915,6 +967,8 @@ const AI = (() => {
       const nearArc = d > S.ARC - 40 && d < S.ARC + 60;
       const roll = r();
       if (nearArc && !m.needsClear && roll < 0.3) return I({ action: "cross", move: [side, 1], moveType: r() < 0.5 ? "stepback" : "sidestep" });
+      const mvs = a.p.moves || [];
+      if (mvs.length && roll > 0.3 && roll < 0.42) return I({ action: "cross", move: [side, mvs.includes("behind") && r() < 0.5 ? 1 : -1], moveType: mvs.includes("behind") && r() < 0.5 ? "behind" : "spin" });
       if (roll < 0.65) return I({ action: "cross", move: [side, -1], moveType: "drive" });
       if (roll < 0.9) return I({ action: "cross", move: [side, 0], moveType: "cross" });
       return I({ action: "cross", move: [0, 0], moveType: "hesi" });
@@ -1085,7 +1139,8 @@ function scoutGameScore(won, margin, box) {
 }
 const KING = "King of the Courts";
 const ROUNDS = ["Round 1", "Round 2", "Quarterfinal", "Semifinal", "Final"];
-const SERIES_WINS = [1, 1, 2, 2, 2];     // one game to advance early; best of 3 from the Quarterfinal on
+const SERIES_WINS = [2, 2, 2, 2, 3];     // games are quick: every round is best of 3, the Final is best of 5
+const bestOf = r => 2 * SERIES_WINS[r] - 1;
 const FINAL_ROUND = ROUNDS.length - 1;
 const ROUND_OFFSETS = [-4, -2, 0, 4, 9];
 const TEAM_POOL = ["Night Owls", "Hoop Dreams", "Concrete Kings", "Buckets Inc", "Fast Break Five", "Rim Rattlers", "Blacktop Bandits", "Street Legends", "Glass Eaters", "Swish City", "And-One Crew", "Nothing But Net", "Full Court Press", "Ballin Brothers"];
@@ -1142,7 +1197,7 @@ function settleOverall(p, target) {
 }
 function makeCrew(rng, base) {
   return [rng.choice(["PG", "SG"]), rng.choice(["SF", "SG", "PF"]), rng.choice(["C", "PF"])]
-    .map(pos => settleOverall(generatePlayer(rng, base, pos), Math.min(99, base + rng.randint(-2, 2))));
+    .map(pos => giveBadges(settleOverall(generatePlayer(rng, base, pos), Math.min(99, base + rng.randint(-2, 2)))));
 }
 function crewPlayers(ci, k) { return makeCrew(new Rng(`${TIERS[ci].court}|${TIERS[ci].crews[k]}`), TIERS[ci].base + ROUND_OFFSETS[k]); }
 // Tournament bracket for one entry: two random crews, then that court's champions in the final.
@@ -1305,7 +1360,7 @@ class Career {
   constructor(d) {
     Object.assign(this, { cash: 100, fame: 0, tier: 0, champion: false, starters: [0, 1], tourney: null, entries: 0, titles: 0, games: 0, market: null, moves: {},
       stage: "hs", team: null, startTier: 0, gamesAtDraft: 0, hsLog: [], hsDone: false, hsChamp: false, draftGrade: null, gold: false, ladder: 2, hustleLog: [], hustleChamp: false, hustlePending: false, throneLog: [], throneChamp: false, thronePending: false,
-      salary: 0, proLog: [], offers: null, gamesSinceOffers: 0, gym: null, gymDay: 0, hustlePicks: [], lastTourney: null, school: null, prog: {}, pickupSeed: 0 }, d);
+      salary: 0, proLog: [], offers: null, gamesSinceOffers: 0, gym: null, gymDay: 0, hustlePicks: [], lastTourney: null, school: null, prog: {}, pickupSeed: 0, unlocked: [], milestonesHit: [], crewBonus: 0 }, d);
     // older saves: give everyone a position
     if (!this.me.pos) this.me.pos = "SF";
     for (const p of this.crew) if (!p.pos) p.pos = guessPos(p);
@@ -1325,6 +1380,9 @@ class Career {
       if (this.tier > 3 && this.titles <= (this.hsChamp ? 1 : 0)) { this.tier = 3; this.salary = SALARY[3]; if (this.tourney && this.tourney.tier > 3) this.tourney = null; }
     }
     this.ladder = 3;
+    this.me.badges = this.me.badges || []; this.me.moves = this.me.moves || [];
+    for (const p of this.crew) if (p.cap == null) p.cap = overall(p) + 3;   // older teammates: a little room to grow
+    if (!d || !d.milestonesHit) this.checkMilestones(true);                 // older saves: grant what you've already reached (no cash)
     if (this.stage === "pro" && !this.salary) this.salary = SALARY[this.tier] || 0;
   }
   static fresh(name, main, pos = "SF", opts = {}) {
@@ -1415,7 +1473,7 @@ class Career {
     if (tier >= 2) { this.crew = this.teamRoster(tier); this.starters = [0, 1]; }
     else { this.crew = []; this.starters = []; this.ensureGym(); }   // the Hustle League is a pickup gym
     let extra = null;
-    if (rep.grade === "A" && this.crew.length < S.CREW_MAX) { extra = rarePlayer(rng, overall(this.me), RARITY[1]); this.crew.push(extra); }
+    if (rep.grade === "A" && this.crew.length < this.crewMax()) { extra = rarePlayer(rng, overall(this.me), RARITY[1]); this.crew.push(extra); }
     return { team: this.team, tier, bonus: d.bonus, walkOn: !!d.walkOn, extra, fameUp };
   }
   // Pickup games: two local crews at any court you've reached. They don't move you up.
@@ -1551,8 +1609,8 @@ class Career {
     if (throneT && box) { r.scout = scoutGameScore(won, margin, box); this.throneLog.push({ round: crew.round, opp: crew.name, won, margin, score: r.scout, box: { ...box } }); }
     if (hustleT && box) { r.scout = scoutGameScore(won, margin, box); this.hustleLog.push({ round: crew.round, opp: crew.name, won, margin, score: r.scout, box: { ...box } }); }
     for (const [k, v] of Object.entries(moveUse)) this.moves[k] = (this.moves[k] || 0) + v;
-    if (box) r.grow = this.growStats(box, won);   // playing is how you get better
-    // tournaments: early rounds are one game; from the Quarterfinal on you need 2 wins in a series
+    if (box) { r.grow = this.growStats(box, won); r.milestones = this.checkMilestones(false, ci === HUSTLE); }   // playing is how you get better (and unlocks things)
+    // tournaments: every round is a series (best of 3, the Final best of 5)
     let seriesWon = false, seriesLost = false;
     if (crew.mode === "tourney" && this.tourney) {
       const t = this.tourney; t.series = t.series || { w: 0, l: 0 };
@@ -1569,7 +1627,7 @@ class Career {
     if (won) {
       r.fame = (crew.mode === "tourney" ? 12 : 10) + 6 * ci + Math.floor(margin / 4);
       r.cash = crew.mode === "tourney" ? 30 + 25 * ci : 20 + 20 * ci;
-      if (bet) r.betWin = Math.round(bet * mult);
+      if (bet && (crew.mode !== "tourney" || ci === HUSTLE)) r.betWin = Math.round(bet * mult);
       r.tips = Math.round(this.crowdSize() * 0.25);
       if (seriesWon) {
         if (this.tourney.round < FINAL_ROUND) { this.tourney.round++; this.tourney.series = { w: 0, l: 0 }; r.nextRound = true; }
@@ -1595,7 +1653,7 @@ class Career {
     if (crew.mode === "tourney" && this.lastTourney && !this.tourney && !this.lastTourney.over) {   // the bracket is finished for you
       const t = this.lastTourney; t.over = true; t.champ = !!r.champ; t.outRound = t.round;
     }
-    if (ci === HUSTLE) { r.cash = 0; r.tips = 0; r.hustle = true; }   // nobody pays you in the Hustle League
+    if (ci === HUSTLE) { r.cash = 0; r.tips = 0; r.hustle = true; if (r.fame > 0) r.fame = 0; }   // nobody pays you or cares in the Hustle League
     if (hs) { r.cash = 0; r.tips = 0; r.betWin = 0; }                 // amateurs: no money in high school
     this.fame = Math.max(0, this.fame + r.fame); this.cash += r.cash + r.betWin + r.tips + (r.salary || 0);
     if (this.tier > 1) this.salary = Math.max(this.salary, SALARY[this.tier]);   // promotions come with a raise
@@ -1635,10 +1693,55 @@ class Career {
   marketLeft(now = Date.now()) { this.refreshMarket(now); return Math.max(0, MARKET_MS - (now - this.market.at)); }
   buyOffer(o) {
     if (o.sold) return [false, "Already signed."];
-    if (this.crew.length >= S.CREW_MAX) return [false, "Crew is full. Release someone first."];
+    if (this.crew.length >= this.crewMax()) return [false, "Crew is full. Release someone first."];
     if (this.cash < o.price) return [false, `Need $${o.price}.`];
-    this.cash -= o.price; this.crew.push(copyPlayer(o.player)); this.market.bought.push(o.i);
+    const np = copyPlayer(o.player), ri = RARITY.indexOf(o.rarity);
+    np.cap = overall(np) + [4, 6, 8, 10, 12, 15][Math.max(0, ri)]; np.badgeSlots = ri >= 3 ? 2 : 1; np.badges = [];
+    this.cash -= o.price; this.crew.push(np); this.market.bought.push(o.i);
     return [true, o.rarity.glow ? `${o.rarity.name.toUpperCase()} SIGNING! ${o.player.name} joins your crew!` : `${o.player.name} signed with your crew!`];
+  }
+  // ---- OVR milestones: attributes, slots, stamina, moves, crew slots, cash and fame
+  crewMax() { return S.CREW_MAX + (this.crewBonus || 0); }
+  attrSlots() { return MILESTONES.filter(ms => ms.slot && this.milestonesHit.includes(ms.ovr)).length; }
+  checkMilestones(silent = false, noFame = false) {
+    const got = [], ovr = overall(this.me);
+    MILESTONES.forEach((ms, i) => {
+      if (ms.ovr > ovr || this.milestonesHit.includes(ms.ovr)) return;
+      this.milestonesHit.push(ms.ovr);
+      if (ms.badge && !this.unlocked.includes(ms.badge)) { this.unlocked.push(ms.badge); if (this.me.badges.length < this.attrSlots() + (ms.slot ? 0 : 0)) this.me.badges.push(ms.badge); }
+      if (ms.move && !this.me.moves.includes(ms.move)) this.me.moves.push(ms.move);
+      if (ms.stamina) this.me.stamBonus = Math.min(0.32, (this.me.stamBonus || 0) + 0.08);
+      if (ms.crew) this.crewBonus = (this.crewBonus || 0) + 1;
+      const cash = silent ? 0 : 100 * (i + 1), fame = silent || noFame ? 0 : 25;
+      this.cash += cash; this.fame += fame;
+      got.push({ ...ms, cash, fame });
+    });
+    // fill any open slots with unlocked attributes
+    for (const b of this.unlocked) if (this.me.badges.length < this.attrSlots() && !this.me.badges.includes(b)) this.me.badges.push(b);
+    return got;
+  }
+  toggleBadge(id) {
+    const eq = this.me.badges;
+    if (eq.includes(id)) { eq.splice(eq.indexOf(id), 1); return [true, `${BADGES[id].name} off.`]; }
+    if (!this.unlocked.includes(id)) return [false, `Unlocks at OVR ${BADGES[id].ovr}.`];
+    if (eq.length >= this.attrSlots()) return [false, `All ${this.attrSlots()} slots are full. Take one off first.`];
+    eq.push(id); return [true, `${BADGES[id].name} equipped.`];
+  }
+  // ---- teammates: upgrade stats up to their cap, buy them attributes
+  mateStatCost(v) { return Math.floor(25 + v * 2.2); }
+  upgradeMate(p, k) {
+    const v = p.stats[k], cost = this.mateStatCost(v);
+    if (overall(p) >= (p.cap ?? overall(p) + 3)) return [false, `${p.name} is maxed out (cap OVR ${p.cap}).`];
+    if (v >= S.STAT_MAX) return [false, "That stat is maxed."];
+    if (this.cash < cost) return [false, `Need $${cost}.`];
+    this.cash -= cost; p.stats[k] = Math.min(S.STAT_MAX, v + 2); return [true, `${S.LABEL[k]} up to ${p.stats[k]}!`];
+  }
+  buyMateBadge(p, id) {
+    p.badges = p.badges || []; const slots = p.badgeSlots || 1, price = BADGES[id].price;
+    if (p.badges.includes(id)) return [false, "Already has it."];
+    if (p.badges.length >= slots) return [false, `${p.name} has no open attribute slot.`];
+    if (this.cash < price) return [false, `Need $${price}.`];
+    this.cash -= price; p.badges.push(id); return [true, `${p.name} learned ${BADGES[id].name}!`];
   }
   // ---- your stats grow by playing: a steady % every game toward the next point, more when you play well
   //      (shooting grows fastest when you shoot well). 100% = +1 to that stat.
@@ -1681,8 +1784,8 @@ class Career {
   }
   toggleStarter(i) { if (!this.starters.includes(i)) this.starters = [this.starters[this.starters.length - 1], i]; }
   toJSON() {
-    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed } = this;
-    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed };
+    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed, unlocked, milestonesHit, crewBonus } = this;
+    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed, unlocked, milestonesHit, crewBonus };
   }
 }
 
@@ -1704,11 +1807,12 @@ const Luck = {
   mysteryCost(tier) { return 150 + 120 * tier; },
   rollMystery(c, rng) {
     const cost = this.mysteryCost(c.tier);
-    if (c.cash < cost || c.crew.length >= S.CREW_MAX) return null;
+    if (c.cash < cost || c.crew.length >= c.crewMax()) return null;
     c.cash -= cost;
     const r = rng.choices(this.RARITIES, this.RARITIES.map(x => x[1]));
     const rar = RARITY.find(x => x.name === r[2]);
-    const p = rarePlayer(rng, overall(c.me) + (r[0] === "Bum" ? -6 : 0), rar); c.crew.push(p);
+    const p = rarePlayer(rng, overall(c.me) + (r[0] === "Bum" ? -6 : 0), rar), ri = RARITY.indexOf(rar);
+    p.cap = overall(p) + [4, 6, 8, 10, 12, 15][Math.max(0, ri)]; p.badgeSlots = ri >= 3 ? 2 : 1; p.badges = []; c.crew.push(p);
     return [r[0], p];
   },
   // +0.12x for every point of OVR they have on you (1.2x floor when you're the favorite, 6x cap)
@@ -2135,7 +2239,7 @@ class HubScreen extends Screen {
       [{ id: "play", go: () => App.switch(new CourtScreen()) }, { id: "side", go: () => this.sideHustle() }],
       [{ id: "crew", name: "Crew", go: () => App.switch(this.c.stage === "pro" && this.c.tier === HUSTLE ? new GymScreen() : new CrewScreen()) },
        { id: "train", name: "Progress", go: () => App.switch(new TrainScreen()) },
-       { id: "attr", name: "Attributes", go: () => this.open(() => new AttrScreen()) }],
+       { id: "attr", name: "Attributes", go: () => this.open(() => new AttributesScreen()) }],
       [{ id: "market", name: "Player Market", go: () => this.shop(() => new MarketScreen()) },
        { id: "mystery", name: "Mystery Baller", go: () => this.shop(() => new MysteryScreen()) },
        { id: "luck", name: "Luck Machine", go: () => this.shop(() => new SlotScreen()) }],
@@ -2169,9 +2273,9 @@ class HubScreen extends Screen {
   tileInfo(id) {
     const c = this.c;
     return {
-      crew: c.stage === "pro" && c.tier === HUSTLE ? `${c.likesYou().length} like you` : `${c.crew.length}/${S.CREW_MAX} players`,
+      crew: c.stage === "pro" && c.tier === HUSTLE ? `${c.likesYou().length} like you` : `${c.crew.length}/${c.crewMax()} players`,
       train: `Shooting ${Math.round(c.prog.shooting || 0)}% to next`,
-      attr: `${ATTRS[c.me.main].name} Lv ${c.me.mainLvl}`,
+      attr: `${c.me.badges.length}/${c.attrSlots()} slots · ${c.unlocked.length} earned`,
       market: `New in ${fmtTime(c.marketLeft())}`,
       mystery: `$${Luck.mysteryCost(c.tier)} a roll`,
       luck: "Spin to win",
@@ -2268,7 +2372,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 43 (no steal spam)");
+    this.footer("Progress saves automatically in this browser  ·  version 44 (attributes & milestones)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -2356,7 +2460,7 @@ class CourtScreen extends Screen {
           if (t) { ctx.save(); ctx.beginPath(); ctx.rect(x + 4, y + 106, 122, 24); ctx.clip(); text(games[r].name, x + 8, y + 110, { size: 20 }); ctx.restore(); }
           else text("???", x + 8, y + 110, { size: 20, color: C.grey });
           const s = now && t.series ? t.series : null;
-          text(t ? `OVR ${games[r].ovr}${done ? " ✓" : s && SERIES_WINS[r] > 1 ? `  ${s.w}-${s.l}` : ""}` : (SERIES_WINS[r] > 1 ? "best of 3" : "1 game"), x + 8, y + 134, { size: 18, color: done ? C.green : now ? C.gold : C.grey, weight: 500 });
+          text(t ? `OVR ${games[r].ovr}${done ? " ✓" : s && SERIES_WINS[r] > 1 ? `  ${s.w}-${s.l}` : ""}` : (SERIES_WINS[r] > 1 ? `best of ${bestOf(r)}` : "1 game"), x + 8, y + 134, { size: 18, color: done ? C.green : now ? C.gold : C.grey, weight: 500 });
         });
         text(o.game ? `▶ PLAY ${roundLabel(o.game).toUpperCase()}` : "▶ ENTER", 838, y + 16, { size: 26, color: C.gold, right: true, display: true });
         hit(140, y, 720, h, () => this.pick(i));
@@ -2441,7 +2545,7 @@ class MarketScreen extends Screen {
       text("No player", x + 105, 364, { size: 26, color: "#50535f", center: true });
       text("Earn more fame", x + 105, 392, { size: 20, color: "#50535f", center: true, weight: 500 });
     }
-    text(`Crew ${c.crew.length}/${S.CREW_MAX}  ·  players are built around your OVR (${overall(c.me)})  ·  ▲ = rarity-boosted stat`, 500, 570, { size: 22, color: C.grey, center: true, weight: 500 });
+    text(`Crew ${c.crew.length}/${c.crewMax()}  ·  players are built around your OVR (${overall(c.me)})  ·  ▲ = rarity-boosted stat`, 500, 570, { size: 22, color: C.grey, center: true, weight: 500 });
     if (this.msg) text(this.msg, 500, 606, { size: 26, center: true });
     this.footer("◀ ▶ pick  ·  Enter to sign  ·  The market refreshes every 5 minutes");
   }
@@ -2449,7 +2553,8 @@ class MarketScreen extends Screen {
 
 // High school games go straight to tip-off (no betting); everything else offers a side bet first.
 function startGame(ci, game) {
-  if (App.career.stage === "hs" || !BET_CAP[ci]) App.switch(new MatchScreen(ci, game, 0, 1));   // no bets in high school or at the Olympics
+  const tourneyNoBet = game.mode === "tourney" && ci !== HUSTLE;   // tournaments pay prize money, no side bets (except the broke Hustle League)
+  if (App.career.stage === "hs" || !BET_CAP[ci] || tourneyNoBet) App.switch(new MatchScreen(ci, game, 0, 1));   // no bets in high school or at the Olympics
   else App.switch(new WagerScreen(ci, game));
 }
 
@@ -2757,7 +2862,7 @@ function drawPerson(m, a, highlight) {
   drawBody(g, P, a, look, team, front, a.stun > 0, !!(a.anim && a.anim.kind === "celebrate"));
   pixelate(g);
   ctx.imageSmoothingEnabled = false;
-  const spin = a.anim && a.anim.kind === "dunk" && a.dunkStyle === "360" ? Math.cos(a.anim.t / a.anim.dur * Math.PI * 2) : 1;   // 360: turns all the way around
+  const spin = a.anim && ((a.anim.kind === "dunk" && a.dunkStyle === "360") || a.anim.kind === "spin") ? Math.cos(a.anim.t / a.anim.dur * Math.PI * 2) : 1;   // 360 dunk / spin move: turns all the way around
   if (spin !== 1) { ctx.save(); ctx.translate(x, 0); ctx.scale(Math.abs(spin) < 0.12 ? 0.12 * Math.sign(spin || 1) : spin, 1); ctx.translate(-x, 0); }
   ctx.drawImage(sprCanvas, Math.round(x - SPR.OX * PX), Math.round(y - up + P.crouch - SPR.OY * PX), SPR.W * PX, SPR.H * PX);
   if (spin !== 1) ctx.restore();
@@ -3311,10 +3416,13 @@ class ResultScreen extends Screen {
     else if (r.series && r.series.need > 1 && (r.nextRound || r.champ)) { text(`Won the ${ROUNDS[r.series.round]} series ${r.series.w}-${r.series.l}!`, 500, y, { size: 28, color: C.green, center: true }); y += 34; }
     else if (r.series && r.series.need > 1 && r.eliminated) { text(`Lost the ${ROUNDS[r.series.round]} series ${r.series.w}-${r.series.l}.`, 500, y, { size: 28, color: C.red, center: true }); y += 34; }
     if (r.nextRound && c.tourney) { text(`On to the ${ROUNDS[c.tourney.round]}!`, 500, y, { size: 32, color: C.gold, center: true, display: true }); y += 40; }
-    if (r.hustle) { text(c.stage === "pro" && c.tier > HUSTLE ? "Side hustle: no salary, no prize money. Only your bets pay." : "Hustle League: no prize money. Only your bets pay.", 500, y, { size: 22, color: C.grey, center: true, weight: 500 }); y += 30; }
+    if (r.hustle) { text(c.stage === "pro" && c.tier > HUSTLE ? "Side hustle: no salary, no prize money, no fame. Only your bets pay." : "Hustle League: no prize money, no fame. Only your bets pay.", 500, y, { size: 22, color: C.grey, center: true, weight: 500 }); y += 30; }
     if (r.offers) { text("SCOUTS ARE CALLING! Teams want to sign you.", 500, y, { size: 28, color: C.gold, center: true, display: true }); y += 38; }
     for (const h of r.hurt || []) { text(`${h.name} got hurt: out ${h.games} games`, 500, y, { size: 24, color: "#ff8a7a", center: true }); y += 30; }
     if (r.newFans && r.newFans.length) { text(`${r.newFans.join(" & ")} ${r.newFans.length > 1 ? "like" : "likes"} you now. They'll run the Hustle Classic with you.`, 500, y, { size: 22, color: C.green, center: true }); y += 30; }
+    for (const ms of r.milestones || []) {   // OVR milestones reached this game
+      text(`MILESTONE: OVR ${ms.ovr}!  ${milestoneText(ms)}  ·  +$${ms.cash}${ms.fame ? `  +${ms.fame} fame` : ""}`, 500, y, { size: 24, color: C.gold, center: true, display: true }); y += 32;
+    }
     if (r.grow) {
       const g = r.grow.gains;
       text(S.STATS.map(k => `${S.LABEL[k].slice(0, 3).toUpperCase()} +${g[k]}%`).join("   "), 500, y, { size: 22, color: C.grey, center: true, weight: 500 }); y += 28;
@@ -3390,7 +3498,7 @@ class BracketScreen extends Screen {
     if (t.over) status = t.champ ? "CHAMPIONS! You won it all." : `Knocked out in ${(ROUNDS[t.outRound ?? t.round].startsWith("Round") ? "" : "the ") + ROUNDS[t.outRound ?? t.round]}. The field played on.`;
     else {
       const s = t.series || { w: 0, l: 0 }, bo3 = SERIES_WINS[t.round] > 1;
-      status = `You're alive · ${ROUNDS[t.round]} (${bo3 ? "best of 3" : "1 game"}${bo3 && s.w + s.l ? `, series ${s.w}-${s.l}` : ""})`;
+      status = `You're alive · ${ROUNDS[t.round]} (${bo3 ? `best of ${bestOf(t.round)}` : "1 game"}${bo3 && s.w + s.l ? `, series ${s.w}-${s.l}` : ""})`;
     }
     text(status, 500, 56, { size: 24, color: t.over && !t.champ ? "#ff9a8a" : C.white, center: true });
     // round labels
@@ -3411,7 +3519,7 @@ class BracketScreen extends Screen {
     // the Final and the champion in the middle
     const fm = rounds[FINAL_ROUND][0], mid = this.cy(4, 0);
     text("FINAL", BR.FX + BR.FW / 2, mid - 52, { size: 22, color: !t.over && t.round === FINAL_ROUND ? C.gold : C.grey, center: true, display: true });
-    text("best of 3", BR.FX + BR.FW / 2, mid - 34, { size: 16, color: C.grey, center: true, weight: 500 });
+    text(`best of ${bestOf(FINAL_ROUND)}`, BR.FX + BR.FW / 2, mid - 34, { size: 16, color: C.grey, center: true, weight: 500 });
     this.match(FINAL_ROUND, 0, fm, BR.FX, mid - 13, mid + 13, BR.FW, false);
     line(BR.X[3] + BR.W + 10, mid, BR.FX, mid - 13, "#3a3d4a", 1.5); line(S.W - BR.X[3] - BR.W - 10, mid, BR.FX + BR.FW, mid + 13, "#3a3d4a", 1.5);
     const champ = fm.winner != null ? t.field[fm.winner] : null;
@@ -3430,7 +3538,7 @@ class BracketScreen extends Screen {
     text("YOUR GAMES", 18, 606, { size: 16, color: C.gold, display: true });
     ctx.save(); ctx.font = `700 ${Math.round(20 * 0.72)}px ${FONT_BODY}`; const lw = ctx.measureText(yourLine).width, room = 740;
     ctx.translate(18, 628); if (lw > room) ctx.scale(room / lw, 1); text(yourLine, 0, 0, { size: 20, color: C.white }); ctx.restore();
-    text("Single games: points  ·  Best of 3: series wins", 18, 656, { size: 18, color: C.grey, weight: 500 });
+    text("Series: games won", 18, 656, { size: 18, color: C.grey, weight: 500 });
     this.continueBtn();
   }
   continueBtn() {
@@ -3601,6 +3709,7 @@ class CrewScreen extends Screen {
     else if (K.down(k)) this.i = (this.i + 1) % c.crew.length;
     else if (K.ok(k)) { c.toggleStarter(this.i); App.save(); }
     else if ((k === "x" || k === "X") && c.stage === "pro") this.releaseSel();
+    else if ((k === "u" || k === "U") && c.stage === "pro" && c.crew[this.i]) App.switch(new TeammateScreen(this.i));
   }
   draw() {
     this.header("Your Crew"); this.backButton(() => App.switch(new HubScreen()));
@@ -3609,20 +3718,21 @@ class CrewScreen extends Screen {
     text(`${statLine(me)}   ${bodyLine(me)}   ${attrLabel(me)}`, 80, 176, { size: 20, color: C.grey, weight: 500 });
     c.crew.forEach((p, i) => {
       const y = 214 + i * 62, sel = i === this.i, starter = c.starters.includes(i);
-      rrect(60, y - 6, 700, 56, 8, sel ? "#34364a" : null, sel ? C.gold : null, 1.5);
+      rrect(60, y - 6, 600, 56, 8, sel ? "#34364a" : null, sel ? C.gold : null, 1.5);
       const status = p.injured > 0 ? `  · HURT (${p.injured} games)` : starter ? "  · STARTER" : "";
       text(`${p.pos}  #${p.number} ${p.name}  OVR ${overall(p)}${status}`, 80, y, { size: 28, color: p.injured > 0 ? "#ff8a7a" : starter ? C.green : C.white });
-      const wear = p.wear || 0; rrect(600, y + 4, 90, 8, 4, "#2a2c36"); rrect(600, y + 4, 90 * (1 - wear), 8, 4, wear > 0.6 ? C.red : wear > 0.3 ? C.orange : C.green);
-      text(wear > 0.6 ? "worn out" : wear > 0.3 ? "tired" : "fresh", 696, y, { size: 18, color: C.grey });
-      text(`${statLine(p)}   ${bodyLine(p)}   ${attrLabel(p)}`, 80, y + 26, { size: 20, color: C.grey, weight: 500 });
-      hit(60, y - 6, 700, 56, () => { this.i = i; });
+      const wear = p.wear || 0; rrect(500, y + 4, 80, 8, 4, "#2a2c36"); rrect(500, y + 4, 80 * (1 - wear), 8, 4, wear > 0.6 ? C.red : wear > 0.3 ? C.orange : C.green);
+      text(wear > 0.6 ? "worn out" : wear > 0.3 ? "tired" : "fresh", 588, y, { size: 18, color: C.grey });
+      text(`${statLine(p)}   ${bodyLine(p)}${(p.badges || []).length ? "   ★ " + badgeLabel(p) : ""}`, 80, y + 26, { size: 18, color: C.grey, weight: 500 });
+      hit(60, y - 6, 600, 56, () => { this.i = i; });
       if (sel) {
+        if (c.stage === "pro") { rrect(676, y - 2, 92, 44, 8, "#2a2214", C.gold, 1.5); text("Upgrade", 722, y + 20, { size: 22, color: C.gold, center: true }); hit(676, y - 2, 92, 44, () => App.switch(new TeammateScreen(i))); }
         if (!starter) { rrect(776, y - 2, 88, 44, 8, "#264a2e"); text("Start", 820, y + 20, { size: 26, color: C.green, center: true }); hit(776, y - 2, 88, 44, () => { c.toggleStarter(i); App.save(); }); }
         if (c.stage === "pro") { rrect(872, y - 2, 88, 44, 8, "#4a2622"); text("Release", 916, y + 20, { size: 24, color: C.red, center: true }); hit(872, y - 2, 88, 44, () => this.releaseSel()); }
       }
     });
     if (this.msg) text(this.msg, 500, 618, { size: 26, center: true });
-    this.footer(c.stage === "hs" ? "Your high school team  ·  Enter = make starter  ·  Rest tired players to avoid injuries" : "Pick a player  ·  Enter = make starter  ·  X = release  ·  Rest tired players to avoid injuries");
+    this.footer(c.stage === "hs" ? "Your high school team  ·  Enter = make starter  ·  Rest tired players to avoid injuries" : "Pick a player  ·  Enter = make starter  ·  U = upgrade  ·  X = release  ·  Rest tired players");
   }
 }
 
@@ -3672,6 +3782,78 @@ class GymScreen extends Screen {
   }
 }
 
+// Your attributes: equip what you've earned (limited slots); the Archetype (Sharpshooter etc.) is upgraded separately
+class AttributesScreen extends Screen {
+  constructor() { super(); this.i = 0; this.msg = ""; }
+  key(k) {
+    const n = BADGE_ORDER.length;
+    if (K.back(k)) App.switch(new HubScreen());
+    else if (K.up(k)) this.i = (this.i - 1 + n) % n; else if (K.down(k)) this.i = (this.i + 1) % n;
+    else if (K.ok(k)) { const [, msg] = this.c.toggleBadge(BADGE_ORDER[this.i]); this.msg = msg; App.save(); }
+    else if (k === "a" || k === "A") App.switch(new AttrScreen());
+  }
+  draw() {
+    this.header(); this.backButton(() => App.switch(new HubScreen()));
+    const c = this.c, slots = c.attrSlots(), eq = c.me.badges;
+    text("Attributes", 500, 104, { size: 42, center: true, display: true });
+    text(`${eq.length}/${slots} slots used  ·  earn attributes and slots as your OVR climbs (you're ${overall(c.me)})`, 500, 140, { size: 22, color: C.grey, center: true, weight: 500 });
+    rrect(780, 88, 196, 36, 8, "#2a2214", C.gold, 1.5); text("Archetype upgrades ▸", 878, 106, { size: 20, color: C.gold, center: true }); hit(780, 88, 196, 36, () => App.switch(new AttrScreen()));
+    BADGE_ORDER.forEach((id, i) => {
+      const B = BADGES[id], y = 164 + i * 50, sel = i === this.i, have = c.unlocked.includes(id), on = eq.includes(id);
+      rrect(60, y, 880, 44, 8, sel ? "#2e3040" : "#1c1e26", sel ? C.gold : on ? C.green : null, 1.5);
+      text(B.name, 80, y + 6, { size: 24, color: have ? (on ? C.green : C.white) : "#5c5f6b" });
+      text(B.desc, 80, y + 26, { size: 16, color: have ? C.grey : "#4a4c58", weight: 500 });
+      if (!have) text(`OVR ${B.ovr}`, 920, y + 13, { size: 20, color: "#6a6d7a", right: true, display: true });
+      else { rrect(830, y + 7, 96, 30, 8, on ? "#264a2e" : "#2a2c36"); text(on ? "ON" : "EQUIP", 878, y + 22, { size: 18, color: on ? C.green : C.white, center: true, display: true }); }
+      hit(60, y, 880, 44, () => { this.i = i; const [, msg] = c.toggleBadge(id); this.msg = msg; App.save(); });
+    });
+    if (this.msg) text(this.msg, 500, 622, { size: 24, color: C.gold, center: true });
+    this.footer("▲▼ pick  ·  Enter = equip / take off  ·  A = Archetype upgrades");
+  }
+}
+
+// One teammate: raise stats up to their cap, buy them an attribute
+class TeammateScreen extends Screen {
+  constructor(i) { super(); this.idx = i; this.row = 0; this.msg = ""; }
+  get p() { return this.c.crew[this.idx]; }
+  rowsList() { return [...S.STATS.map(k => ["stat", k]), ...BADGE_ORDER.map(b => ["badge", b])]; }
+  act(r) { const c = this.c, [kind, id] = r, [, msg] = kind === "stat" ? c.upgradeMate(this.p, id) : c.buyMateBadge(this.p, id); this.msg = msg; App.save(); }
+  key(k) {
+    const rows = this.rowsList();
+    if (K.back(k)) App.switch(new CrewScreen());
+    else if (K.up(k)) this.row = (this.row - 1 + rows.length) % rows.length; else if (K.down(k)) this.row = (this.row + 1) % rows.length;
+    else if (K.ok(k)) this.act(rows[this.row]);
+  }
+  draw() {
+    this.header(); this.backButton(() => App.switch(new CrewScreen()));
+    const c = this.c, p = this.p; if (!p) { App.switch(new CrewScreen()); return; }
+    if (p.cap == null) p.cap = overall(p) + 3;
+    rrect(140, 92, 150, 150, 12, "#1b1d26"); ctx.save(); ctx.beginPath(); ctx.rect(140, 92, 150, 150); ctx.clip(); drawPortrait(p, 140, 106, 4); ctx.restore();
+    text(p.name, 310, 96, { size: 38, display: true });
+    text(`${p.pos} · #${p.number} · ${bodyLine(p)}`, 310, 140, { size: 21, color: C.grey, weight: 500 });
+    text(`OVR ${overall(p)}  /  cap ${p.cap}`, 310, 170, { size: 30, color: overall(p) >= p.cap ? C.orange : C.gold, display: true });
+    text(`Archetype: ${attrLabel(p)}   ·   Attributes (${(p.badges || []).length}/${p.badgeSlots || 1}): ${badgeLabel(p) || "none"}`, 310, 210, { size: 20, color: C.grey, weight: 500 });
+    const rows = this.rowsList();
+    rows.forEach(([kind, id], i) => {
+      const col = kind === "stat" ? 0 : 1, j = kind === "stat" ? i : i - 5, x = col ? 520 : 60, y = 258 + j * (col ? 40 : 52), w = col ? 420 : 420, sel = i === this.row;
+      rrect(x, y, w, col ? 36 : 46, 8, sel ? "#2e3040" : "#1c1e26", sel ? C.gold : null, 1.5);
+      if (kind === "stat") {
+        const v = p.stats[id];
+        text(`${S.LABEL[id]}  ${v}`, x + 16, y + 12, { size: 24 });
+        text(overall(p) >= p.cap ? "capped" : `+2  $${c.mateStatCost(v)}`, x + w - 14, y + 12, { size: 22, color: overall(p) >= p.cap ? C.grey : C.green, right: true });
+      } else {
+        const B = BADGES[id], has = (p.badges || []).includes(id);
+        text(B.name, x + 14, y + 8, { size: 21, color: has ? C.green : C.white });
+        text(has ? "LEARNED" : `$${B.price}`, x + w - 12, y + 8, { size: 20, color: has ? C.green : C.gold, right: true });
+      }
+      hit(x, y, w, col ? 36 : 46, () => { this.row = i; this.act([kind, id]); });
+    });
+    text("+2 per buy, up to their cap", 262, 520, { size: 19, color: C.grey, center: true, weight: 500 }); text("Legend+ players get 2 attribute slots", 262, 546, { size: 19, color: C.grey, center: true, weight: 500 });
+    if (this.msg) text(this.msg, 290, 566, { size: 24, color: C.gold, center: true });
+    this.footer("▲▼ pick  ·  Enter = buy  ·  Esc back");
+  }
+}
+
 class TrainScreen extends Screen {   // "Progress": stats grow by playing, not by paying
   key(k) { if (K.back(k) || K.ok(k)) App.switch(new HubScreen()); }
   draw() {
@@ -3686,6 +3868,8 @@ class TrainScreen extends Screen {   // "Progress": stats grow by playing, not b
       rrect(560, y + 18, 210, 16, 8, "#30323e"); rrect(560, y + 18, Math.max(6, 210 * pct / 100), 16, 8, k === "shooting" ? C.orange : C.green);
       text(`${pct}%`, 834, y + 14, { size: 26, right: true });
     });
+    const next = MILESTONES.filter(ms => !c.milestonesHit.includes(ms.ovr)).slice(0, 3);
+    if (next.length) text("NEXT MILESTONES  " + next.map(ms => `OVR ${ms.ovr}: ${milestoneText(ms)}`).join("   ·   "), 500, 612, { size: 18, color: C.gold, center: true, weight: 500 });
     text("Every game: +15% to every stat (+5% more for a win)", 500, 520, { size: 23, color: C.white, center: true, weight: 500 });
     text("Shooting: up to +45% more for a good shooting game (makes and greens)", 500, 550, { size: 23, color: C.orange, center: true, weight: 500 });
     text("Handles: ankle breaks  ·  Defense: steals and blocks  ·  Rebounding: boards", 500, 580, { size: 23, color: C.grey, center: true, weight: 500 });
@@ -3713,7 +3897,7 @@ class AttrScreen extends Screen {
     else if (K.ok(k)) this.buy(this.row);
   }
   draw() {
-    this.header("Attribute Shop"); this.backButton(() => App.switch(new HubScreen()));
+    this.header("Archetype"); this.backButton(() => App.switch(new AttributesScreen()));
     const c = this.c, me = c.me, pct = Math.round(S.SEC_PCT * 100);
     const mainCost = c.attrCost("main");
     const rows = [[`MAIN: ${ATTRS[me.main].name}   Lv ${me.mainLvl}/${S.MAIN_MAX}`, me.mainLvl >= S.MAIN_MAX ? "MAXED" : `Buy level · $${mainCost}`, "Full effect"]];
@@ -3797,7 +3981,7 @@ class MysteryScreen extends Screen {
   constructor() { super(); Object.assign(this, { rng: new Rng(), reveal: null, msg: "" }); }
   roll() {
     const c = this.c;
-    if (c.crew.length >= S.CREW_MAX) { this.msg = "Crew is full. Release someone in the Crew screen."; return; }
+    if (c.crew.length >= c.crewMax()) { this.msg = "Crew is full. Release someone in the Crew screen."; return; }
     const res = Luck.rollMystery(c, this.rng);
     if (!res) { this.msg = `Need $${Luck.mysteryCost(c.tier)}.`; return; }
     this.reveal = res; this.msg = ""; App.save();
@@ -3808,7 +3992,7 @@ class MysteryScreen extends Screen {
     const c = this.c, cost = Luck.mysteryCost(c.tier);
     text(`Pay $${cost} for a random baller. Could be a Legend… could be a Bum.`, 500, 168, { size: 30, center: true });
     Luck.RARITIES.forEach(([name, pct], i) => { const x = 290 + (i % 3) * 210, y = 220 + Math.floor(i / 3) * 40; text(`${name}: ${pct}%`, x, y, { size: 30, color: name === "Eternal" ? rainbow(x - 80, y - 10, 160, 20) : rarColorName(name), center: true }); });
-    text(`Your best crew member is OVR ${Math.max(...c.crew.map(overall))}  ·  Crew ${c.crew.length}/${S.CREW_MAX}`, 500, 338, { size: 23, color: C.grey, center: true, weight: 500 });
+    text(`Your best crew member is OVR ${Math.max(...c.crew.map(overall))}  ·  Crew ${c.crew.length}/${c.crewMax()}`, 500, 338, { size: 23, color: C.grey, center: true, weight: 500 });
     if (this.reveal) {
       const [rarity, p] = this.reveal;
       const rc = rarColorName(rarity), top = rarity === "Mythic" || rarity === "Eternal";
@@ -3851,6 +4035,7 @@ window.addEventListener("keydown", e => {
     if (e.key === " ") App.edges.shootPressed = true;
     if (k === "j") App.edges.passPressed = true;
     if (k === "k") App.edges.movePressed = true;
+    if (k === "l") App.edges.specialPressed = true;
     if (k === "q") App.edges.switchPressed = true;
 
     if (!(App.screen instanceof MatchScreen) || ["Escape", "p", "P", "f", "F"].includes(e.key)) App.screen.key(e.key);
@@ -3879,6 +4064,7 @@ sprintBtn.addEventListener("pointerdown", e => { e.preventDefault(); Sound.wake(
 for (const ev of ["pointerup", "pointerleave", "pointercancel"]) sprintBtn.addEventListener(ev, () => { App.touch.sprint = false; sprintBtn.classList.remove("on"); });
 document.getElementById("b-pass").addEventListener("pointerdown", e => { e.preventDefault(); App.edges.passPressed = true; });
 document.getElementById("b-move").addEventListener("pointerdown", e => { e.preventDefault(); App.edges.movePressed = true; });
+document.getElementById("b-spin").addEventListener("pointerdown", e => { e.preventDefault(); App.edges.specialPressed = true; });
 document.getElementById("b-switch").addEventListener("pointerdown", e => { e.preventDefault(); App.edges.switchPressed = true; });
 document.getElementById("b-pause").addEventListener("pointerdown", e => { e.preventDefault(); App.screen.key("Escape"); });
 if (isTouch) document.getElementById("hint").textContent = "Tap menus to pick. In a game, use the buttons below. Hold SHOOT and let go in the green.";
