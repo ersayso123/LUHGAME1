@@ -956,7 +956,13 @@ const HS_POOL = ["Lincoln Lions", "Roosevelt Rams", "Kennedy Cougars", "Jefferso
 const FRANCHISES = ["Metro Kings", "Harbor Hawks", "Capital Crowns", "Skyline Sharks", "Iron City Titans", "Bay Blaze", "Northside Knights", "Desert Suns"];
 // What the scout's grade gets you
 // High school can get you as far as the Minor League, never higher
-const DRAFT = { A: { tier: 3, bonus: 600, note: "a Rare teammate" }, B: { tier: 3, bonus: 300 }, C: { tier: 2, bonus: 120 }, D: { tier: 1, bonus: 40 }, F: { tier: 1, bonus: 0, walkOn: true } };
+// Where you start is decided by how far you went: win the Final = Minor League, reach the Final = Rec League,
+// out before that = Hustle League. The scout's grade decides your bonus and gives your fame a boost.
+const DRAFT = { A: { bonus: 600, note: "a Rare teammate" }, B: { bonus: 300 }, C: { bonus: 120 }, D: { bonus: 40 }, F: { bonus: 0, walkOn: true } };
+const SCOUT_FAME = { A: 120, B: 70, C: 35, D: 10, F: 0 };
+// the scout's buzz gets you close to the next level, never past it (you still have to earn the call-up)
+function placedFame(fame, tier, up) { const f = Math.max(fame, LEVEL_FAME[tier]) + up; return tier >= 2 && tier < THRONE ? Math.min(f, LEVEL_FAME[tier + 1] - 20) : f; }
+function placement(log, champ, low) { return champ ? 3 : log.some(g => g.round === FINAL_ROUND) ? 2 : low; }
 function gradeOf(score) { return score >= 85 ? "A" : score >= 70 ? "B" : score >= 55 ? "C" : score >= 45 ? "D" : "F"; }
 // One high school game, as the scout sees it (0-100)
 function scoutGameScore(won, margin, box) {
@@ -1225,15 +1231,15 @@ class Career {
     if (!notes.length) notes.push(score >= 55 ? "Solid, but didn't stand out." : "Not ready yet. Needs to put in work.");
     return { games, avg: Math.round(avg), wins, score, grade: gradeOf(score), notes, tot };
   }
-  // ---- after the Hustle Classic: A = Minor League, B/C = Rec League, D/F = stay and grind
+  // ---- after the Hustle Classic: win the Final = Minor League, reach it = Rec League, otherwise stay and grind
   hustleVerdict(rep) {
     if (!this.hustlePending) return null;
-    const to = rep.grade === "A" ? 3 : (rep.grade === "B" || rep.grade === "C") ? 2 : HUSTLE;
-    this.tier = Math.max(this.tier, to); this.fame = Math.max(this.fame, LEVEL_FAME[this.tier]);
+    const to = placement(this.hustleLog, this.hustleChamp, HUSTLE), fameUp = SCOUT_FAME[rep.grade] || 0;
+    this.tier = Math.max(this.tier, to); this.fame = placedFame(this.fame, this.tier, fameUp);
     this.salary = Math.max(this.salary, SALARY[this.tier]);
     if (to >= 2 && this.crew.length < 2) { this.crew = [...this.teamRoster(to), ...this.crew]; this.starters = [0, 1]; }   // signed: a real roster
     this.hustlePending = false; this.hustleLog = []; this.hustleChamp = false;
-    return { tier: to, stayed: to === HUSTLE };
+    return { tier: to, stayed: to === HUSTLE, fameUp };
   }
   // ---- after the Throne Tournament: the Olympic committee only takes an A (85+)
   throneVerdict(rep) {
@@ -1269,16 +1275,16 @@ class Career {
   // ---- the scout's team signs you; your grade decides where you start in the chain
   recruit(rep) {
     if (this.stage !== "hs") return null;
-    const rng = new Rng(), d = DRAFT[rep.grade];
+    const rng = new Rng(), d = DRAFT[rep.grade], tier = placement(this.hsLog, this.hsChamp, HUSTLE), fameUp = SCOUT_FAME[rep.grade] || 0;
     this.stage = "pro"; this.team = rng.choice(FRANCHISES); this.draftGrade = rep.grade;
-    this.tier = d.tier; this.startTier = d.tier; this.gamesAtDraft = this.games; this.tourney = null; this.fame = Math.max(this.fame, LEVEL_FAME[d.tier]);
-    this.cash += d.bonus; this.salary = SALARY[d.tier];
+    this.tier = tier; this.startTier = tier; this.gamesAtDraft = this.games; this.tourney = null; this.fame = placedFame(this.fame, tier, fameUp);
+    this.cash += d.bonus; this.salary = SALARY[tier];
     // high school's over: your old teammates go their own way
-    if (d.tier >= 2) { this.crew = this.teamRoster(d.tier); this.starters = [0, 1]; }
+    if (tier >= 2) { this.crew = this.teamRoster(tier); this.starters = [0, 1]; }
     else { this.crew = []; this.starters = []; this.ensureGym(); }   // the Hustle League is a pickup gym
     let extra = null;
     if (rep.grade === "A" && this.crew.length < S.CREW_MAX) { extra = rarePlayer(rng, overall(this.me), RARITY[1]); this.crew.push(extra); }
-    return { team: this.team, tier: d.tier, bonus: d.bonus, walkOn: !!d.walkOn, extra };
+    return { team: this.team, tier, bonus: d.bonus, walkOn: !!d.walkOn, extra, fameUp };
   }
   // Pickup games: two local crews at any court you've reached. They don't move you up.
   crewsFor(ci) {
@@ -2121,7 +2127,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 34 (coach help calls)");
+    this.footer("Progress saves automatically in this browser  ·  version 35 (Final decides your league)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -2195,8 +2201,8 @@ class CourtScreen extends Screen {
         const h = 170;
         rrect(140, y, 720, h, 12, sel ? "#3d2f14" : "#2a2214", sel ? C.gold : "#6b5520", 2);
         text(TIERS[this.ci].tourney, 162, y + 12, { size: 38, color: C.gold, display: true });
-        const blurb = c.stage === "hs" ? "Scouts are watching. Lose a round and high school is over."
-          : this.ci === HUSTLE ? "A scout grades every game: great = Minor League, good = Rec, bad = stay."
+        const blurb = c.stage === "hs" ? "Reach the Final = Rec League. Win it = Minor League. Out early = Hustle."
+          : this.ci === HUSTLE ? "Reach the Final = Rec League. Win it = Minor League. A scout grades you too."
           : this.ci === OLYMPICS ? "The best teams in the country. Win it for the gold medal."
           : this.ci === THRONE ? (c.tier === THRONE ? "Olympic scouts are watching. Only an A gets you picked." : `Win it to become ${KING}`)
           : `Win it to move up to the ${TIERS[this.ci + 1].name}`;
@@ -3266,7 +3272,7 @@ class ScoutReportScreen extends Screen {
         text(v.tier === 3 ? "Straight to the Minor League!" : "Called up to the Rec League!", 500, y + 26, { size: 36, color: C.gold, center: true, display: true });
         text(`The ${this.c.team} want you at ${TIERS[v.tier].court}.`, 500, y + 64, { size: 24, center: true });
       }
-      text("A = Minor League  ·  B or C = Rec League  ·  D or F = stay", 500, y + 94, { size: 20, color: C.grey, center: true, weight: 500 });
+      text(`Win the Final = Minor League  ·  Reach it = Rec League  ·  Otherwise stay${v.fameUp ? `  ·  Scout: +${v.fameUp} fame` : ""}`, 500, y + 94, { size: 20, color: C.grey, center: true, weight: 500 });
       rrect(380, 644, 240, 46, 10, C.gold); text("CONTINUE", 500, 667, { size: 24, color: "#1a1406", center: true, display: true });
       hit(380, 644, 240, 46, () => App.switch(new HubScreen()));
       return;
@@ -3274,8 +3280,9 @@ class ScoutReportScreen extends Screen {
     text(`The ${d.team} signed you!`, 500, y + 26, { size: 36, color: C.gold, center: true, display: true });
     const start = `You start in the ${TIERS[d.tier].name} at ${TIERS[d.tier].court}${d.walkOn ? " as a walk-on" : ""}.`;
     text(start, 500, y + 62, { size: 26, center: true });
-    const perks = [d.bonus ? `Signing bonus $${d.bonus}` : "No signing bonus", d.extra ? `New teammate: ${d.extra.name} (Rare, OVR ${overall(d.extra)})` : null].filter(Boolean).join("  ·  ");
-    text(perks, 500, y + 92, { size: 22, color: C.green, center: true });
+    const perks = [d.bonus ? `Signing bonus $${d.bonus}` : "No signing bonus", d.fameUp ? `Scout buzz +${d.fameUp} fame` : null, d.extra ? `New teammate: ${d.extra.name} (Rare, OVR ${overall(d.extra)})` : null].filter(Boolean).join("  ·  ");
+    text(perks, 500, y + 86, { size: 22, color: C.green, center: true });
+    text("Win the Final = Minor League  ·  Reach it = Rec League  ·  Out earlier = Hustle League", 500, y + 108, { size: 16, color: C.grey, center: true, weight: 500 });
     rrect(380, 644, 240, 46, 10, C.gold); text("START YOUR PRO CAREER", 500, 667, { size: 22, color: "#1a1406", center: true, display: true });
     hit(380, 644, 240, 46, () => App.switch(new HubScreen()));
   }
