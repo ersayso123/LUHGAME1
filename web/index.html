@@ -278,7 +278,7 @@ class Match {
     this.injuriesOn = !!opts.injuries; this.injured = []; this.played = new Set(teamA);
     this.actors = [...teamA.map((p, i) => new Actor(p, 0, i)), ...teamB.map((p, i) => new Actor(p, 1, i))];
     // Class gap: a team rated well above the other dominates (steals, boards, contests, shooting). Grows faster than the gap.
-    const gap = teamOverall(teamA) - teamOverall(teamB), g = Math.sign(gap) * Math.min(1.3, Math.pow(Math.max(0, Math.abs(gap) - 6) / 14, 1.3));   // small gaps barely matter
+    const gap = teamOverall(teamA) - teamOverall(teamB), g = Math.sign(gap) * Math.min(1.3, Math.pow(Math.max(0, Math.abs(gap) - 3) / 12, 1.2));   // an 8-point gap clearly favors the better team   // small gaps barely matter
     this.edgeK = [g, -g];
     this.ball = new Ball(); this.score = [0, 0]; this.winner = null; this.messages = [];
     this.meter = null; this.elapsed = 0; this.controlled = this.team(0)[0];
@@ -755,10 +755,16 @@ class Match {
     const h = this.ball.holder;
     const arms = ((a.p.ws || 82) - (a.p.ht || 79) - 3);   // a long wingspan reaches further
     if (dist(a.pos, h.pos) > S.STEAL_RANGE + arms * 1.2) { a.cool = 0.4; return; }
-    a.cool = 0.9; a.setAnim("reach", 0.3);
-    const ch = S.STEAL_BASE + (a.p.stats.defense - h.p.stats.handles) / 250 + a.eff("steal") + 0.16 * this.edge(a) + arms * 0.006;
-    if (this.rng.random() < clamp(ch, 0.02, 0.75)) { if (h === this.mainGuy) this.box.to++; if (a === this.mainGuy) this.box.stl++; if (h.team === 0) this.nerves(0.15); this.ball.setHeld(a); this.turnover(a.team); this.say(`Stolen by ${a.p.name}!`); this.events.push({ type: "steal", x: a.x, y: a.y, team: a.team }); }
-    else a.stun = 0.2;
+    a.cool = 1.4; a.setAnim("reach", 0.3);
+    // timing matters: reach when the ball is on your side of the dribbler; reaching across him rarely works
+    const exposed = h.hand * (a.x - h.x) > 0 || Math.abs(a.x - h.x) < 6;
+    const ch = (S.STEAL_BASE + (a.p.stats.defense - h.p.stats.handles) / 250 + a.eff("steal") + 0.16 * this.edge(a) + arms * 0.006) * (exposed ? 1.2 : 0.35);
+    if (this.rng.random() < clamp(ch, 0.02, 0.7)) { if (h === this.mainGuy) this.box.to++; if (a === this.mainGuy) this.box.stl++; if (h.team === 0) this.nerves(0.15); this.ball.setHeld(a); this.turnover(a.team); this.say(`Stolen by ${a.p.name}!`); this.events.push({ type: "steal", x: a.x, y: a.y, team: a.team }); }
+    else {   // missed reach: you're off balance and he gets a step on you
+      a.stun = 0.45; a.vx *= 0.2; a.vy *= 0.2;
+      if (h.burst <= 0) h.burst = 0.5;
+      if (a.team === 0 && this.human) this.say("Reached and missed!", 0.9);
+    }
   }
   updateBall(dt) {
     const b = this.ball;
@@ -2262,7 +2268,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 42 (tougher, new pickup crews)");
+    this.footer("Progress saves automatically in this browser  ·  version 43 (no steal spam)");
   }
 }
 // Draw text that shrinks until it fits a width.
