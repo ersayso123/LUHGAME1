@@ -88,7 +88,7 @@ const S = {
   CL: 100, CT: 60, CR: 900, CB: 640,
   HOOP: [500, 115], ARC: 250, PAINT_HW: 80, PAINT_D: 190, CHECK: [500, 450],
   GAME_TO: 21, HALF: 11, SHOT_CLOCK: 14,
-  PR: 14, BASE_SPEED: 145, SPEED_PER: 1.6, PASS_SPEED: 600, ACCEL: 8, SPRINT: 1.35, STAMINA_DRAIN: 0.42, STAMINA_REGEN: 0.22,
+  PR: 14, BASE_SPEED: 145, SPEED_PER: 1.6, PASS_SPEED: 600, ACCEL: 8, SPRINT: 1.35, STAMINA_DRAIN: 0.42, STAMINA_REGEN: 0.22, ENERGY_DRAIN: 0.004, ENERGY_SPRINT: 0.005, ENERGY_REST: 0.012, GASSED: 0.4,
   METER_TIME: 0.5, METER_SWEET: 0.8, WIN_NEAR: 0.085, WIN_FAR: 0.028,
   DUNK_BASE: 0.82, LAYUP: 95, LAYUP_BASE: 0.6,
   STEAL_RANGE: 36, STEAL_BASE: 0.16, BLOCK_RANGE: 36, BLOCK_BASE: 0.10, GRAB: 20,
@@ -256,7 +256,7 @@ class Ball {
 // =====================================================================
 class Actor {
   constructor(p, team, slot) {
-    Object.assign(this, { p, team, slot, x: 0, y: 0, vx: 0, vy: 0, dash: null, plant: 0, moveTag: null, stepBackT: 0, sprinting: false, stamina: 1, streak: 0, bounces: 0, fx: 0, fy: -1, stun: 0, cool: 0, burst: 0, jump: 0, points: 0, think: 0, spot: null, spotT: 0, holdT: 0 });
+    Object.assign(this, { p, team, slot, x: 0, y: 0, vx: 0, vy: 0, dash: null, plant: 0, moveTag: null, stepBackT: 0, sprinting: false, stamina: 1, energy: 1, streak: 0, bounces: 0, fx: 0, fy: -1, stun: 0, cool: 0, burst: 0, jump: 0, points: 0, think: 0, spot: null, spotT: 0, holdT: 0 });
     // animation only (never affects the rules)
     const h = hashStr(p.name + p.number);
     this.look = makeLook(p); physOf(p);
@@ -268,10 +268,11 @@ class Actor {
   eff(k) { return effect(this.p, k); }
   baseSpeed() { return (S.BASE_SPEED + this.p.stats.speed * S.SPEED_PER) * (1 + this.eff("speed")); }
   maxSpeed() {   // heavier = a touch slower
-    let s = this.baseSpeed() * (this.hurt ? 0.7 : 1) * (1 - ((this.p.wt || 215) - 215) / 2500);
+    let s = this.baseSpeed() * (this.hurt ? 0.7 : 1) * (1 - ((this.p.wt || 215) - 215) / 2500) * (this.gassed ? 0.88 : 1);   // worn out = slower
     if (this.sprinting && this.stamina > 0.02) s *= S.SPRINT; if (this.burst > 0) s *= 1.2; return s;
   }
   get onFire() { return this.streak >= 2; }
+  get gassed() { return this.energy < S.GASSED; }
 }
 const MOVE_LABEL = { cross: "crossover", drive: "cross & drive", stepback: "step-back", sidestep: "step-back", go: "hesi-go", hesi: "hesi" };
 function toward2(a, pt) { const dx = pt[0] - a.x, dy = pt[1] - a.y, d = Math.hypot(dx, dy); return d < 4 ? [0, 0] : [dx / d * Math.min(1, d / 14), dy / d * Math.min(1, d / 14)]; }
@@ -311,6 +312,7 @@ class Match {
     this.coach = null; this.coachCool = 4; this.poss = { passes: 0 };
     this.coachEnabled = opts.coach !== false;
     this.bench = opts.bench || { 0: [], 1: [] }; this.subsLeft = [1, 1];
+    this.benchE = new Map(); this.benchPts = {}; this.fatigueSubs = 0;   // bench players' energy (they rest), points of players who sat down
     this.injuriesOn = !!opts.injuries; this.injured = []; this.played = new Set(teamA);
     this.actors = [...teamA.map((p, i) => new Actor(p, 0, i)), ...teamB.map((p, i) => new Actor(p, 1, i))];
     // Class gap: a team rated well above the other dominates (steals, boards, contests, shooting). Grows faster than the gap.
@@ -331,7 +333,27 @@ class Match {
   nearestOpp(a, pos) { pos = pos || a.pos; let best = null, bd = 1e9; for (const o of this.team(1 - a.team)) { const d = dist(o.pos, pos); if (d < bd) { bd = d; best = o; } } return [bd, best]; }
   openness(a) { return this.nearestOpp(a)[0]; }
 
+  // dead ball: a coach pulls his most worn-out player (never you) if someone fresh is on the bench
+  tiredSubs() {
+    for (const t of [0, 1]) {
+      const bench = this.bench[t] || []; if (!bench.length) continue;
+      const tired = this.team(t).filter(a => !(this.human && a === this.mainGuy) && !(this.benched && a === this.mainGuy) && a.energy < S.GASSED - 0.05).sort((x, y) => x.energy - y.energy)[0];
+      const fresh = bench.filter(p => (this.benchE.get(p) ?? 1) > 0.65 && !p.injured)[0];
+      if (!tired || !fresh) continue;
+      const out = tired.p;
+      bench.splice(bench.indexOf(fresh), 1, out); this.benchE.set(out, tired.energy);
+      this.benchPts[out.name] = (this.benchPts[out.name] || 0) + tired.points;
+      tired.p = fresh; tired.look = makeLook(fresh); tired.energy = this.benchE.get(fresh) ?? 1; tired.points = 0; tired.streak = 0; tired.stamina = 1;
+      if (t === 0) this.played.add(fresh);
+      this.fatigueSubs++;
+      this.events.push({ type: "tiredsub", team: t, out: out.name, in: fresh.name });
+      if (this.human) this.say(`${t === 0 ? "Coach" : "Their coach"}: ${out.name}'s gassed. ${fresh.name} checks in.`, 2.2);
+    }
+  }
+  // points per player (subs included) for the box score
+  pointsBy(team = 0) { const o = { ...this.benchPts }; for (const a of this.team(team)) o[a.p.name] = (o[a.p.name] || 0) + a.points; return o; }
   setupCheck(team) {
+    if (this.phase === "scored" || this.phase === "live" || this.phase === "half") this.tiredSubs();
     Object.assign(this, { offense: team, phase: "check", phaseT: 0.9, needsClear: false, shotClock: S.SHOT_CLOCK, meter: null });
     const spots = [S.CHECK, [320, 330], [680, 330]];
     this.team(team).forEach((a, i) => { [a.x, a.y] = spots[i]; a.fx = 0; a.fy = -1; a.stun = 0; a.holdT = 0; a.spot = null; });
@@ -354,6 +376,7 @@ class Match {
       a.stepBackT = Math.max(0, (a.stepBackT || 0) - dt);
       if (this.phase === "live" && a.sprinting && a.moveAmt > 0.3) { a.stamina = Math.max(0, a.stamina - S.STAMINA_DRAIN * (1 - (a.p.stamBonus || 0)) * dt); if (a.stamina <= 0) a.sprinting = false; }
       else a.stamina = Math.min(1, a.stamina + S.STAMINA_REGEN * dt);
+      if (this.phase === "live") a.energy = Math.max(0, a.energy - (S.ENERGY_DRAIN + (a.sprinting ? S.ENERGY_SPRINT : 0)) * (1 - (a.p.stamBonus || 0)) * dt);   // the whole game wears you down
       a.dribble += dt * 9;
       if (this.phase !== "live") a.moveAmt = Math.max(0, a.moveAmt - dt * 4);
     }
@@ -363,6 +386,7 @@ class Match {
       this.pressure += (Math.min(1, this.pressureBase + clutch) - this.pressure) * Math.min(1, dt * 0.08);
     }
     this.coachCool = Math.max(0, this.coachCool - dt);
+    for (const t of [0, 1]) for (const p of this.bench[t] || []) this.benchE.set(p, Math.min(1, (this.benchE.get(p) ?? 1) + S.ENERGY_REST * dt));
     if (this.coach) this.coach.t = Math.max(0, this.coach.t - dt);
     for (const a of this.actors) a.screening = false;
     for (const m of this.messages) m[1] -= dt;
@@ -371,7 +395,7 @@ class Match {
     this.elapsed += dt; this.phaseT -= dt;
     if (this.phase === "check") { if (this.phaseT <= 0) this.phase = "live"; return; }
     if (this.phase === "scored") { if (this.phaseT <= 0) this.setupCheck(this.offense); return; }
-    if (this.phase === "half") { if (this.phaseT <= 0) { for (const a of this.actors) a.stamina = 1; this.setupCheck(1); } return; }
+    if (this.phase === "half") { if (this.phaseT <= 0) { for (const a of this.actors) { a.stamina = 1; a.energy = Math.min(1, a.energy + 0.25); } this.setupCheck(1); } return; }   // halftime: a breather
     let b = this.ball;
     if (b.state === "held" || b.state === "pass") {
       this.shotClock -= dt;
@@ -460,7 +484,7 @@ class Match {
     const sub = this.subsLeft[a.team] > 0 ? (this.bench[a.team] || []).shift() : null;
     this.events.push({ type: "injury", team: a.team, name: hurt.name, sub: sub ? sub.name : null });
     if (sub) {
-      this.subsLeft[a.team]--; a.p = sub; a.points = 0; a.streak = 0;
+      this.subsLeft[a.team]--; this.benchPts[hurt.name] = (this.benchPts[hurt.name] || 0) + a.points; a.p = sub; a.points = 0; a.streak = 0; a.energy = this.benchE.get(sub) ?? 1;
       a.look = makeLook(sub);
       if (a.team === 0) this.played.add(sub);
       this.say(`${hurt.name} is hurt! ${sub.name} checks in`, 2.2);
@@ -657,7 +681,7 @@ class Match {
     const clutch = hasBadge(a.p, "clutch") && Math.max(...this.score) >= this.gameTo - 4 && Math.abs(this.score[0] - this.score[1]) <= 3 ? 1.25 : 1;            // 40 shooting ≈ 0.76x, 80 ≈ 1.13x
     const nervous = this.pressureOn && a.team === 0 ? (this.pressure >= 0.7 ? 0.7 : this.pressure >= 0.5 ? 0.86 : 1) : 1;
     const cls = Math.max(0.5, 1 + 0.3 * this.edge(a));   // outclassed: the green gets a lot tighter
-    return (S.WIN_NEAR + (S.WIN_FAR - S.WIN_NEAR) * t) * skill * nervous * cls * clutch + a.eff("meter") + (a.stepBackT > 0 ? 0.015 : 0) + (a.onFire ? 0.012 : 0);
+    return (S.WIN_NEAR + (S.WIN_FAR - S.WIN_NEAR) * t) * skill * nervous * cls * clutch * (a.gassed ? 0.92 : 1) + a.eff("meter") + (a.stepBackT > 0 ? 0.015 : 0) + (a.onFire ? 0.012 : 0);
   }
   meterQuality(a, m) { const w = this.meterWindow(a), off = Math.abs(m - S.METER_SWEET); return off <= w ? 1 - 0.5 * off / w : Math.max(-1, -(off - w) / 0.25); }
   pickPassTarget(a, dir) {
@@ -1127,19 +1151,36 @@ const FRANCHISES = ["Metro Kings", "Harbor Hawks", "Capital Crowns", "Skyline Sh
 // Where you start is decided by how far you went: win the Final = Minor League, reach the Final = Rec League,
 // out before that = Hustle League. The scout's grade decides your bonus and gives your fame a boost.
 const DRAFT = { A: { bonus: 600, note: "a Rare teammate" }, B: { bonus: 300 }, C: { bonus: 120 }, D: { bonus: 40 }, F: { bonus: 0, walkOn: true } };
+const GYM_SIZE = 30, GYM_TOLERATE = 20;
+// how a regular feels about you, and the chance they say yes when you ask them to run
+const likeLabel = l => l >= 60 ? "Likes you" : l >= 40 ? "Cool with you" : l >= GYM_TOLERATE ? "Tolerates you" : "Can't stand you";
+const likeColor = l => l >= 60 ? C.green : l >= 40 ? "#9fd36a" : l >= GYM_TOLERATE ? C.orange : "#ff8a7a";
+const askChance = l => l >= 60 ? 1 : l < GYM_TOLERATE ? 0 : 0.35 + (l - GYM_TOLERATE) * 0.0165;
 const SCOUT_FAME = { A: 120, B: 70, C: 35, D: 10, F: 0 };
 // the scout's buzz gets you close to the next level, never past it (you still have to earn the call-up)
 function placedFame(fame, tier, up) { const f = Math.max(fame, LEVEL_FAME[tier]) + up; return tier >= 2 && tier < THRONE ? Math.min(f, LEVEL_FAME[tier + 1] - 20) : f; }
 function placement(log, champ, low) { return champ ? 3 : log.some(g => g.round === FINAL_ROUND) ? 2 : low; }
-function gradeOf(score) { return score >= 85 ? "A" : score >= 70 ? "B" : score >= 55 ? "C" : score >= 45 ? "D" : "F"; }
+function gradeOf(score) { return score >= 90 ? "A" : score >= 78 ? "B" : score >= 62 ? "C" : score >= 50 ? "D" : "F"; }   // scouts are hard to impress
+// Writers who drop in on your games (Rec League and up): the higher your league, the more their story is worth
+const PRESS_FAME = { A: 90, B: 50, C: 20, D: 0, F: -10 };
+const PRESS_WEIGHT = [0, 0, 0.4, 0.6, 0.8, 1.0, 1.3, 1.5];
+const OUTLETS = [["Courtside Weekly", "Blacktop Report", "The Rec Sheet"], ["Hoop Times", "Street Ball Digest", "Asphalt Daily"], ["Pro Hoops Digest", "The Big Board", "National Hoops Wire"]];
+function outletFor(tier, rng) { return rng.choice(OUTLETS[tier >= 5 ? 2 : tier >= 4 ? 1 : 0]); }
+function pressArticle(name, grade, box, won, margin, outlet) {
+  const fg = box.fga ? `${box.fgm}/${box.fga}` : "0/0", line = `${box.pts} pts on ${fg} shooting${box.greens ? `, ${box.greens} greens` : ""}${box.ankles ? `, ${box.ankles} broken ankles` : ""}${box.to ? `, ${box.to} turnovers` : ""}`;
+  const H = { A: [`${name} IS FOR REAL`, `${name} PUTS ON A SHOW`, `REMEMBER THE NAME: ${name}`], B: [`${name} IMPRESSES`, `${name} DELIVERS`, `SOLID NIGHT FOR ${name}`],
+    C: [`${name} HOLDS HIS OWN`, `AN OK NIGHT FOR ${name}`], D: [`${name} QUIET IN FRONT OF THE PRESS`, `${name} FADES`], F: [`${name} DISAPPOINTS`, `ROUGH NIGHT FOR ${name}`] }[grade];
+  const take = { A: "One of the best players we have seen at this level.", B: "Plays the right way. Worth keeping an eye on.", C: "Has tools, but did not stand out tonight.", D: "Not much to write home about.", F: "Not ready for the spotlight yet." }[grade];
+  return { outlet, grade, headline: H[(box.pts + margin + 99) % H.length], body: `${won ? "Won" : "Lost"} by ${Math.abs(margin)}. ${line}. ${take}` };
+}
 // One high school game, as the scout sees it (0-100)
 function scoutGameScore(won, margin, box) {
   const fg = box.fga ? box.fgm / box.fga : 0.45, k = 11 / S.GAME_TO;   // graded per 11 points of game
-  return clamp(Math.round(40 + (won ? 20 : -10) - 8 * (box.benched || 0) + k * (1.5 * margin + 1.5 * box.pts + 3 * box.greens + 2 * box.ankles + 3 * (box.plays || 0) - 4 * box.to) + 40 * (fg - 0.45)), 0, 100);
+  return clamp(Math.round(32 + (won ? 14 : -10) - 8 * (box.benched || 0) + k * (1.5 * margin + 1.5 * box.pts + 3 * box.greens + 2 * box.ankles + 3 * (box.plays || 0) - 4 * box.to) + 40 * (fg - 0.45)), 0, 100);
 }
 const KING = "King of the Courts";
 const ROUNDS = ["Round 1", "Round 2", "Quarterfinal", "Semifinal", "Final"];
-const SERIES_WINS = [2, 2, 2, 2, 3];     // games are quick: every round is best of 3, the Final is best of 5
+const SERIES_WINS = [2, 2, 3, 3, 3];     // games are quick: best of 3 early, best of 5 from the Quarterfinal on
 const bestOf = r => 2 * SERIES_WINS[r] - 1;
 const FINAL_ROUND = ROUNDS.length - 1;
 const ROUND_OFFSETS = [-4, -2, 0, 4, 9];
@@ -1360,7 +1401,7 @@ class Career {
   constructor(d) {
     Object.assign(this, { cash: 100, fame: 0, tier: 0, champion: false, starters: [0, 1], tourney: null, entries: 0, titles: 0, games: 0, market: null, moves: {},
       stage: "hs", team: null, startTier: 0, gamesAtDraft: 0, hsLog: [], hsDone: false, hsChamp: false, draftGrade: null, gold: false, ladder: 2, hustleLog: [], hustleChamp: false, hustlePending: false, throneLog: [], throneChamp: false, thronePending: false,
-      salary: 0, proLog: [], offers: null, gamesSinceOffers: 0, gym: null, gymDay: 0, hustlePicks: [], lastTourney: null, school: null, prog: {}, pickupSeed: 0, unlocked: [], milestonesHit: [], crewBonus: 0 }, d);
+      salary: 0, proLog: [], offers: null, gamesSinceOffers: 0, gym: null, gymDay: 0, hustlePicks: [], lastTourney: null, school: null, prog: {}, pickupSeed: 0, unlocked: [], milestonesHit: [], crewBonus: 0, press: [] }, d);
     // older saves: give everyone a position
     if (!this.me.pos) this.me.pos = "SF";
     for (const p of this.crew) if (!p.pos) p.pos = guessPos(p);
@@ -1414,7 +1455,8 @@ class Career {
     if (tot.fga && tot.fgm / tot.fga < 0.35) notes.push("Shot selection needs work.");
     if ((tot.to || 0) / n >= 4) notes.push("Careless with the ball. Too many turnovers.");
     if ((tot.pts || 0) / n >= 11) notes.push("Can carry the scoring load.");
-    if (!notes.length) notes.push(score >= 55 ? "Solid, but didn't stand out." : "Not ready yet. Needs to put in work.");
+    if (hustle && !games.length) notes.push("The scout only came to the Final. You didn't make it.");
+    if (!notes.length) notes.push(score >= 62 ? "Solid, but didn't stand out." : "Not ready yet. Needs to put in work.");
     return { games, avg: Math.round(avg), wins, score, grade: gradeOf(score), notes, tot };
   }
   // ---- after the Hustle Classic: win the Final = Minor League, reach it = Rec League, otherwise stay and grind
@@ -1488,7 +1530,9 @@ class Career {
     });
   }
   enterTourney() {
-    this.entries++; this.tourney = { tier: this.tier, seed: this.entries, round: 0, series: { w: 0, l: 0 }, log: {} };
+    if (this.tier === HUSTLE && this.stage === "pro" && this.gym && this.classicSquad().length < 3) this.fillRandom(3);
+    const squad = this.tier === HUSTLE && this.stage === "pro" && this.gym ? this.classicSquad().map(g => this.gym.indexOf(g)).filter(i => i >= 0) : null;
+    this.entries++; this.tourney = { roster: squad, tier: this.tier, seed: this.entries, round: 0, series: { w: 0, l: 0 }, log: {} };
     this.tourney.field = makeField(this, this.tourney); this.lastTourney = this.tourney;
   }
   tourneyGame() {
@@ -1512,34 +1556,74 @@ class Career {
   // A new team, a new roster: a guard, a wing and a big a little below the level
   teamRoster(tier) { const rng = new Rng(); return ["PG", "SF", "C"].map(pos => settleOverall(generatePlayer(rng, TIERS[tier].base - 8, pos), TIERS[tier].base - 8 + rng.randint(-2, 2))); }
   // ---- the Hustle gym: regulars who rotate every day; the ones who like you will run the Classic with you
+  // The Hustle League gym is public: 30 regulars, 10-15 of them in on any given day (it changes every game)
   ensureGym() {
-    if (this.gym) return;
+    if (this.gym && this.gym.length >= GYM_SIZE) return;
     const rng = new Rng(), base = TIERS[HUSTLE].base - 8;
-    const names = new Set([this.me.name]);
-    this.gym = POSITIONS.concat(["PG", "SF", "C"]).map(pos => {
-      let p; do { p = generatePlayer(rng, base, pos); } while (names.has(p.name)); names.add(p.name);   // no two regulars share a name
-      return { p: settleOverall(p, base + rng.randint(-4, 4)), like: rng.randint(5, 35) };
-    });
+    this.gym = this.gym || [];
+    const names = new Set([this.me.name, ...this.gym.map(g => g.p.name)]);
+    while (this.gym.length < GYM_SIZE) {   // older saves had 8 regulars: top them up, keep how much they like you
+      const pos = POSITIONS[this.gym.length % POSITIONS.length];
+      let p, n = 0; do { p = generatePlayer(rng, base, pos); } while (names.has(p.name) && ++n < 200); names.add(p.name);   // no two regulars share a name
+      this.gym.push({ p: settleOverall(p, base + rng.randint(-4, 4)), like: rng.randint(5, 35) });
+    }
   }
-  gymRun() {   // today's pickup teammates
+  gymToday() {   // indexes of who's in the gym today
     this.ensureGym();
-    const rng = new Rng(`gym|${this.gymDay}|${this.me.name}`), pool = this.gym.filter(g => this.healthy(g.p));
-    const out = []; while (out.length < 2 && pool.length) out.push(pool.splice(rng.randint(0, pool.length - 1), 1)[0]);
-    return out;
+    const rng = new Rng(`gym|${this.gymDay}|${this.me.name}`), pool = this.gym.map((g, i) => i).filter(i => this.healthy(this.gym[i].p));
+    const n = Math.min(pool.length, rng.randint(10, 15)), out = [];
+    while (out.length < n) out.push(pool.splice(rng.randint(0, pool.length - 1), 1)[0]);
+    return out.sort((x, y) => this.gym[y].like - this.gym[x].like);
+  }
+  get asks() {   // today's asks: who said yes (picks) and who said no
+    if (!this.gymAsk || this.gymAsk.day !== this.gymDay) this.gymAsk = { day: this.gymDay, picks: [], declined: [] };
+    return this.gymAsk;
+  }
+  askToRun(i, need) {
+    const g = this.gym[i], A = this.asks;
+    if (A.picks.includes(i)) { A.picks.splice(A.picks.indexOf(i), 1); return [true, `${g.p.name} is out of your squad.`]; }
+    if (A.declined.includes(i)) return [false, `${g.p.name} already said no today.`];
+    if (g.p.injured > 0) return [false, `${g.p.name} is hurt.`];
+    if (g.like < GYM_TOLERATE) return [false, `${g.p.name} can't stand you. Win some runs with the regulars first.`];
+    if (A.picks.length >= need) return [false, `You've got ${need}. Tap someone to drop them.`];
+    if (Math.random() < askChance(g.like)) { A.picks.push(i); return [true, `${g.p.name} is down to run!`]; }
+    A.declined.push(i); return [false, `${g.p.name} passes on you today.`];
+  }
+  fillRandom(need) {   // nobody else wants to run with you? You get whoever's left
+    const A = this.asks, today = this.gymToday(), got = [];
+    let pool = today.filter(i => !A.picks.includes(i) && !A.declined.includes(i));
+    if (pool.length < need - A.picks.length) pool = today.filter(i => !A.picks.includes(i));
+    const rng = new Rng();
+    while (A.picks.length < need && pool.length) { const i = pool.splice(rng.randint(0, pool.length - 1), 1)[0]; A.picks.push(i); got.push(this.gym[i].p.name); }
+    return got;
+  }
+  gymRun() {   // today's pickup teammates: who said yes (the rest is random)
+    this.ensureGym();
+    if (this.asks.picks.length < 2) this.fillRandom(2);
+    return this.asks.picks.slice(0, 2).map(i => this.gym[i]);
   }
   likesYou() { this.ensureGym(); return this.gym.filter(g => g.like >= 60 && this.healthy(g.p)); }
-  classicTeam() {   // your picks (who like you), topped up by whoever likes you most
+  // the Hustle Classic squad: 2 starters + 1 sub. Locked in once you enter the tournament.
+  classicSquad() {
     this.ensureGym();
-    const picks = this.hustlePicks.map(i => this.gym[i]).filter(g => g && g.like >= 60 && this.healthy(g.p));
-    for (const g of [...this.gym].sort((a, b) => b.like - a.like)) if (picks.length < 2 && !picks.includes(g) && this.healthy(g.p)) picks.push(g);
+    const t = this.tourney;
+    if (t && t.tier === HUSTLE && t.roster) return t.roster.map(i => this.gym[i]).filter(Boolean);
+    const picks = this.asks.picks.map(i => this.gym[i]).filter(g => g && this.healthy(g.p)).slice(0, 3);   // who said yes today
     return picks;
+  }
+  classicTeam() {   // the 2 healthy starters (the sub steps in for a hurt one; a walk-on if it comes to that)
+    if (!(this.tourney && this.tourney.roster) && this.classicSquad().length < 3) this.fillRandom(3);
+    const out = this.classicSquad().filter(g => this.healthy(g.p)).slice(0, 2);
+    for (let k = 0; out.length < 2; k++) { const b = TIERS[HUSTLE].base - 4; out.push({ p: settleOverall(generatePlayer(new Rng(`walkon|${this.entries}|${k}`), b, "SF"), b), like: 0, walkOn: true }); }
+    return out;
   }
   lineupFor(game) {
     if (game && game.court === HUSTLE && this.stage === "pro") return [this.me, ...(game.mode === "tourney" ? this.classicTeam() : this.gymRun()).map(g => g.p)];
     return this.lineup();
   }
   benchFor(game, lineup) {   // one sub
-    if (game && game.court === HUSTLE && this.stage === "pro") return [...this.gym].sort((a, b) => b.like - a.like).map(g => g.p).filter(p => !lineup.includes(p) && this.healthy(p)).slice(0, 1);
+    if (game && game.court === HUSTLE && this.stage === "pro" && game.mode === "tourney") return this.classicSquad().map(g => g.p).filter(p => !lineup.includes(p) && this.healthy(p)).slice(0, 1);   // your locked-in sub
+    if (game && game.court === HUSTLE && this.stage === "pro") return this.gymToday().map(i => this.gym[i].p).filter(p => !lineup.includes(p) && this.healthy(p)).slice(-1);   // a leftover from today's gym
     return this.crew.filter(p => !lineup.includes(p) && this.healthy(p)).slice(0, 1);
   }
   // after every game: players who played wear down, everyone else rests; injured players heal a game
@@ -1607,8 +1691,9 @@ class Career {
     }
     const throneT = crew.mode === "tourney" && ci === THRONE && this.stage === "pro" && this.tier === THRONE;   // Olympic scouts in the stands
     if (throneT && box) { r.scout = scoutGameScore(won, margin, box); this.throneLog.push({ round: crew.round, opp: crew.name, won, margin, score: r.scout, box: { ...box } }); }
-    if (hustleT && box) { r.scout = scoutGameScore(won, margin, box); this.hustleLog.push({ round: crew.round, opp: crew.name, won, margin, score: r.scout, box: { ...box } }); }
+    if (hustleT && box && crew.round === FINAL_ROUND) { r.scout = scoutGameScore(won, margin, box); this.hustleLog.push({ round: crew.round, opp: crew.name, won, margin, score: r.scout, box: { ...box } }); }
     for (const [k, v] of Object.entries(moveUse)) this.moves[k] = (this.moves[k] || 0) + v;
+    r.mateUps = this.growMates(extra.played || [], extra.pts || {}, won);
     if (box) { r.grow = this.growStats(box, won); r.milestones = this.checkMilestones(false, ci === HUSTLE); }   // playing is how you get better (and unlocks things)
     // tournaments: every round is a series (best of 3, the Final best of 5)
     let seriesWon = false, seriesLost = false;
@@ -1652,6 +1737,11 @@ class Career {
     }
     if (crew.mode === "tourney" && this.lastTourney && !this.tourney && !this.lastTourney.over) {   // the bracket is finished for you
       const t = this.lastTourney; t.over = true; t.champ = !!r.champ; t.outRound = t.round;
+    }
+    if (extra.press && box && ci !== HUSTLE) {   // the writer's story
+      const sc = scoutGameScore(won, margin, box), g = gradeOf(sc), art = pressArticle(this.me.name.toUpperCase(), g, box, won, margin, extra.press);
+      art.score = sc; art.fame = Math.round(PRESS_FAME[g] * PRESS_WEIGHT[ci]); r.fame += art.fame; r.press = art;
+      this.press = [...(this.press || []), art].slice(-5);
     }
     if (ci === HUSTLE) { r.cash = 0; r.tips = 0; r.hustle = true; if (r.fame > 0) r.fame = 0; }   // nobody pays you or cares in the Hustle League
     if (hs) { r.cash = 0; r.tips = 0; r.betWin = 0; }                 // amateurs: no money in high school
@@ -1728,13 +1818,22 @@ class Career {
     eq.push(id); return [true, `${BADGES[id].name} equipped.`];
   }
   // ---- teammates: upgrade stats up to their cap, buy them attributes
-  mateStatCost(v) { return Math.floor(25 + v * 2.2); }
-  upgradeMate(p, k) {
-    const v = p.stats[k], cost = this.mateStatCost(v);
-    if (overall(p) >= (p.cap ?? overall(p) + 3)) return [false, `${p.name} is maxed out (cap OVR ${p.cap}).`];
-    if (v >= S.STAT_MAX) return [false, "That stat is maxed."];
-    if (this.cash < cost) return [false, `Need $${cost}.`];
-    this.cash -= cost; p.stats[k] = Math.min(S.STAT_MAX, v + 2); return [true, `${S.LABEL[k]} up to ${p.stats[k]}!`];
+  // teammates get better by playing (a steady % per game, more for a win and for scoring), up to their cap
+  growMates(played, pts = {}, won = false) {
+    const ups = [];
+    for (const p of played) {
+      if (p === this.me || !this.crew.includes(p)) continue;
+      if (p.cap == null) p.cap = overall(p) + 3;
+      p.prog = p.prog || {};
+      const base = 10 + (won ? 5 : 0), sc = pts[p.name] || 0;
+      for (const k of S.STATS) {
+        const gain = base + (k === "shooting" ? Math.min(20, 2 * sc) : 0);
+        if (overall(p) >= p.cap || p.stats[k] >= S.STAT_MAX) { p.prog[k] = Math.min(99, (p.prog[k] || 0) + gain); continue; }
+        p.prog[k] = (p.prog[k] || 0) + gain;
+        if (p.prog[k] >= 100) { p.prog[k] -= 100; const from = p.stats[k]; p.stats[k]++; ups.push({ name: p.name, stat: k, from, to: p.stats[k] }); }
+      }
+    }
+    return ups;
   }
   buyMateBadge(p, id) {
     p.badges = p.badges || []; const slots = p.badgeSlots || 1, price = BADGES[id].price;
@@ -1784,8 +1883,8 @@ class Career {
   }
   toggleStarter(i) { if (!this.starters.includes(i)) this.starters = [this.starters[this.starters.length - 1], i]; }
   toJSON() {
-    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed, unlocked, milestonesHit, crewBonus } = this;
-    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed, unlocked, milestonesHit, crewBonus };
+    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed, unlocked, milestonesHit, crewBonus, press, gymAsk } = this;
+    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed, unlocked, milestonesHit, crewBonus, press, gymAsk };
   }
 }
 
@@ -1803,17 +1902,33 @@ const Luck = {
     if (n === 2) { if (sym === "ETERNAL") return 25; if (sym === "MYTHIC") return 8; if (sym === "CASH" || sym === "CROWN") return 2; if (sym !== "BRICK") return 1; }
     return 0;
   },
-  playSlots(c, bet, rng) { if (bet <= 0 || bet > c.cash) return null; c.cash -= bet; const reels = this.spin(rng), win = bet * this.payout(reels); c.cash += win; return [reels, win]; },
   mysteryCost(tier) { return 150 + 120 * tier; },
-  rollMystery(c, rng) {
-    const cost = this.mysteryCost(c.tier);
-    if (c.cash < cost || c.crew.length >= c.crewMax()) return null;
-    c.cash -= cost;
-    const r = rng.choices(this.RARITIES, this.RARITIES.map(x => x[1]));
+  // a card for your crew from a rarity row ["Bum", weight, "Common"]
+  makeCard(c, r, rng) {
     const rar = RARITY.find(x => x.name === r[2]);
     const p = rarePlayer(rng, overall(c.me) + (r[0] === "Bum" ? -6 : 0), rar), ri = RARITY.indexOf(rar);
     p.cap = overall(p) + [4, 6, 8, 10, 12, 15][Math.max(0, ri)]; p.badgeSlots = ri >= 3 ? 2 : 1; p.badges = []; c.crew.push(p);
     return [r[0], p];
+  },
+  rollMystery(c, rng) {
+    const cost = this.mysteryCost(c.tier);
+    if (c.cash < cost || c.crew.length >= c.crewMax()) return null;
+    c.cash -= cost;
+    return this.makeCard(c, rng.choices(this.RARITIES, this.RARITIES.map(x => x[1])), rng);
+  },
+  // Card machines: pricier machines have better odds at the top cards. Nothing is guaranteed.
+  MACHINES: [
+    { name: "Corner", mult: 0.6, odds: [55, 32, 11, 1.8, 0.2, 0.02], color: "#8a8f9e" },
+    { name: "Uptown", mult: 1.5, odds: [35, 38, 20, 5.5, 1.2, 0.3], color: "#5096f0" },
+    { name: "High Roller", mult: 3, odds: [20, 35, 30, 11, 3, 1], color: "#f5c83c" },
+    { name: "Kingdom", mult: 6, odds: [10, 25, 38, 18, 6.5, 2.5], color: "#7ff9ff" },
+  ],
+  machineCost(c, i) { return Math.round(this.mysteryCost(c.tier) * this.MACHINES[i].mult / 10) * 10; },
+  pullCard(c, i, rng) {
+    const cost = this.machineCost(c, i);
+    if (c.cash < cost || c.crew.length >= c.crewMax()) return null;
+    c.cash -= cost;
+    return this.makeCard(c, rng.choices(this.RARITIES, this.MACHINES[i].odds), rng);
   },
   // +0.12x for every point of OVR they have on you (1.2x floor when you're the favorite, 6x cap)
   wagerMult(mine, opp) { return Math.round(clamp(1.5 + (opp - mine) * 0.12, 1.2, 6.0) * 10) / 10; },
@@ -1913,10 +2028,37 @@ function drawCourt(tier) {
   line(hx - r, S.CT, hx - r, hy, th.line, 3); line(hx + r, S.CT, hx + r, hy, th.line, 3);
   ctx.strokeRect(S.CL, S.CT, S.CR - S.CL, S.CB - S.CT);
   circle(S.CHECK[0], S.CHECK[1], 6, null, th.line, 2);
-  line(hx - 32, hy - 22, hx + 32, hy - 22, "#ebebeb", 5);
-  line(hx, hy - 22, hx, hy - 10, "#b4b4b4", 3);
-  circle(hx, hy, 7, null, "#e6e6e6", 1);
-  circle(hx, hy, 11, null, C.orange, 3);
+  ellipse(hx, hy + 30, 26, 8, "rgba(0,0,0,0.22)");   // the hoop's shadow on the floor
+  drawHoop(hx, hy);
+}
+// The hoop hangs above the floor: drawn on top of the players. ox = rim shake, swish = net ripple.
+function drawHoop(hx, hy, ox = 0, swish = 0) {
+  // pole and arm coming from behind the baseline
+  ctx.fillStyle = "#3a3d48"; ctx.fillRect(hx - 5, hy - 70, 10, 44); ctx.fillStyle = "#5a5e6c"; ctx.fillRect(hx - 5, hy - 70, 3, 44);
+  // backboard: glass with a thick frame and the shooter's square
+  const bx = hx - 40, by = hy - 34, bw = 80, bh = 20;
+  rrect(bx - 2, by - 2, bw + 4, bh + 4, 3, "#15171d");
+  const g = ctx.createLinearGradient(bx, by, bx, by + bh); g.addColorStop(0, "rgba(235,242,255,0.95)"); g.addColorStop(1, "rgba(190,205,230,0.92)");
+  rrect(bx, by, bw, bh, 2, g, "#ffffff", 2);
+  ctx.strokeStyle = "#e0302a"; ctx.lineWidth = 2; ctx.strokeRect(hx - 13, by + 5, 26, bh - 7);
+  ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.fillRect(bx + 4, by + 3, bw * 0.35, 2);
+  // bracket from the board to the rim
+  ctx.fillStyle = "#9aa0ad"; ctx.fillRect(hx - 4 + ox, by + bh, 8, hy - (by + bh) - 9);
+  // net: diamond mesh that ripples on a make
+  const drop = 16 + swish * 14, top = 12, bot = 6.5;
+  ctx.strokeStyle = "rgba(250,250,250,0.92)"; ctx.lineWidth = 1.1;
+  const N = 10, pts = (r, yy, sh) => Array.from({ length: N + 1 }, (_, i) => { const a = Math.PI * 0.05 + (i + sh) * Math.PI * 0.9 / N; return [hx + ox + Math.cos(a) * r, yy + Math.sin(a) * r * 0.45]; });
+  const rows = [pts(top, hy, 0), pts((top + bot) / 2 + 1, hy + drop * 0.5, 0.5), pts(bot, hy + drop, 0)];
+  for (let rI = 0; rI < rows.length - 1; rI++) for (let i = 0; i < N; i++) {
+    const [a1, a2] = [rows[rI][i], rows[rI + 1][Math.min(N, i)]], b2 = rows[rI + 1][Math.min(N, i + 1)];
+    ctx.beginPath(); ctx.moveTo(a1[0], a1[1]); ctx.lineTo(a2[0], a2[1]); ctx.moveTo(rows[rI][i + 1][0], rows[rI][i + 1][1]); ctx.lineTo(a2[0], a2[1]); ctx.stroke();
+    if (b2) { ctx.beginPath(); ctx.moveTo(a1[0], a1[1]); ctx.lineTo(b2[0], b2[1]); ctx.stroke(); }
+  }
+  ctx.beginPath(); rows[2].forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+  // the rim: dark outline, orange ring, a highlight on the front
+  ctx.beginPath(); ctx.ellipse(hx + ox, hy, 12, 7, 0, 0, Math.PI * 2); ctx.strokeStyle = "#5a2300"; ctx.lineWidth = 5; ctx.stroke();
+  ctx.strokeStyle = "#ff7a1a"; ctx.lineWidth = 3; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(hx + ox, hy, 12, 7, 0, 0.2, Math.PI - 0.2); ctx.strokeStyle = "#ffb070"; ctx.lineWidth = 1.2; ctx.stroke();
 }
 
 // =====================================================================
@@ -2237,12 +2379,12 @@ class HubScreen extends Screen {
     // rows of tiles: [Play] [Crew, Train, Attributes] [Market, Mystery, Luck] [Quit]
     this.rows = [
       [{ id: "play", go: () => App.switch(new CourtScreen()) }, { id: "side", go: () => this.sideHustle() }],
-      [{ id: "crew", name: "Crew", go: () => App.switch(this.c.stage === "pro" && this.c.tier === HUSTLE ? new GymScreen() : new CrewScreen()) },
+      [{ id: "crew", name: "Crew", go: () => App.switch(this.c.stage === "pro" && this.c.tier === HUSTLE ? new GymScreen("view") : new CrewScreen()) },
        { id: "train", name: "Progress", go: () => App.switch(new TrainScreen()) },
        { id: "attr", name: "Attributes", go: () => this.open(() => new AttributesScreen()) }],
       [{ id: "market", name: "Player Market", go: () => this.shop(() => new MarketScreen()) },
        { id: "mystery", name: "Mystery Baller", go: () => this.shop(() => new MysteryScreen()) },
-       { id: "luck", name: "Luck Machine", go: () => this.shop(() => new SlotScreen()) }],
+       { id: "luck", name: "Card Machines", go: () => this.shop(() => new SlotScreen()) }],
       [{ id: "quit", go: () => { App.save(); App.switch(new TitleScreen()); } }],
     ];
     this.r = 0; this.col = 0;
@@ -2273,7 +2415,7 @@ class HubScreen extends Screen {
   tileInfo(id) {
     const c = this.c;
     return {
-      crew: c.stage === "pro" && c.tier === HUSTLE ? `${c.likesYou().length} like you` : `${c.crew.length}/${c.crewMax()} players`,
+      crew: c.stage === "pro" && c.tier === HUSTLE ? `${c.gymToday().length} in the gym today` : `${c.crew.length}/${c.crewMax()} players`,
       train: `Shooting ${Math.round(c.prog.shooting || 0)}% to next`,
       attr: `${c.me.badges.length}/${c.attrSlots()} slots · ${c.unlocked.length} earned`,
       market: `New in ${fmtTime(c.marketLeft())}`,
@@ -2372,7 +2514,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 44 (attributes & milestones)");
+    this.footer("Progress saves automatically in this browser  ·  version 45 (scouts, card machines & fatigue)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -2414,7 +2556,8 @@ class CourtScreen extends Screen {
   pick(i) {
     const c = this.c, o = this.options()[i]; this.sel = i;
     if (!o) return;
-    if (o.kind === "tourney" && this.ci === HUSTLE && !o.game) { App.switch(new GymScreen(true)); return; }   // pick who runs with you first
+    if (o.kind === "tourney" && this.ci === HUSTLE && !o.game) { App.switch(new GymScreen("classic")); return; }   // pick who runs with you first
+    if (o.kind === "pickup" && this.ci === HUSTLE && c.stage === "pro") { App.switch(new GymScreen("run", o.game)); return; }   // public gym: pick 2 from who's here today
     if (o.kind === "tourney") {
       if (!o.game) { c.enterTourney(); App.save(); App.switch(new BracketScreen(() => startGame(this.ci, c.tourneyGame()))); return; }   // see the field first
       startGame(this.ci, c.tourneyGame());
@@ -2447,10 +2590,10 @@ class CourtScreen extends Screen {
         rrect(140, y, 720, h, 12, sel ? "#3d2f14" : "#2a2214", sel ? C.gold : "#6b5520", 2);
         text(TIERS[this.ci].tourney, 162, y + 12, { size: 38, color: C.gold, display: true });
         const blurb = c.stage === "hs" ? "Reach the Final = Rec League. Win it = Minor League. Out early = Hustle."
-          : this.ci === HUSTLE ? "Reach the Final = Rec League. Win it = Minor League. A scout grades you too."
+          : this.ci === HUSTLE ? "Final = Rec League, win it = Minor. Scout watches the Final. Bets only."
           : this.ci === OLYMPICS ? "The best teams in the country. Win it for the gold medal."
           : this.ci === THRONE ? (c.tier === THRONE ? "Olympic scouts are watching. Only an A gets you picked." : `Win it to become ${KING}`)
-          : `Win it to move up to the ${TIERS[this.ci + 1].name}`;
+          : `Win it to move up to the ${TIERS[this.ci + 1].name}. Prize money, no side bets.`;
         text(blurb, 162, y + 48, { size: 24, color: c.stage === "hs" ? C.gold : C.white, weight: 500 });
         const t = c.tourney, games = bracket(this.ci, t ? t.seed : c.entries + 1);
         ROUNDS.forEach((rn, r) => {
@@ -2891,10 +3034,13 @@ function drawBall(x, y, h, t, r = 6.5, spin = 6) {
   r *= 1.2;   // a touch bigger so it reads on every floor
   ellipse(x, y + 1, r * 0.95, r * 0.45, `rgba(0,0,0,${Math.max(0.2, 0.55 - h / 200)})`);
   const by = y - h, rr = r * (1 + Math.max(0, h - 30) / 260);   // closer to the camera = bigger
-  circle(x, by, rr + 3, "rgba(255,255,255,0.35)");               // light halo
-  circle(x, by, rr, "#f07a1c", "#1a0c02", 2);                     // dark outline
-  ctx.save(); ctx.translate(x, by); ctx.rotate(t * spin);
-  ctx.strokeStyle = "#3c1e0a"; ctx.lineWidth = 1;
+  circle(x, by, rr + 2.5, "rgba(255,255,255,0.3)");               // light halo
+  const bg = ctx.createRadialGradient(x - rr * 0.4, by - rr * 0.45, rr * 0.1, x, by, rr);   // round, lit from the top left
+  bg.addColorStop(0, "#ffb15a"); bg.addColorStop(0.55, "#ec6e14"); bg.addColorStop(1, "#a7480a");
+  circle(x, by, rr, bg, "#1a0c02", 2);                             // dark outline
+  ctx.save(); ctx.beginPath(); ctx.arc(x, by, rr - 0.5, 0, Math.PI * 2); ctx.clip(); ctx.translate(x, by); ctx.rotate(t * spin);
+  ctx.strokeStyle = "#2a1205"; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(0, -rr); ctx.lineTo(0, rr); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(-rr, 0); ctx.lineTo(rr, 0); ctx.stroke();
   ctx.beginPath(); ctx.arc(-rr * 1.2, 0, rr * 0.95, -0.9, 0.9); ctx.stroke();
   ctx.beginPath(); ctx.arc(rr * 1.2, 0, rr * 0.95, Math.PI - 0.9, Math.PI + 0.9); ctx.stroke();
@@ -2922,18 +3068,9 @@ function drawFinish(m, b) {
   drawBall(x, y, h, m.elapsed, r, 3);
 }
 
-function drawRimFx(m) {
-  const [hx, hy] = S.HOOP, sh = m.fx.shake, sw = m.fx.swish;
-  const ox = sh > 0 ? Math.sin(m.elapsed * 70) * 3 * (sh / 0.45) : 0;
-  // net hangs toward the court; ripples on a make
-  const drop = 10 + sw * 14;
-  ctx.strokeStyle = "rgba(245,245,245,0.85)"; ctx.lineWidth = 1;
-  for (let i = 0; i < 8; i++) {
-    const a1 = Math.PI * 0.1 + i * Math.PI * 0.8 / 7;
-    const x1 = hx + ox + Math.cos(a1) * 11, y1 = hy + Math.sin(a1) * 11 * 0.6;
-    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(hx + ox + Math.cos(a1) * 6, hy + drop); ctx.stroke();
-  }
-  circle(hx + ox, hy, 11, null, C.orange, 3);
+function drawRimFx(m) {   // the hoop on top of the players (they run under it), shaking and rippling
+  const [hx, hy] = S.HOOP, sh = m.fx.shake;
+  drawHoop(hx, hy, sh > 0 ? Math.sin(m.elapsed * 70) * 3 * (sh / 0.45) : 0, m.fx.swish);
 }
 
 function drawActors(m, controlled) {
@@ -2941,12 +3078,12 @@ function drawActors(m, controlled) {
   // players nearer the bottom of the screen are drawn last so overlaps look right
   const order = [...m.actors].sort((p, q) => p.y - q.y);
   let held = null;
-  drawRimFx(m);
   let dunkHand = null;
   for (const a of order) {
     const hb = drawPerson(m, a, controlled && a === m.controlled);
     if (hb) { if (b.state === "shot" && b.dunk && a === b.shooter) dunkHand = hb; else held = hb; }
   }
+  drawRimFx(m);
   if (b.state === "held" && held) drawBall(held.x, b.holder.y, b.holder.y - held.y, m.elapsed);
   else if (b.state === "shot" && b.dunk && dunkHand) drawBall(dunkHand.x, b.shooter.y, b.shooter.y - dunkHand.y, m.elapsed, 6.5, 4);
   else if (b.state === "shot") {
@@ -3030,7 +3167,13 @@ class MatchScreen extends Screen {
     this.crowdN = ci === HUSTLE ? 0 : this.hsGym ? 140 : this.c.crowdSize();
     this.crowd = makeCrowd(this.crowdN, crew.id + ":" + this.c.fame, this.hsGym);
     this.exciteHome = 0.15; this.booT = 3;
-    this.scoutWatching = crew.mode === "tourney" && (this.c.stage === "hs" || ci === HUSTLE || (ci === THRONE && this.c.tier === THRONE));
+    this.scoutWatching = crew.mode === "tourney" && (this.c.stage === "hs" || (ci === HUSTLE && crew.round === FINAL_ROUND) || (ci === THRONE && this.c.tier === THRONE));
+    // a writer drops in now and then (Rec League and up): they write you up after the game
+    this.press = null;
+    if (this.c.stage === "pro" && ci >= 2 && !this.scoutWatching && Math.random() < (crew.mode !== "tourney" ? 0.12 : crew.round === FINAL_ROUND ? 0.35 : 0.2)) {
+      this.press = outletFor(ci, new Rng()); this.scoutWatching = true;
+      this.match.say(`A writer from ${this.press} is in the stands tonight!`, 3.2);
+    }
     this.parts = []; this.pops = []; this.rings = []; this.fxp = []; this.fx = []; this.slowmo = 0; this.vig = 0; this.white = 0; this.excite = 0.15; this.shake = 0; this.flash = 0; this.freeze = null; this.lastBounce = 0;
   }
   burst(x, y, n, colors, speed = 160, up = 60) {
@@ -3085,6 +3228,7 @@ class MatchScreen extends Screen {
         if (mine) { this.excite = Math.min(1.4, this.excite + (big ? 1.2 : 0.7)); Sound.cheer(this.hsGym ? crowd / 2 : crowd, big); if (this.hsGym) Sound.boo(0.4); }
         else if (this.hsGym) { this.exciteHome = Math.min(1.5, this.exciteHome + 1.2); Sound.cheer(crowd, true); this.shake = Math.max(this.shake, 0.25); }
         else { this.excite = Math.min(1, this.excite + 0.3); Sound.groan(crowd); }
+      } else if (e.type === "tiredsub") { this.pop(e.team === 0 ? `SUB: ${e.in}` : `THEY SUB: ${e.in}`, 500, 230, e.team === 0 ? C.gold : "#9ab0ff", 30, 1.4);
       } else if (e.type === "injury") { Sound.clank(); this.shake = Math.max(this.shake, 0.2); this.pop(e.sub ? "SUB IN" : "HURT", 500, 260, "#ff8a7a", 40, 1.2);
       } else if (e.type === "play") { if (e.ok) { Sound.green(); this.pop(e.text.split("!")[0] + "!", 500, 300, C.green, 44, 1.1); this.excite = Math.min(1.4, this.excite + 0.5); }
       } else if (e.type === "miss") { Sound.clank(); if (this.hsGym && e.team === 0) { Sound.boo(m.pressure); this.exciteHome = Math.min(1.5, this.exciteHome + 0.6); } if (e.team === 0) this.pop("CLANK", hx, hy + 40, C.grey, 30, 0.7); }
@@ -3176,7 +3320,7 @@ class MatchScreen extends Screen {
   }
   finish(forfeit = false) {
     if (this.match.benched) this.match.unbench(true);   // the result is about you, not your sub
-    const rs = new ResultScreen(this.ci, this.crew, this.match, this.bet, this.mult, forfeit);
+    const rs = new ResultScreen(this.ci, this.crew, this.match, this.bet, this.mult, forfeit, this.press);
     App.switch(this.crew.mode === "tourney" && this.c.lastTourney ? new BracketScreen(rs) : rs);   // tournament games show the bracket first
   }
   key(k) {
@@ -3301,6 +3445,7 @@ class MatchScreen extends Screen {
       rrect(x, y, 32, 5, 2.5, "rgba(10,10,14,0.8)");
       rrect(x, y, 32 * a.stamina, 5, 2.5, a.stamina > 0.3 ? "#5ad2ff" : C.red);
     }
+    if (a.gassed) text("GASSED", a.x, a.y + 30, { size: 15, color: "#ff9a6a", center: true, display: true });   // worn out: slower, shakier shot
     for (const q of this.pops) {
       const k = q.life / q.max, pop = k > 0.85 ? 1 + (k - 0.85) * 4 : 1;
       ctx.globalAlpha = Math.min(1, k * 2.5);
@@ -3323,7 +3468,7 @@ class MatchScreen extends Screen {
     text(nm, 545, 23 - nsz * 0.36, { size: nsz, color: C.team[1], display: true });
     text(`${TIERS[this.ci].court} · ${this.crowdN ? `crowd ${this.crowdN}` : "empty gym"}`, 16, 14, { size: 22, color: C.grey });
     text(`Shot ${Math.max(0, Math.ceil(m.shotClock))}`, S.W - 16, 12, { size: 26, right: true });
-    if (this.scoutWatching) text("SCOUT WATCHING", S.W - 16, 50, { size: 20, color: C.gold, right: true, display: true });
+    if (this.scoutWatching) text(this.press ? `PRESS: ${this.press.toUpperCase()}` : "SCOUT WATCHING", S.W - 16, 50, { size: 20, color: C.gold, right: true, display: true });
     let hy = this.hsGym ? 98 : 54;
     if (m.oppCall) {   // their coach's adjustment
       rrect(14, hy, 236, 44, 8, "rgba(40,14,14,0.85)", "#a8352c", 1.5);
@@ -3373,11 +3518,11 @@ class MatchScreen extends Screen {
 }
 
 class ResultScreen extends Screen {
-  constructor(ci, crew, match, bet, mult, forfeit) {
+  constructor(ci, crew, match, bet, mult, forfeit, press = null) {
     super(); const c = this.c;
-    Object.assign(this, { ci, crew, match, bet, forfeit });
+    Object.assign(this, { ci, crew, match, bet, forfeit, pressOutlet: forfeit ? null : press });
     this.won = !forfeit && match.winner === 0;
-    this.r = c.applyResult(crew, this.won, match.score[0] - match.score[1], bet, mult, match.moveUse, match.box, { played: [...match.played], injured: match.injured, score: [...match.score] });
+    this.r = c.applyResult(crew, this.won, match.score[0] - match.score[1], bet, mult, match.moveUse, match.box, { played: [...match.played], injured: match.injured, score: [...match.score], press: this.pressOutlet, pts: match.pointsBy(0) });
     this.myPts = match.mainGuy.points;
     const r = this.r, items = [];
     if (r.hsDone) items.push(["See the scout's report →", () => App.switch(new ScoutReportScreen())]);
@@ -3398,47 +3543,70 @@ class ResultScreen extends Screen {
   draw() {
     this.header(); const m = this.match, c = this.c, r = this.r;
     const title = r.champ ? "CHAMPIONS!" : this.forfeit ? "FORFEIT" : this.won ? "VICTORY" : r.eliminated ? "ELIMINATED" : "DEFEAT";
-    text(title, 500, 122, { size: 76, color: this.won ? (r.champ ? C.gold : C.green) : C.red, center: true, display: true });
+    text(title, 500, 100, { size: 62, color: this.won ? (r.champ ? C.gold : C.green) : C.red, center: true, display: true });
     const where = this.crew.mode === "tourney" ? `${TIERS[this.crew.court].tourney} · ${roundLabel(this.crew)}` : "Pickup game";
     this.whereFits = where;
-    text(`${m.score[0]} - ${m.score[1]}  vs  ${this.crew.name}  ·  ${where}`, 500, 178, { size: 32, center: true });
-    text(`You scored ${this.myPts}`, 500, 212, { size: 28, color: C.grey, center: true });
+    text(`${m.score[0]} - ${m.score[1]}  vs  ${this.crew.name}  ·  ${where}`, 500, 150, { size: 28, center: true });
     const lines = [r.fame >= 0 ? `+${r.fame} fame` : `${r.fame} fame`];
     if (r.cash) lines.push(`+$${r.cash}`);
     if (r.salary) lines.push(`+$${r.salary} salary`);
-    if (r.tips) lines.push(`+$${r.tips} crowd tips`);
+    if (r.tips) lines.push(`+$${r.tips} tips`);
     if (this.bet) lines.push(this.won ? `Bet paid $${r.betWin}!` : `Lost your $${this.bet} bet`);
-    text(lines.join("     "), 500, 254, { size: 34, color: r.fame < 0 ? "#ff9a8a" : C.gold, center: true });
-    let y = 300;
-    if (r.fame < 0) { text("Losses cost more fame the more famous you are.", 500, y, { size: 22, color: C.grey, center: true, weight: 500 }); y += 34; }
-    if (r.eliminated && !r.hsDone) { text("You're out of the tournament. Enter again from Play.", 500, y, { size: 26, color: C.white, center: true }); y += 36; }
-    if (r.nextGame) { text(`${ROUNDS[r.series.round]} series: ${r.series.w}-${r.series.l}  (first to 2)`, 500, y, { size: 30, color: C.gold, center: true, display: true }); y += 38; }
-    else if (r.series && r.series.need > 1 && (r.nextRound || r.champ)) { text(`Won the ${ROUNDS[r.series.round]} series ${r.series.w}-${r.series.l}!`, 500, y, { size: 28, color: C.green, center: true }); y += 34; }
-    else if (r.series && r.series.need > 1 && r.eliminated) { text(`Lost the ${ROUNDS[r.series.round]} series ${r.series.w}-${r.series.l}.`, 500, y, { size: 28, color: C.red, center: true }); y += 34; }
-    if (r.nextRound && c.tourney) { text(`On to the ${ROUNDS[c.tourney.round]}!`, 500, y, { size: 32, color: C.gold, center: true, display: true }); y += 40; }
-    if (r.hustle) { text(c.stage === "pro" && c.tier > HUSTLE ? "Side hustle: no salary, no prize money, no fame. Only your bets pay." : "Hustle League: no prize money, no fame. Only your bets pay.", 500, y, { size: 22, color: C.grey, center: true, weight: 500 }); y += 30; }
-    if (r.offers) { text("SCOUTS ARE CALLING! Teams want to sign you.", 500, y, { size: 28, color: C.gold, center: true, display: true }); y += 38; }
-    for (const h of r.hurt || []) { text(`${h.name} got hurt: out ${h.games} games`, 500, y, { size: 24, color: "#ff8a7a", center: true }); y += 30; }
-    if (r.newFans && r.newFans.length) { text(`${r.newFans.join(" & ")} ${r.newFans.length > 1 ? "like" : "likes"} you now. They'll run the Hustle Classic with you.`, 500, y, { size: 22, color: C.green, center: true }); y += 30; }
-    for (const ms of r.milestones || []) {   // OVR milestones reached this game
-      text(`MILESTONE: OVR ${ms.ovr}!  ${milestoneText(ms)}  ·  +$${ms.cash}${ms.fame ? `  +${ms.fame} fame` : ""}`, 500, y, { size: 24, color: C.gold, center: true, display: true }); y += 32;
-    }
+    text(lines.join("     "), 500, 186, { size: 30, color: r.fame < 0 ? "#ff9a8a" : C.gold, center: true });
+    // ---- the stat sheet (left) and who got better (right)
+    const box = m.box || {}, py = 214, ph = 150;
+    rrect(40, py, 450, ph, 10, "#1b1d26"); rrect(510, py, 450, ph, 10, "#1b1d26");
+    text("YOUR LINE", 56, py + 12, { size: 18, color: C.gold, display: true });
+    text(`${this.myPts} PTS   ${box.fgm || 0}/${box.fga || 0} FG   ${box.greens || 0} greens`, 56, py + 40, { size: 24 });
+    text(`${box.reb || 0} REB   ${box.stl || 0} STL   ${box.blk || 0} BLK   ${box.ankles || 0} ankles   ${box.to || 0} TO`, 56, py + 70, { size: 20, color: C.grey, weight: 500 });
+    const mates = Object.entries(m.pointsBy ? m.pointsBy(0) : {}).filter(([n]) => n !== c.me.name);
+    if (mates.length) text(`Teammates: ${mates.map(([n, v]) => `${n} ${v}`).join("  ·  ")}`, 56, py + 100, { size: 20, color: C.white, weight: 500 });
+    if (m.fatigueSubs) text(`${m.fatigueSubs} sub${m.fatigueSubs > 1 ? "s" : ""} for tired legs`, 56, py + 126, { size: 17, color: C.grey, weight: 500 });
+    text("GOT BETTER", 526, py + 12, { size: 18, color: C.gold, display: true });
+    const prog = [];
     if (r.grow) {
-      const g = r.grow.gains;
-      text(S.STATS.map(k => `${S.LABEL[k].slice(0, 3).toUpperCase()} +${g[k]}%`).join("   "), 500, y, { size: 22, color: C.grey, center: true, weight: 500 }); y += 28;
-      if (r.grow.ups.length) { text(r.grow.ups.map(k => `${S.LABEL[k]} up to ${c.me.stats[k]}!`).join("   "), 500, y, { size: 26, color: C.green, center: true, display: true }); y += 34; }
+      prog.push([S.STATS.map(k => `${S.LABEL[k].slice(0, 3).toUpperCase()} +${r.grow.gains[k]}%`).join("  "), C.grey, 17]);
+      if (r.grow.ups.length) prog.push([`You: ${r.grow.ups.map(k => `${S.LABEL[k]} ${c.me.stats[k] - 1} → ${c.me.stats[k]}`).join(", ")}`, C.green, 20]);
     }
-    if (r.scout != null) { text(`Scout grade this game: ${r.scout} (${gradeOf(r.scout)})`, 500, y, { size: 30, color: C.gold, center: true, display: true }); y += 40; }
-    if (r.hsDone && r.champ) { text("State champions! The scout is writing the report.", 500, y, { size: 28, color: C.gold, center: true }); y += 38; }
-    else if (r.hsDone) { text("High school is over. The scout has seen enough.", 500, y, { size: 26, color: C.white, center: true }); y += 36; }
-    if (r.hustleDone) { text(r.champ ? "Hustle Classic champs! The scout is writing the report." : "Tournament's over. The scout has seen enough.", 500, y, { size: 26, color: C.gold, center: true }); y += 36; }
-    else if (r.tierUp) { text(`You won the ${TIERS[this.crew.court].tourney}! Next stop: ${TIERS[c.tier].court} (${TIERS[c.tier].name}).`, 500, y, { size: 28, color: C.gold, center: true }); y += 38; }
-    if (r.throneDone) { text(r.champ ? "Throne champions! The Olympic scouts are deciding." : "Your Throne run is over. The Olympic scouts are deciding.", 500, y, { size: 26, color: C.gold, center: true }); y += 36; }
-    if (r.fameMove && !r.fameMove.up) { text(`DEMOTED to the ${TIERS[r.fameMove.to].name} (${TIERS[r.fameMove.to].court}).`, 500, y, { size: 30, color: C.red, center: true, display: true }); y += 38; text("Your fame fell too far. Win to earn your way back up.", 500, y, { size: 24, color: "#ff9a8a", center: true }); y += 34; }
-    if (r.crowned) { text(`YOU ARE THE ${KING.toUpperCase()}!`, 500, y, { size: 40, color: C.gold, center: true, display: true }); y += 44; }
-    if (r.gold) { text("OLYMPIC GOLD MEDAL!", 500, y, { size: 48, color: C.gold, center: true, display: true }); y += 50; text("You beat the best in the country.", 500, y, { size: 26, center: true }); y += 36; }
-    if (r.tierUp && c.scouting() >= 0.15) { text(`You moved up fast. Teams are scouting you (${Math.round(c.scouting() * 100)}%).`, 500, y, { size: 24, color: "#ff8a7a", center: true }); y += 34; }
-    this.menu.draw(500, Math.max(420, y + 30), 48, 34);
+    for (const u of r.mateUps || []) prog.push([`${u.name}: ${S.LABEL[u.stat]} ${u.from} → ${u.to}`, C.green, 20]);
+    for (const ms of r.milestones || []) prog.push([`MILESTONE OVR ${ms.ovr}: ${milestoneText(ms)}  +$${ms.cash}${ms.fame ? ` +${ms.fame} fame` : ""}`, C.gold, 18]);
+    if (prog.length <= 1) prog.push(["Nobody leveled up this game. Keep playing.", C.grey, 19]);
+    const shown = prog.slice(0, 5);
+    shown.forEach(([t, col, sz], i) => { ctx.save(); ctx.font = `700 ${Math.round(sz * 0.72)}px ${FONT_BODY}`; const w = ctx.measureText(t).width; ctx.translate(526, py + 40 + i * 22); if (w > 420) ctx.scale(420 / w, 1); text(t, 0, 0, { size: sz, color: col, weight: 600 }); ctx.restore(); });
+    if (prog.length > 5) text(`+${prog.length - 5} more`, 944, py + ph - 22, { size: 16, color: C.grey, right: true });
+    let y = py + ph + 26;
+    // ---- a writer was in the stands: their story
+    if (r.press) {
+      const pr = r.press; y -= 14;
+      rrect(120, y, 760, 66, 6, "#ece6d6", "#b8ae92", 1.5);
+      text(`${pr.outlet.toUpperCase()}  ·  grade ${pr.grade}  ·  ${pr.fame >= 0 ? "+" : ""}${pr.fame} rep`, 136, y + 8, { size: 15, color: "#6a5f48", display: true });
+      text(pr.headline, 136, y + 24, { size: 24, color: "#1a1814", display: true });
+      ctx.save(); ctx.font = `600 ${Math.round(17 * 0.72)}px ${FONT_BODY}`; const bw = ctx.measureText(pr.body).width; ctx.translate(136, y + 48); if (bw > 728) ctx.scale(728 / bw, 1); text(pr.body, 0, 0, { size: 17, color: "#3a352c", weight: 600 }); ctx.restore();
+      y += 92;
+    }
+    const say = (t, col = C.white, size = 24, disp = false) => { text(t, 500, y, { size, color: col, center: true, display: disp }); y += size + 8; };
+    if (r.fame < 0) say("Losses cost more fame the more famous you are.", C.grey, 20);
+    if (r.eliminated && !r.hsDone) say("You're out of the tournament. Enter again from Play.");
+    if (r.nextGame) say(`${ROUNDS[r.series.round]} series: ${r.series.w}-${r.series.l}  (first to ${r.series.need})`, C.gold, 26, true);
+    else if (r.series && r.series.need > 1 && (r.nextRound || r.champ)) say(`Won the ${ROUNDS[r.series.round]} series ${r.series.w}-${r.series.l}!`, C.green, 26);
+    else if (r.series && r.series.need > 1 && r.eliminated) say(`Lost the ${ROUNDS[r.series.round]} series ${r.series.w}-${r.series.l}.`, C.red, 26);
+    if (r.nextRound && c.tourney) say(`On to the ${ROUNDS[c.tourney.round]}!`, C.gold, 28, true);
+    if (r.hustle) say(c.stage === "pro" && c.tier > HUSTLE ? "Side hustle: no salary, no prize money, no fame. Only your bets pay." : "Hustle League: no prize money, no fame. Only your bets pay.", C.grey, 20);
+    if (r.offers) say("SCOUTS ARE CALLING! Teams want to sign you.", C.gold, 26, true);
+    for (const h of r.hurt || []) say(`${h.name} got hurt: out ${h.games} games`, "#ff8a7a", 22);
+    if (r.newFans && r.newFans.length) say(`${r.newFans.join(" & ")} ${r.newFans.length > 1 ? "like" : "likes"} you now. They'll run the Hustle Classic with you.`, C.green, 20);
+    if (r.scout != null) say(`Scout grade this game: ${r.scout} (${gradeOf(r.scout)})`, C.gold, 26, true);
+    if (r.hsDone && r.champ) say("State champions! The scout is writing the report.", C.gold);
+    else if (r.hsDone) say("High school is over. The scout has seen enough.");
+    if (r.hustleDone) say(r.champ ? "Hustle Classic champs! The scout is writing the report." : "Tournament's over. The scout has seen enough.", C.gold);
+    else if (r.tierUp) say(`You won the ${TIERS[this.crew.court].tourney}! Next stop: ${TIERS[c.tier].court} (${TIERS[c.tier].name}).`, C.gold);
+    if (r.throneDone) say(r.champ ? "Throne champions! The Olympic scouts are deciding." : "Your Throne run is over. The Olympic scouts are deciding.", C.gold);
+    if (r.fameMove && !r.fameMove.up) { say(`DEMOTED to the ${TIERS[r.fameMove.to].name} (${TIERS[r.fameMove.to].court}).`, C.red, 28, true); say("Your fame fell too far. Win to earn your way back up.", "#ff9a8a", 20); }
+    if (r.crowned) say(`YOU ARE THE ${KING.toUpperCase()}!`, C.gold, 36, true);
+    if (r.gold) { say("OLYMPIC GOLD MEDAL!", C.gold, 40, true); say("You beat the best in the country.", C.white, 24); }
+    if (r.tierUp && c.scouting() >= 0.15) say(`You moved up fast. Teams are scouting you (${Math.round(c.scouting() * 100)}%).`, "#ff8a7a", 20);
+    const n = this.menu.items ? this.menu.items.length : 3, gap = 40;
+    this.menu.draw(500, Math.min(S.H - 30 - (n - 1) * gap, Math.max(y + 22, 470)), gap, 30);
   }
 }
 
@@ -3738,47 +3906,68 @@ class CrewScreen extends Screen {
 
 // The Hustle gym: regulars rotate every day. Win with them and they start to like you.
 class GymScreen extends Screen {
-  constructor(forClassic = false) { super(); this.c.ensureGym(); this.i = 0; this.forClassic = forClassic; this.msg = forClassic ? "Pick 2 teammates who like you, then enter the Hustle Classic." : ""; }
-  toggle(i) {
-    const c = this.c, g = c.gym[i];
-    if (g.like < 60) { this.msg = `${g.p.name} doesn't like you enough yet. Win some runs together.`; return; }
-    if (g.p.injured > 0) { this.msg = `${g.p.name} is hurt.`; return; }
-    const at = c.hustlePicks.indexOf(i);
-    if (at >= 0) c.hustlePicks.splice(at, 1); else { c.hustlePicks.push(i); if (c.hustlePicks.length > 2) c.hustlePicks.shift(); }
+  // mode: "run" (pick 2 for a pickup game), "classic" (pick 3 for the Hustle Classic), "view" (just look around)
+  constructor(mode = "view", game = null) {
+    super(); this.c.ensureGym(); Object.assign(this, { mode: mode === true ? "classic" : mode || "view", game, i: 0, all: false });
+    this.msg = this.mode === "classic" ? "Choose 3 players for the Hustle Classic: 2 starters and a sub." : this.mode === "run" ? "Pick 2 from who's in the gym today. The less they like you, the more likely they say no." : "";
+  }
+  get need() { return this.mode === "classic" ? 3 : 2; }
+  get locked() { const t = this.c.tourney; return !!(t && t.tier === HUSTLE && t.roster); }
+  list() { return this.all ? this.c.gym.map((g, i) => i) : this.locked && this.mode !== "run" ? this.c.tourney.roster : this.c.gymToday(); }
+  back() { App.switch(this.mode === "view" ? new HubScreen() : new CourtScreen()); }
+  ask(i) {
+    if (this.mode === "view") { this.msg = "Pick teammates from the Play screen."; return; }
+    if (this.locked && this.mode === "classic") { this.msg = "Your Classic team is locked in until the tournament ends."; return; }
+    if (this.all) { this.msg = "Only people in the gym today can run with you."; return; }
+    const [, msg] = this.c.askToRun(i, this.need); this.msg = msg; App.save();
+  }
+  go() {
+    const c = this.c, A = c.asks, got = c.fillRandom(this.need);
+    if (got.length) this.msg = `${A.picks.length - got.length ? "Nobody else wanted to run." : "Nobody wanted to run."} You got ${got.join(" & ")}.`;
     App.save();
+    if (this.mode === "classic") { c.enterTourney(); App.save(); const go = () => App.switch(new BracketScreen(() => startGame(HUSTLE, c.tourneyGame()))); got.length ? (this.thenT = 1.4, this.then = go) : go(); }
+    else { const go = () => startGame(HUSTLE, this.game); got.length ? (this.thenT = 1.4, this.then = go) : go(); }
   }
-  enter() {
-    const c = this.c; c.enterTourney(); App.save(); App.switch(new BracketScreen(() => startGame(HUSTLE, c.tourneyGame())));
-  }
+  update(dt) { if (this.then) { this.thenT -= dt; if (this.thenT <= 0) { const f = this.then; this.then = null; f(); } } }
   key(k) {
-    const n = this.c.gym.length;
-    if (K.back(k)) App.switch(this.forClassic ? new CourtScreen() : new HubScreen());
+    if (this.then) return;
+    const L = this.list(), n = L.length, half = Math.ceil(n / 2);
+    if (K.back(k)) this.back();
     else if (K.up(k)) this.i = (this.i - 1 + n) % n;
     else if (K.down(k)) this.i = (this.i + 1) % n;
-    else if (K.ok(k)) this.toggle(this.i);
-    else if ((k === "e" || k === "E") && this.forClassic) this.enter();
+    else if (K.left(k) || K.right(k)) this.i = this.i >= half ? this.i - half : Math.min(n - 1, this.i + half);
+    else if (k === "Tab") { this.all = !this.all; this.i = 0; }
+    else if (K.ok(k)) this.ask(L[this.i]);
+    else if ((k === "p" || k === "P" || k === "e" || k === "E") && this.mode !== "view") this.go();
   }
   draw() {
-    this.header("The Gym"); this.backButton(() => App.switch(this.forClassic ? new CourtScreen() : new HubScreen()));
-    const c = this.c, today = c.gymRun().map(g => g.p), team = c.classicTeam().map(g => g.p);
-    text(`Today's run: ${today.map(p => p.name).join(" & ")}  ·  Regulars who like you can join your Hustle Classic team`, 500, 150, { size: 22, color: C.grey, center: true, weight: 500 });
-    c.gym.forEach((g, i) => {
-      const y = 174 + i * 44, sel = i === this.i, picked = c.hustlePicks.includes(i), p = g.p;
-      rrect(80, y, 840, 39, 8, sel ? "#34364a" : "#1d1f27", sel ? C.gold : picked ? C.green : null, 1.5);
-      text(`${p.pos}  ${p.name}  OVR ${overall(p)}`, 98, y + 10, { size: 26, color: p.injured > 0 ? "#ff8a7a" : C.white });
-      text(p.injured > 0 ? `hurt (${p.injured})` : today.includes(p) ? "in today's run" : "", 420, y + 12, { size: 20, color: p.injured > 0 ? "#ff8a7a" : C.gold });
-      rrect(560, y + 16, 180, 10, 5, "#2a2c36"); rrect(560, y + 16, 180 * g.like / 100, 10, 5, g.like >= 60 ? C.green : C.orange);
-      text(g.like >= 60 ? "LIKES YOU" : `${g.like}/60`, 752, y + 12, { size: 20, color: g.like >= 60 ? C.green : C.grey });
-      if (picked) text("PICKED", 900, y + 12, { size: 20, color: C.green, right: true, display: true });
-      hit(80, y, 840, 39, () => { this.i = i; this.toggle(i); });
+    const c = this.c, L = this.list(), A = c.asks, today = c.gymToday();
+    this.header(this.mode === "classic" ? "Hustle Classic: pick your team" : this.mode === "run" ? "Who runs with you?" : "The Gym"); this.backButton(() => this.back());
+    const picks = this.locked && this.mode !== "run" ? c.tourney.roster : A.picks;
+    text(this.all ? `All ${c.gym.length} regulars  ·  Tab = who's here today` : `${today.length} of ${c.gym.length} regulars are in the gym today${this.mode === "view" ? "  ·  Tab = everyone" : ""}`, 500, 146, { size: 20, color: C.grey, center: true, weight: 500 });
+    const half = Math.ceil(L.length / 2), rh = this.all ? 25 : 44, y0 = 166;
+    L.forEach((gi, k) => {
+      const g = c.gym[gi], p = g.p, col = k >= half ? 1 : 0, row = col ? k - half : k, x = 40 + col * 470, y = y0 + row * rh, sel = k === this.i;
+      const slot = picks.indexOf(gi), said = A.declined.includes(gi), canAsk = g.like >= GYM_TOLERATE && !p.injured;
+      rrect(x, y, 450, rh - 4, 7, sel ? "#34364a" : slot >= 0 ? "#1f2a22" : "#1d1f27", sel ? C.gold : slot >= 0 ? C.green : null, 1.5);
+      const dim = this.mode !== "view" && !this.all && (!canAsk || said) && slot < 0;
+      text(`${p.pos} ${p.name}`, x + 12, y + (this.all ? 3 : 6), { size: this.all ? 17 : 21, color: p.injured > 0 ? "#ff8a7a" : dim ? "#6c6e7a" : C.white });
+      text(`OVR ${overall(p)}`, x + 220, y + (this.all ? 3 : 6), { size: this.all ? 16 : 19, color: dim ? "#6c6e7a" : C.grey });
+      if (!this.all) { rrect(x + 12, y + 29, 150, 6, 3, "#2a2c36"); rrect(x + 12, y + 29, 150 * g.like / 100, 6, 3, likeColor(g.like)); }
+      const tag = slot >= 0 ? (this.mode === "classic" || this.locked ? (slot < 2 ? "STARTER" : "SUB") : "RUNNING") : p.injured > 0 ? `hurt (${p.injured})` : said ? "said no" : this.mode !== "view" && !this.all && canAsk ? `${Math.round(askChance(g.like) * 100)}% yes` : "";
+      text(likeLabel(g.like), x + (this.all ? 300 : 176), y + (this.all ? 3 : 23), { size: this.all ? 15 : 16, color: likeColor(g.like), weight: 600 });
+      text(tag, x + 438, y + (this.all ? 3 : 8), { size: this.all ? 15 : 18, color: slot >= 0 ? C.green : said || p.injured ? "#ff8a7a" : C.gold, right: true, display: slot >= 0 });
+      hit(x, y, 450, rh - 4, () => { this.i = k; this.ask(gi); });
     });
-    if (this.forClassic) {
-      text(`Your Classic team: ${team.map(p => p.name).join(" & ") || "nobody yet"}`, 500, 580, { size: 24, center: true });
-      rrect(390, 604, 220, 44, 10, C.gold); text("ENTER THE CLASSIC", 500, 626, { size: 22, color: "#1a1406", center: true, display: true });
-      hit(390, 604, 220, 44, () => this.enter());
+    if (this.msg) text(this.msg, 500, 548, { size: 21, color: C.gold, center: true });
+    if (this.mode !== "view") {
+      const names = picks.map(i => c.gym[i].p.name);
+      text(this.mode === "classic" ? `Team: ${names.slice(0, 2).join(" & ") || "nobody yet"}${names[2] ? `  ·  sub: ${names[2]}` : ""}  (${names.length}/3)` : `Running with: ${names.join(" & ") || "nobody yet"}  (${names.length}/2)`, 500, 578, { size: 22, center: true });
+      const lbl = this.mode === "classic" ? (this.locked ? "LOCKED IN" : "ENTER THE CLASSIC") : names.length < 2 ? "PLAY (random fill)" : "PLAY";
+      rrect(380, 598, 240, 42, 10, C.gold); text(lbl, 500, 619, { size: 22, color: "#1a1406", center: true, display: true });
+      if (!this.locked || this.mode === "run") hit(380, 598, 240, 42, () => { if (!this.then) this.go(); });
     }
-    if (this.msg) text(this.msg, 500, this.forClassic ? 556 : 600, { size: 22, color: C.gold, center: true });
-    this.footer(this.forClassic ? "▲▼ pick  ·  Enter = pick/unpick  ·  E = enter the Classic" : "Win runs with the regulars and they'll start to like you");
+    this.footer(this.mode === "view" ? "Win runs with the regulars and they'll start to like you  ·  Tab = everyone" : "▲▼◀▶ pick  ·  Enter = ask / drop  ·  P = play" + (this.mode === "classic" ? " (enter)" : ""));
   }
 }
 
@@ -3816,8 +4005,8 @@ class AttributesScreen extends Screen {
 class TeammateScreen extends Screen {
   constructor(i) { super(); this.idx = i; this.row = 0; this.msg = ""; }
   get p() { return this.c.crew[this.idx]; }
-  rowsList() { return [...S.STATS.map(k => ["stat", k]), ...BADGE_ORDER.map(b => ["badge", b])]; }
-  act(r) { const c = this.c, [kind, id] = r, [, msg] = kind === "stat" ? c.upgradeMate(this.p, id) : c.buyMateBadge(this.p, id); this.msg = msg; App.save(); }
+  rowsList() { return BADGE_ORDER.map(b => ["badge", b]); }
+  act(r) { const [, msg] = this.c.buyMateBadge(this.p, r[1]); this.msg = msg; App.save(); }
   key(k) {
     const rows = this.rowsList();
     if (K.back(k)) App.switch(new CrewScreen());
@@ -3833,24 +4022,27 @@ class TeammateScreen extends Screen {
     text(`${p.pos} · #${p.number} · ${bodyLine(p)}`, 310, 140, { size: 21, color: C.grey, weight: 500 });
     text(`OVR ${overall(p)}  /  cap ${p.cap}`, 310, 170, { size: 30, color: overall(p) >= p.cap ? C.orange : C.gold, display: true });
     text(`Archetype: ${attrLabel(p)}   ·   Attributes (${(p.badges || []).length}/${p.badgeSlots || 1}): ${badgeLabel(p) || "none"}`, 310, 210, { size: 20, color: C.grey, weight: 500 });
-    const rows = this.rowsList();
+    const rows = this.rowsList(), capped = overall(p) >= p.cap;
+    S.STATS.forEach((k, j) => {   // stats grow by playing: progress toward the next point
+      const y = 258 + j * 52, pr = capped ? 0 : Math.min(99, (p.prog || {})[k] || 0);
+      rrect(60, y, 420, 46, 8, "#1c1e26");
+      text(`${S.LABEL[k]}  ${p.stats[k]}`, 76, y + 12, { size: 24 });
+      rrect(250, y + 19, 150, 10, 5, "#2a2c36"); if (pr) rrect(250, y + 19, 150 * pr / 100, 10, 5, C.green);
+      text(capped ? "capped" : `${Math.round(pr)}%`, 466, y + 12, { size: 22, color: capped ? C.orange : C.grey, right: true });
+    });
     rows.forEach(([kind, id], i) => {
-      const col = kind === "stat" ? 0 : 1, j = kind === "stat" ? i : i - 5, x = col ? 520 : 60, y = 258 + j * (col ? 40 : 52), w = col ? 420 : 420, sel = i === this.row;
-      rrect(x, y, w, col ? 36 : 46, 8, sel ? "#2e3040" : "#1c1e26", sel ? C.gold : null, 1.5);
-      if (kind === "stat") {
-        const v = p.stats[id];
-        text(`${S.LABEL[id]}  ${v}`, x + 16, y + 12, { size: 24 });
-        text(overall(p) >= p.cap ? "capped" : `+2  $${c.mateStatCost(v)}`, x + w - 14, y + 12, { size: 22, color: overall(p) >= p.cap ? C.grey : C.green, right: true });
-      } else {
+      const x = 520, y = 258 + i * 40, w = 420, sel = i === this.row;
+      rrect(x, y, w, 36, 8, sel ? "#2e3040" : "#1c1e26", sel ? C.gold : null, 1.5);
+      {
         const B = BADGES[id], has = (p.badges || []).includes(id);
         text(B.name, x + 14, y + 8, { size: 21, color: has ? C.green : C.white });
         text(has ? "LEARNED" : `$${B.price}`, x + w - 12, y + 8, { size: 20, color: has ? C.green : C.gold, right: true });
       }
-      hit(x, y, w, col ? 36 : 46, () => { this.row = i; this.act([kind, id]); });
+      hit(x, y, w, 36, () => { this.row = i; this.act([kind, id]); });
     });
-    text("+2 per buy, up to their cap", 262, 520, { size: 19, color: C.grey, center: true, weight: 500 }); text("Legend+ players get 2 attribute slots", 262, 546, { size: 19, color: C.grey, center: true, weight: 500 });
+    text("Gets better by playing, up to the cap", 262, 520, { size: 19, color: C.grey, center: true, weight: 500 }); text("Legend+ players get 2 attribute slots", 262, 546, { size: 19, color: C.grey, center: true, weight: 500 });
     if (this.msg) text(this.msg, 290, 566, { size: 24, color: C.gold, center: true });
-    this.footer("▲▼ pick  ·  Enter = buy  ·  Esc back");
+    this.footer("▲▼ pick an attribute  ·  Enter = buy it  ·  Esc back");
   }
 }
 
@@ -3929,92 +4121,213 @@ const RARITY_COLORS = { Bum: C.grey, Solid: C.white, Baller: C.blue, Legend: C.g
 const symColor = s => s === "ETERNAL" ? rarityColor({ rainbow: true }) : s === "MYTHIC" ? rarityColor({ glow: true }) : SYM_COLORS[s];
 const rarColorName = n => n === "Eternal" ? rarityColor({ rainbow: true }) : n === "Mythic" ? rarityColor({ glow: true }) : RARITY_COLORS[n];
 
-class SlotScreen extends Screen {
-  get bets() { return BET_STEPS.filter(b => b <= Math.max(10, BET_CAP[Math.min(this.c.tier, THRONE)])); }   // the machine takes league-sized bets
-  constructor() { super(); Object.assign(this, { bi: 1, spinT: 0, result: null, reels: ["BALL", "CROWN", "CASH"], msg: "Pick a bet and spin.", rng: new Rng() }); }
-  spin() {
-    if (this.spinT > 0) return;
-    const bet = this.bets[Math.min(this.bi, this.bets.length - 1)], res = Luck.playSlots(this.c, bet, this.rng);
-    if (!res) { this.msg = "Not enough cash for that bet."; return; }
-    this.result = [bet, ...res]; this.spinT = 1.2; App.save();
+// ---- a player card, FUT style (used by the pack reveal)
+const RAR_TIER = { Bum: 0, Solid: 1, Baller: 2, Legend: 3, Mythic: 4, Eternal: 5 };
+const RAR_OF = { Bum: "Common", Solid: "Rare", Baller: "Epic", Legend: "Legend", Mythic: "Mythic", Eternal: "Eternal" };
+function drawPlayerCard(p, label, cx, cy, sc = 1, statK = 1) {
+  const w = 250 * sc, h = 350 * sc, x = cx - w / 2, y = cy - h / 2, ti = RAR_TIER[label] || 0, et = label === "Eternal", rc = rarColorName(label);
+  ctx.save();
+  if (ti >= 3) { ctx.shadowColor = et ? `hsl(${(performance.now() / 7) % 360},100%,65%)` : rc; ctx.shadowBlur = 30 + 10 * Math.sin(performance.now() / 200); }
+  const g = ctx.createLinearGradient(x, y, x, y + h); g.addColorStop(0, ti >= 3 ? "#3a2f18" : ti === 2 ? "#1d2a44" : "#262835"); g.addColorStop(1, "#111218");
+  rrect(x, y, w, h, 18 * sc, g, et ? rainbow(x, y, w, h) : rc, (et ? 7 : ti >= 3 ? 5 : 3) * sc);
+  ctx.restore();
+  if (sc < 0.25) return;
+  ctx.save(); ctx.translate(x, y); ctx.scale(sc, sc);
+  text(overall(p), 22, 16, { size: 56, color: et ? rainbow(10, 10, 80, 50) : ti >= 3 ? C.gold : C.white, display: true });
+  text(p.pos, 26, 70, { size: 26, color: C.grey, display: true });
+  text(label.toUpperCase(), 228, 22, { size: 18, color: et ? rainbow(150, 10, 80, 30) : rc, right: true, display: true });
+  rrect(70, 40, 160, 150, 10, "rgba(0,0,0,0.25)");
+  ctx.save(); ctx.beginPath(); ctx.rect(70, 40, 160, 150); ctx.clip(); drawPortrait(p, 76, 56, 4, 0); ctx.restore();
+  ctx.fillStyle = et ? rainbow(20, 196, 210, 3) : rc; ctx.fillRect(20, 198, 210, 2);
+  ctx.font = `700 ${Math.round(28 * 0.72)}px ${FONT_BODY}`; const nw = ctx.measureText(p.name).width;
+  ctx.save(); ctx.translate(125, 214); if (nw > 210) ctx.scale(210 / nw, 1); text(p.name, 0, 0, { size: 28, center: true, display: true }); ctx.restore();
+  S.STATS.forEach((k, j) => {   // stats count up
+    const col = j < 3 ? 0 : 1, row = j < 3 ? j : j - 3, xx = 30 + col * 110, yy = 244 + row * 26;
+    const v = Math.round(p.stats[k] * clamp(statK * 5 - j * 0.6, 0, 1));
+    text(v, xx, yy, { size: 22, color: (p.boosted || []).includes(k) ? (et ? C.white : rc) : C.white, display: true });
+    text(S.LABEL[k].slice(0, 3).toUpperCase(), xx + 38, yy + 2, { size: 18, color: C.grey });
+  });
+  text(attrLabel(p), 125, 326, { size: 16, color: C.grey, center: true, weight: 500 });
+  ctx.restore();
+  if (et) shine(x, y, w, h, 18 * sc);
+}
+
+// ---- opening a card: the pack shakes and teases its color, bursts, then the card flips in
+class PackReveal {
+  constructor(label, p, opts = {}) {
+    Object.assign(this, { label, p, t: 0, parts: [], ti: RAR_TIER[label] || 0, opts, beat: -1, done: false, burstDone: false });
+    this.packT = opts.pack === false ? 0 : 1.0 + 0.45 * Math.max(0, this.ti - 1);   // rarer = a longer, tenser build-up
+    this.end = this.packT + 1.7;
   }
-  key(k) {
-    if (this.spinT > 0) return;
-    if (K.back(k)) App.switch(new HubScreen());
-    else if (K.left(k)) this.bi = Math.max(0, this.bi - 1);
-    else if (K.right(k)) this.bi = Math.min(this.bets.length - 1, this.bi + 1);
-    else if (K.ok(k)) this.spin();
+  get color() { return rarColorName(this.label); }
+  teaseColor() {   // the glow climbs the rarity ladder a step per beat until it reaches the real one
+    const steps = ["Bum", "Solid", "Baller", "Legend", "Mythic", "Eternal"];
+    const k = Math.min(this.ti, Math.floor(this.t / Math.max(0.3, this.packT / (this.ti + 1))));
+    return k === 0 ? "#ffffff" : rarColorName(steps[k]);
+  }
+  skip() { if (this.t < this.end) { if (!this.burstDone) this.burst(); this.t = this.end; } }
+  burst() {
+    this.burstDone = true;
+    const n = 30 + 25 * this.ti, cols = this.ti >= 5 ? ["#ff5a5a", "#ffd23c", "#5aff8a", "#5ad2ff", "#c78bff"] : [this.ti >= 4 ? "#ff3b5c" : RARITY[Math.min(5, this.ti)].color, "#ffffff", C.gold];
+    for (let i = 0; i < n; i++) { const a = Math.random() * Math.PI * 2, sp = 120 + Math.random() * (260 + 60 * this.ti);
+      this.parts.push({ x: 500, y: 330, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 80, life: 1 + Math.random() * 1.2, max: 2.2, col: cols[i % cols.length], r: 2 + Math.random() * 3, g: 220 }); }
+    try { if (this.ti >= 3) { Sound.dunk(); Sound.cheer(60 + 30 * this.ti, true); } else Sound.swish(); } catch (e) {}
+  }
+  confetti(dt) {   // Epic and up keep raining confetti
+    if (this.ti < 2 || this.t < this.packT) return;
+    const rate = (this.ti - 1) * 14 * dt;
+    for (let i = 0; i < rate + (Math.random() < rate % 1 ? 1 : 0); i++) this.parts.push({ x: Math.random() * 1000, y: -10, vx: (Math.random() - 0.5) * 60, vy: 60 + Math.random() * 80, life: 4, max: 4, col: `hsl(${Math.random() * 360},90%,65%)`, r: 2.5 + Math.random() * 2, g: 30, conf: true });
   }
   update(dt) {
+    const was = this.t; this.t = Math.min(this.t + dt, this.end + 999);
+    if (this.t < this.packT) { const b = Math.floor(this.t / 0.32); if (b !== this.beat) { this.beat = b; try { Sound.dribble(); } catch (e) {} } }
+    if (!this.burstDone && this.t >= this.packT) this.burst();
+    if (was < this.end && this.t >= this.end) { try { Sound.green(); } catch (e) {} }
+    this.done = this.t >= this.end;
+    this.confetti(dt);
+    for (const q of this.parts) { q.x += q.vx * dt; q.y += q.vy * dt; q.vy += q.g * dt; q.life -= dt; }
+    this.parts = this.parts.filter(q => q.life > 0 && q.y < 720);
+  }
+  key(k) {
+    if (!this.done) { if (K.ok(k) || k === " ") this.skip(); return; }
+    if (K.back(k)) this.opts.close && this.opts.close();
+    else if (K.ok(k) || k === " ") this.opts.again && this.opts.again();
+  }
+  draw(c) {
+    ctx.fillStyle = "#07080c"; ctx.fillRect(0, 0, S.W, S.H);
+    const t = this.t, rc = this.color, after = t - this.packT;
+    if (t < this.packT) {   // the pack: shakes harder and glows brighter as it builds
+      const k = t / this.packT, amp = 2 + 9 * k * (0.5 + 0.5 * Math.min(1, this.ti / 3)), col = this.teaseColor();
+      const sx = 500 + Math.sin(t * 47) * amp, sy = 330 + Math.cos(t * 39) * amp * 0.6;
+      ctx.save(); ctx.globalAlpha = 0.25 + 0.5 * k; const rg = ctx.createRadialGradient(500, 330, 10, 500, 330, 260 + 60 * k);
+      rg.addColorStop(0, col); rg.addColorStop(1, "rgba(0,0,0,0)"); ctx.fillStyle = rg; ctx.fillRect(0, 0, S.W, S.H); ctx.restore();
+      ctx.save(); ctx.translate(sx, sy); ctx.rotate(Math.sin(t * 31) * 0.04 * k);
+      ctx.shadowColor = col; ctx.shadowBlur = 20 + 40 * k;
+      const fg = ctx.createLinearGradient(-90, -130, 90, 130); fg.addColorStop(0, "#d9dce6"); fg.addColorStop(0.5, "#8b90a3"); fg.addColorStop(1, "#e9ebf2");
+      rrect(-90, -130, 180, 260, 14, fg, col, 4); ctx.shadowBlur = 0;
+      for (let i = 0; i < 6; i++) { ctx.fillStyle = "rgba(255,255,255,0.18)"; ctx.fillRect(-90, -110 + i * 42 + ((t * 60) % 42), 180, 6); }
+      text("STREETBALL", 0, -40, { size: 26, color: "#1a1c24", center: true, display: true });
+      text("KINGDOM", 0, -12, { size: 26, color: "#1a1c24", center: true, display: true });
+      text("PLAYER CARD", 0, 40, { size: 18, color: "#2a2d38", center: true, display: true });
+      ctx.restore();
+      text(this.ti >= 3 && k > 0.6 ? "Something special…" : "Opening…", 500, 560, { size: 28, color: k > 0.6 && this.ti >= 3 ? col : C.grey, center: true, display: true });
+    } else {
+      // light rays behind the card
+      if (this.ti >= 1) {
+        ctx.save(); ctx.translate(500, 330); ctx.rotate(t * 0.4); ctx.globalAlpha = Math.min(0.35, 0.1 + 0.06 * this.ti);
+        const n = 10 + 2 * this.ti;
+        for (let i = 0; i < n; i++) { ctx.rotate(Math.PI * 2 / n); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-40, -600); ctx.lineTo(40, -600); ctx.closePath(); ctx.fillStyle = this.ti >= 5 ? `hsl(${(i * 40 + t * 120) % 360},100%,65%)` : rc; ctx.fill(); }
+        ctx.restore();
+      }
+      // the card flies in and flips (back first, then front)
+      const fk = clamp(after / 0.6, 0, 1), ease = 1 - Math.pow(1 - fk, 3), sc = 0.3 + 0.7 * ease, flip = Math.cos((1 - ease) * Math.PI);
+      ctx.save(); ctx.translate(500, 330); ctx.scale(Math.max(0.02, Math.abs(flip)), 1); ctx.translate(-500, -330);
+      if (flip < 0) { rrect(500 - 125 * sc, 330 - 175 * sc, 250 * sc, 350 * sc, 18 * sc, "#1b1d26", rc, 4); text("SK", 500, 330 - 20 * sc, { size: 60 * sc, color: rc, center: true, display: true }); }
+      else drawPlayerCard(this.p, this.label, 500, 330, sc, clamp((after - 0.5) / 0.9, 0, 1));
+      ctx.restore();
+      text(this.label === "Bum" ? "BUM" : `${this.label.toUpperCase()}!`, 500, 120 - 30, { size: 30 + 8 * this.ti, color: this.ti >= 5 ? rainbow(380, 70, 240, 40) : rc, center: true, display: true });
+    }
+    // white flash on the burst (bigger for better cards)
+    if (after >= 0 && after < 0.5 && this.opts.pack !== false || after >= 0 && after < 0.3) { ctx.save(); ctx.globalAlpha = Math.max(0, (this.ti >= 3 ? 0.9 : 0.5) * (1 - after / 0.5)); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, S.W, S.H); ctx.restore(); }
+    for (const q of this.parts) { ctx.globalAlpha = Math.min(1, q.life / q.max * 1.5); if (q.conf) { ctx.fillStyle = q.col; ctx.fillRect(q.x, q.y, q.r * 2, q.r); } else circle(q.x, q.y, q.r, q.col); }
+    ctx.globalAlpha = 1;
+    if (this.done) {
+      text(`Added to your crew (${c.crew.length}/${c.crewMax()})  ·  $${c.cash} left`, 500, 528, { size: 24, color: C.grey, center: true });
+      if (this.opts.again) { rrect(300, 566, 190, 52, 10, C.gold); text(this.opts.againLabel || "AGAIN", 395, 592, { size: 24, color: "#1a1406", center: true, display: true }); hit(300, 566, 190, 52, () => this.opts.again()); }
+      rrect(510, 566, 190, 52, 10, "#2a2c38", C.grey, 1.5); text("DONE", 605, 592, { size: 24, center: true, display: true }); hit(510, 566, 190, 52, () => this.opts.close());
+      text("Enter = again  ·  Esc = done", 500, 642, { size: 18, color: C.grey, center: true, weight: 500 });
+    } else text("Enter to skip", 500, 650, { size: 16, color: "#5a5d6a", center: true, weight: 500 });
+  }
+}
+
+// ---- card machines: pull a lever, get a player. Pricier machines, better odds. Nothing is guaranteed.
+class SlotScreen extends Screen {
+  constructor() { super(); Object.assign(this, { mi: 0, spinT: 0, spinMax: 0, pending: null, reveal: null, reels: ["Solid", "Baller", "Legend"], msg: "Pick a machine and pull.", rng: new Rng() }); }
+  pull() {
+    if (this.spinT > 0 || this.reveal) return;
+    const c = this.c;
+    if (c.crew.length >= c.crewMax()) { this.msg = "Crew is full. Release someone in the Crew screen."; return; }
+    const res = Luck.pullCard(c, this.mi, this.rng);
+    if (!res) { this.msg = `Need $${Luck.machineCost(c, this.mi)}.`; return; }
+    this.pending = res; this.msg = ""; App.save();
+    const ti = RAR_TIER[res[0]];
+    this.spinMax = this.spinT = ti >= 3 ? 2.4 : 1.6;     // the last reel hangs longer on a big pull
+    const low = ["Bum", "Solid", "Baller"], L = res[0];
+    this.final = ti >= 3 ? [L, L, L] : this.rng.random() < 0.5 ? [L, L, this.rng.choice(low.filter(x => x !== L))] : [this.rng.choice(low.filter(x => x !== L)), L, L];
+  }
+  key(k) {
+    if (this.reveal) { this.reveal.key(k); return; }
+    if (this.spinT > 0) return;
+    const n = Luck.MACHINES.length;
+    if (K.back(k)) App.switch(new HubScreen());
+    else if (K.left(k)) this.mi = (this.mi - 1 + n) % n;
+    else if (K.right(k)) this.mi = (this.mi + 1) % n;
+    else if (K.ok(k) || k === " ") this.pull();
+  }
+  update(dt) {
+    if (this.reveal) { this.reveal.update(dt); return; }
     if (this.spinT <= 0) return;
     this.spinT -= dt;
+    const e = this.spinMax - this.spinT, stops = this.spinMax > 2 ? [0.6, 1.0, 2.2] : [0.6, 1.0, 1.4];
+    this.reels = this.reels.map((r, i) => e >= stops[i] ? this.final[i] : this.rng.choice(Object.keys(RAR_TIER)));
     if (this.spinT <= 0) {
-      const [bet, reels, win] = this.result; this.reels = reels;
-      const top = reels.filter(r => r === "ETERNAL").length >= 2 ? "ETERNAL" : reels.filter(r => r === "MYTHIC").length >= 2 ? "MYTHIC" : null;
-      this.msg = top && win > bet ? `${top} HIT! +$${win}` : win > bet ? `WINNER! +$${win}` : win === bet ? "Push. You got your bet back." : "Brick. Better luck next time.";
-    } else this.reels = [0, 1, 2].map(() => this.rng.choice(Luck.SYMBOLS));
+      const [label, p] = this.pending;
+      this.reveal = new PackReveal(label, p, { pack: false, againLabel: `AGAIN $${Luck.machineCost(this.c, this.mi)}`,
+        again: () => { this.reveal = null; this.pull(); }, close: () => { this.reveal = null; } });
+    }
   }
   draw() {
-    this.header("Luck Machine"); if (this.spinT <= 0) this.backButton(() => App.switch(new HubScreen()));
-    this.reels.forEach((sym, i) => {
-      const x = 260 + i * 170;
-      rrect(x, 165, 150, 150, 14, "#262835", C.gold, 3);
-      if (sym === "ETERNAL") { rrect(x, 165, 150, 150, 14, "#262835", rainbow(x, 165, 150, 150), 4); ctx.save(); ctx.globalAlpha = 0.15; rrect(x, 165, 150, 150, 14, rainbow(x, 315, 150, -150)); ctx.restore(); }
-      if (sym === "MYTHIC" || sym === "ETERNAL") { ctx.save(); ctx.shadowColor = symColor(sym); ctx.shadowBlur = 20; }
-      text(sym, x + 75, 240, { size: sym.length > 6 ? 30 : 36, color: sym === "ETERNAL" ? rainbow(x + 10, 225, 130, 30) : symColor(sym), center: true, display: true });
-      if (sym === "MYTHIC" || sym === "ETERNAL") ctx.restore();
-      if (sym === "ETERNAL") shine(x, 165, 150, 150, 14);
+    if (this.reveal) { this.reveal.draw(this.c); return; }
+    this.header("Card Machines"); if (this.spinT <= 0) this.backButton(() => App.switch(new HubScreen()));
+    const c = this.c, names = ["Bum", "Solid", "Baller", "Legend", "Mythic", "Eternal"];
+    Luck.MACHINES.forEach((m, i) => {
+      const x = 40 + i * 235, y = 136, sel = i === this.mi, kingdom = i === 3;
+      rrect(x, y, 215, 150, 12, sel ? "#2e3040" : "#1c1e26", sel ? (kingdom ? rainbow(x, y, 215, 150) : m.color) : "#30323e", sel ? 3 : 1.5);
+      text(m.name.toUpperCase(), x + 107, y + 20, { size: 26, color: kingdom ? rainbow(x, y, 215, 30) : m.color, center: true, display: true });
+      text(`$${Luck.machineCost(c, i)} a pull`, x + 107, y + 52, { size: 22, center: true });
+      [3, 4, 5].forEach((ri, j) => text(`${names[ri]} ${m.odds[ri]}%`, x + 107, y + 82 + j * 21, { size: 18, color: rarColorName(names[ri]), center: true, weight: 500 }));
+      hit(x, y, 215, 150, () => { if (this.spinT <= 0) this.mi = i; });
     });
-    const bet = this.bets[Math.min(this.bi, this.bets.length - 1)];
-    text(`Bet $${bet}`, 500, 360, { size: 50, center: true, display: true });
-    text("◀", 330, 360, { size: 54, center: true }); hit(290, 330, 80, 60, () => { if (this.spinT <= 0) this.bi = Math.max(0, this.bi - 1); });
-    text("▶", 670, 360, { size: 54, center: true }); hit(630, 330, 80, 60, () => { if (this.spinT <= 0) this.bi = Math.min(this.bets.length - 1, this.bi + 1); });
-    rrect(420, 395, 160, 52, 10, C.gold); text("SPIN", 500, 421, { size: 32, color: "#1a1406", center: true, display: true }); hit(420, 395, 160, 52, () => this.spin());
-    text(this.msg, 500, 474, { size: 32, color: this.msg.startsWith("ETERNAL") ? rainbow(360, 460, 280, 28) : this.msg.startsWith("MYTHIC") ? symColor("MYTHIC") : this.msg.startsWith("WINNER") ? C.green : C.white, center: true });
-    ["3 ETERNAL = 1000x  ·  3 MYTHIC = 100x  ·  3 CROWNS = 20x  ·  any 3 of a kind = 5x", "2 ETERNAL = 25x  ·  2 MYTHIC = 8x  ·  2 CASH or CROWNS = 2x  ·  other pair = bet back", "The machine wins over time. Don't bet what you need!"]
-      .forEach((p, i) => text(p, 500, 520 + i * 28, { size: 24, color: C.grey, center: true, weight: 500 }));
-    this.footer("◀ ▶ bet  ·  Space spin");
+    const m = Luck.MACHINES[this.mi];
+    this.reels.forEach((sym, i) => {
+      const x = 260 + i * 165, y = 310, et = sym === "Eternal";
+      rrect(x, y, 150, 110, 14, "#262835", et ? rainbow(x, y, 150, 110) : m.color, 3);
+      if (RAR_TIER[sym] >= 4) { ctx.save(); ctx.shadowColor = rarColorName(sym); ctx.shadowBlur = 18; }
+      text(sym.toUpperCase(), x + 75, y + 55, { size: sym.length > 6 ? 26 : 32, color: et ? rainbow(x + 10, y + 40, 130, 30) : rarColorName(sym), center: true, display: true });
+      if (RAR_TIER[sym] >= 4) ctx.restore();
+      if (et) shine(x, y, 150, 110, 14);
+    });
+    rrect(400, 442, 200, 54, 10, C.gold); text(`PULL $${Luck.machineCost(c, this.mi)}`, 500, 469, { size: 28, color: "#1a1406", center: true, display: true }); hit(400, 442, 200, 54, () => this.pull());
+    if (this.msg) text(this.msg, 500, 520, { size: 26, color: this.msg.startsWith("Need") || this.msg.startsWith("Crew") ? C.red : C.white, center: true });
+    text(`Bum ${m.odds[0]}%  ·  Solid ${m.odds[1]}%  ·  Baller ${m.odds[2]}%  ·  Legend ${m.odds[3]}%  ·  Mythic ${m.odds[4]}%  ·  Eternal ${m.odds[5]}%`, 500, 560, { size: 20, color: C.grey, center: true, weight: 500 });
+    text(`Pricier machines have better odds, but nothing is guaranteed.  ·  Crew ${c.crew.length}/${c.crewMax()}`, 500, 590, { size: 20, color: C.grey, center: true, weight: 500 });
+    this.footer("◀ ▶ machine  ·  Space pull  ·  Esc back");
   }
 }
 
 class MysteryScreen extends Screen {
-  constructor() { super(); Object.assign(this, { rng: new Rng(), reveal: null, msg: "" }); }
+  constructor() { super(); Object.assign(this, { rng: new Rng(), reveal: null, last: null, msg: "" }); }
   roll() {
     const c = this.c;
     if (c.crew.length >= c.crewMax()) { this.msg = "Crew is full. Release someone in the Crew screen."; return; }
     const res = Luck.rollMystery(c, this.rng);
     if (!res) { this.msg = `Need $${Luck.mysteryCost(c.tier)}.`; return; }
-    this.reveal = res; this.msg = ""; App.save();
+    this.msg = ""; this.last = res; App.save();
+    this.reveal = new PackReveal(res[0], res[1], { againLabel: `AGAIN $${Luck.mysteryCost(c.tier)}`, again: () => { this.reveal = null; this.roll(); }, close: () => { this.reveal = null; } });
   }
-  key(k) { if (K.back(k)) App.switch(new HubScreen()); else if (K.ok(k)) this.roll(); }
+  update(dt) { if (this.reveal) this.reveal.update(dt); }
+  key(k) { if (this.reveal) { this.reveal.key(k); return; } if (K.back(k)) App.switch(new HubScreen()); else if (K.ok(k)) this.roll(); }
   draw() {
+    if (this.reveal) { this.reveal.draw(this.c); return; }
     this.header("Mystery Baller"); this.backButton(() => App.switch(new HubScreen()));
     const c = this.c, cost = Luck.mysteryCost(c.tier);
-    text(`Pay $${cost} for a random baller. Could be a Legend… could be a Bum.`, 500, 168, { size: 30, center: true });
-    Luck.RARITIES.forEach(([name, pct], i) => { const x = 290 + (i % 3) * 210, y = 220 + Math.floor(i / 3) * 40; text(`${name}: ${pct}%`, x, y, { size: 30, color: name === "Eternal" ? rainbow(x - 80, y - 10, 160, 20) : rarColorName(name), center: true }); });
-    text(`Your best crew member is OVR ${Math.max(...c.crew.map(overall))}  ·  Crew ${c.crew.length}/${c.crewMax()}`, 500, 338, { size: 23, color: C.grey, center: true, weight: 500 });
-    if (this.reveal) {
-      const [rarity, p] = this.reveal;
-      const rc = rarColorName(rarity), top = rarity === "Mythic" || rarity === "Eternal";
-      const et = rarity === "Eternal";
-      if (top) { ctx.save(); ctx.shadowColor = rc; ctx.shadowBlur = 28; }
-      rrect(250, 364, 500, 180, 14, "#262835", et ? rainbow(250, 364, 500, 180) : rc, et ? 6 : 4);
-      if (top) ctx.restore();
-      rrect(262, 380, 116, 150, 10, "#1b1d26");
-      ctx.save(); ctx.beginPath(); ctx.roundRect(262, 380, 116, 150, 10); ctx.clip(); drawPortrait(p, 263, 394, 3.0, 0); ctx.restore();
-      text(rarity.toUpperCase(), 560, 394, { size: 40, color: et ? rainbow(440, 380, 240, 30) : rc, center: true, display: true });
-      if (et) shine(250, 364, 500, 180, 14);
-      text(`#${p.number} ${p.name}  ·  ${p.pos}  ·  OVR ${overall(p)}`, 560, 432, { size: 28, center: true });
-      S.STATS.forEach((k, j) => {   // stat bars
-        const xx = 392 + (j % 3) * 120, yy = 456 + Math.floor(j / 3) * 26;
-        text(S.LABEL[k].slice(0, 3).toUpperCase(), xx, yy, { size: 18, color: C.grey });
-        rrect(xx + 34, yy + 3, 50, 8, 4, "#30323e"); rrect(xx + 34, yy + 3, 50 * p.stats[k] / 99, 8, 4, rc);
-        text(p.stats[k], xx + 112, yy, { size: 18, right: true });
-      });
-      text(`${bodyLine(p)}  ·  ${attrLabel(p)}`, 560, 516, { size: 19, color: C.grey, center: true, weight: 500 });
-    }
-    rrect(400, 560, 200, 52, 10, C.gold); text(`ROLL $${cost}`, 500, 586, { size: 28, color: "#1a1406", center: true, display: true }); hit(400, 560, 200, 52, () => this.roll());
-    if (this.msg) text(this.msg, 500, 636, { size: 26, color: C.red, center: true });
+    text(`Pay $${cost} for a random baller. Could be a Legend… could be a Bum.`, 500, 150, { size: 28, center: true });
+    Luck.RARITIES.forEach(([name, pct], i) => { const x = 290 + (i % 3) * 210, y = 192 + Math.floor(i / 3) * 34; text(`${name}: ${pct}%`, x, y, { size: 26, color: name === "Eternal" ? rainbow(x - 80, y - 10, 160, 20) : rarColorName(name), center: true }); });
+    if (this.last) { text("Last pull", 500, 262, { size: 18, color: C.grey, center: true }); drawPlayerCard(this.last[1], this.last[0], 500, 400, 0.7, 1); }
+    else text("Open a pack to see who you get.", 500, 380, { size: 26, color: C.grey, center: true });
+    rrect(400, 546, 200, 52, 10, C.gold); text(`OPEN $${cost}`, 500, 572, { size: 28, color: "#1a1406", center: true, display: true }); hit(400, 546, 200, 52, () => this.roll());
+    text(`Crew ${c.crew.length}/${c.crewMax()}`, 500, 612, { size: 20, color: C.grey, center: true });
+    if (this.msg) text(this.msg, 500, 636, { size: 24, color: C.red, center: true });
   }
 }
 
