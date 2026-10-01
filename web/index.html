@@ -198,7 +198,7 @@ class Ball {
     this.z = Math.sin(Math.PI * f) * this.peak + 20 * f;
     return f >= 1;
   }
-  setLoose(x, y, vx, vy, z = 20, delay = 0.15, vz = 0) { Object.assign(this, { state: "loose", holder: null, passer: null, receiver: null, x, y, z, vx, vy, vz, grabDelay: delay }); }
+  setLoose(x, y, vx, vy, z = 20, delay = 0.15, vz = 0) { Object.assign(this, { state: "loose", holder: null, passer: null, receiver: null, x, y, z, vx, vy, vz, grabDelay: delay, rimmed: false }); }
   updateLoose(dt) {
     this.grabDelay = Math.max(0, this.grabDelay - dt);
     this.x += this.vx * dt; this.y += this.vy * dt;
@@ -488,7 +488,7 @@ class Match {
     const b = this.ball;
     if (b.state === "held" && b.holder === a) {
       if (this.meter === null && inp.shootPressed) {
-        if (this.needsClear) this.say("Clear it past the arc first!", 1.0);
+        if (this.needsClear) this.say("Take it back past the 3-point line first!", 1.0);
         else {
           const kind = this.shotKind(a);
           if (kind === "jumper") this.meter = 0;
@@ -741,6 +741,7 @@ class Match {
       this.fx.shake = Math.max(this.fx.shake, 0.12);
       const ang = this.rng.uniform(0.15 * Math.PI, 0.85 * Math.PI), spd = this.rng.uniform(90, 220);
       b.setLoose(S.HOOP[0], S.HOOP[1] + 6, Math.cos(ang) * spd, Math.sin(ang) * spd, 6, 0.12, this.rng.uniform(170, 260));
+      b.rimmed = true;   // it hit the rim: whoever grabs it for the defense has to take it back
     }
   }
   tryGrab() {
@@ -755,7 +756,8 @@ class Match {
     const a = this.rng.choices(cands.map(c => c[0]), cands.map(c => c[1]));
     b.setHeld(a); if (a === this.mainGuy) this.box.reb++;
     if (a.team === 0 && a !== this.controlled && (coachOn(this, "boxout") || coachOn(this, "crash"))) this.callPaid(coachOn(this, "boxout") ? "BOXED OUT! Board secured" : "Crashed the glass!");
-    if (a.team !== this.offense) { this.turnover(a.team, false); this.say(`Board: ${a.p.name}`, 1.0); }
+    // street rules: a miss off the rim has to be taken back past the 3-point line
+    if (a.team !== this.offense) { const back = !!b.rimmed; this.turnover(a.team, back); this.say(back ? `Board: ${a.p.name}. Take it back!` : `Board: ${a.p.name}`, 1.2); }
     else { this.shotClock = S.SHOT_CLOCK; this.say(`Offensive board: ${a.p.name}`, 1.0); }
   }
 }
@@ -2133,7 +2135,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 29 (defense reads you, stats grow by playing)");
+    this.footer("Progress saves automatically in this browser  ·  version 30 (street rules: take it back)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -2885,6 +2887,13 @@ class MatchScreen extends Screen {
     ctx.save();
     if (sk) ctx.translate((Math.random() - 0.5) * sk, (Math.random() - 0.5) * sk);
     drawCourt(this.ci);
+    if (m.needsClear && m.phase === "live") {   // take it back: everything outside the 3-point line blinks red
+      const k = 0.5 + 0.5 * Math.sin(m.elapsed * 9);
+      ctx.save(); ctx.beginPath(); ctx.rect(S.CL, S.CT, S.CR - S.CL, S.CB - S.CT); ctx.arc(S.HOOP[0], S.HOOP[1], S.ARC, 0, Math.PI * 2, true);
+      ctx.fillStyle = `rgba(225,50,40,${0.1 + 0.2 * k})`; ctx.fill("evenodd"); ctx.restore();
+      ctx.save(); ctx.beginPath(); ctx.rect(S.CL, S.CT, S.CR - S.CL, S.CB - S.CT); ctx.clip();
+      circle(S.HOOP[0], S.HOOP[1], S.ARC, null, `rgba(255,70,60,${0.55 + 0.45 * k})`, 4); ctx.restore();
+    }
     drawCrowd(this.crowd, m.elapsed, this.excite, this.exciteHome);
     if (this.scoutWatching) drawScout(84, 340, m.elapsed);
     // show where the screen is being set
@@ -2942,7 +2951,8 @@ class MatchScreen extends Screen {
       });
     }
     if (this.scout >= 0.15) text(`SCOUTED ${Math.round(this.scout * 100)}%`, S.W - 16, this.scoutWatching ? 70 : 50, { size: 20, color: "#ff8a7a", right: true, display: true });
-    if (m.needsClear) text(`${m.offense === 0 ? "YOU" : "THEY"} MUST CLEAR IT PAST THE ARC`, 500, 62, { size: 28, color: C.gold, center: true });
+    if (m.needsClear) rrect(220, 47, 560, 30, 8, "rgba(14,12,16,0.85)", "#a8352c", 1.5);
+    if (m.needsClear) text(`${m.offense === 0 ? "TAKE IT BACK" : "THEY HAVE TO TAKE IT BACK"} PAST THE 3-POINT LINE`, 500, 62, { size: 22, color: "#ff6a5c", center: true, display: true });
     if (m.phase === "half") {
       rrect(300, 250, 400, 130, 16, "rgba(12,13,18,0.9)", C.gold, 2);
       text("HALFTIME", 500, 290, { size: 56, color: C.gold, center: true, display: true });
