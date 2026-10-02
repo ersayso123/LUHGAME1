@@ -310,6 +310,7 @@ class Actor {
   }
   get onFire() { return this.streak >= 2; }
   get gassed() { return this.energy < S.GASSED; }
+  get cold() { return (this.misses || 0) >= 3; }
 }
 const MOVE_LABEL = { cross: "crossover", drive: "cross & drive", stepback: "step-back", sidestep: "step-back", go: "hesi-go", hesi: "hesi" };
 function toward2(a, pt) { const dx = pt[0] - a.x, dy = pt[1] - a.y, d = Math.hypot(dx, dy); return d < 4 ? [0, 0] : [dx / d * Math.min(1, d / 14), dy / d * Math.min(1, d / 14)]; }
@@ -318,7 +319,7 @@ const DUNK_STYLES = {
   two: { t: 0.4, name: "SLAM!", shake: 0.35 }, tomahawk: { t: 0.46, name: "TOMAHAWK!", shake: 0.45 }, windmill: { t: 0.52, name: "WINDMILL!", shake: 0.5 },
   "360": { t: 0.58, name: "360 JAM!", shake: 0.55, slow: 0.35 }, poster: { t: 0.44, name: "POSTERIZED!", shake: 0.6, slow: 0.35 },
 };
-const blankInputs = () => ({ move: [0, 0], shootPressed: false, shootDown: false, passPressed: false, movePressed: false, specialPressed: false, switchPressed: false, sprint: false, coachAccept: false, coachIgnore: false });
+const blankInputs = () => ({ move: [0, 0], shootPressed: false, shootDown: false, passPressed: false, movePressed: false, forceDrive: false, specialPressed: false, switchPressed: false, sprint: false, coachAccept: false, coachIgnore: false });
 
 // Coach's calls: team tactics your teammates carry out on their own.
 const PLAYS = [
@@ -603,6 +604,7 @@ class Match {
       }
       if (!it.action && this.meter === null) {
         if (inp.passPressed) { it.action = "pass"; it.target = this.pickPassTarget(a, inp.move); }
+        else if (inp.movePressed && inp.forceDrive) { it.action = "cross"; it.moveType = "drive"; it.move = [Math.abs(inp.move[0]) > 0.3 ? Math.sign(inp.move[0]) * 0.7 : -a.hand * 0.7, -0.7]; }   // E: cross & go in one press
         else if (inp.movePressed) it.action = "cross";
         else if (inp.specialPressed) {   // L: spin (or behind-the-back while holding back), once you've unlocked them
           const mv = a.p.moves || [], back = inp.move[1] > 0.3;
@@ -930,6 +932,7 @@ class Match {
       } else sh.setAnim("celebrate", 1.1);
       const wasHot = sh.onFire;
       if (b.swish) sh.streak++;
+      if ((sh.misses || 0) >= 3) this.events.push({ type: "warmed", x: sh.x, y: sh.y }); sh.misses = 0;
       this.events.push({ type: "make", kind: b.kind, green: b.green, swish: b.swish, points: b.points, team: sh.team, fire: sh.onFire, newFire: sh.onFire && !wasHot, name: sh.p.name, style: b.dunkStyle, x: sh.x, y: sh.y });
       if (sh.team === 0) { this.nerves(b.green ? -0.25 : b.kind === "dunk" ? -0.2 : -0.12); this.dry = 0; this.possOpen = false; }
       else this.nerves(0.12);
@@ -943,7 +946,8 @@ class Match {
       this.offense = sh.team; this.phase = "scored"; this.phaseT = 1.0;
     } else {
       if (sh.onFire) { this.say(`${sh.p.name} cooled off`, 1.2); this.events.push({ type: "cooled", x: sh.x, y: sh.y }); }
-      sh.streak = 0;
+      sh.streak = 0; sh.misses = (sh.misses || 0) + 1;
+      if (sh.misses === 3) this.events.push({ type: "cold", x: sh.x, y: sh.y, team: sh.team });   // three misses in a row: ice cold
       this.events.push({ type: "miss", team: sh.team });
       if (sh.team === 0) this.nerves(0.07);
       this.fx.shake = Math.max(this.fx.shake, 0.12);
@@ -2647,7 +2651,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 51 (key display, main archetype)");
+    this.footer("Progress saves automatically in this browser  ·  version 52 (E = cross & go, cold ring)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -3117,7 +3121,7 @@ function drawPerson(m, a, highlight) {
   const P = pose(m, a), look = a.look, team = a.team;
   const up = P.lift * 24, x = a.x, y = a.y;
   const front = a.fy > -0.2;          // facing the camera (down the screen) shows the face
-  if (a.onFire) {   // the floor burns under a player who's on fire (the flames are particles, see MatchScreen)
+  if (false) {   // (old floor glow: the fire ring in MatchScreen.drawFloorFx replaces it)
     const fl = 0.75 + 0.25 * Math.sin(m.elapsed * 23 + x), g = ctx.createRadialGradient(x, y + 1, 2, x, y + 1, 30);
     g.addColorStop(0, `rgba(255,220,120,${0.55 * fl})`); g.addColorStop(0.45, `rgba(255,110,30,${0.35 * fl})`); g.addColorStop(1, "rgba(255,60,0,0)");
     ctx.save(); ctx.globalCompositeOperation = "lighter"; ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(x, y + 1, 30, 12, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
@@ -3391,6 +3395,12 @@ class MatchScreen extends Screen {
         this.fx.push({ type: "shock", x: e.x, y: e.y, t: 0, dur: 0.4, R: 70, col: "255,90,70" }, { type: "stamp", text: "REJECTED!", x: e.x, y: e.y - 96, t: 0, dur: 1.1, size: 56, col: "#ff5a4e" });
         Sound.gasp(); this.excite = Math.min(1.4, this.excite + 0.6);
       }
+      else if (e.type === "cold") {   // ice cold: a frosty pop and a glassy sound
+        Sound.tone(1800, 0.35, "sine", 0.06, 700); Sound.tone(2400, 0.25, "triangle", 0.03, 1200, 0.05);
+        this.pop("ICE COLD", e.x, e.y - 96, "#a8dcff", 30, 1.1);
+        this.sparks(e.x, e.y - 30, 14, "200,235,255", 120, 0.6, "star");
+      }
+      else if (e.type === "warmed") { this.pop("THAWED OUT", e.x, e.y - 96, "#ffd08a", 24, 0.9); }
       else if (e.type === "blowby") {   // a breakaway: quick and light, you keep moving
         if (e.team === 0) { Sound.whoosh(true); this.pop("BLOW BY", e.ax, e.ay - 134, "#9fe6ff", 26, 0.6); this.excite = Math.min(1.4, this.excite + 0.25); }
         for (let i = 0; i < 6; i++) this.parts.push({ x: e.x + (Math.random() - 0.5) * 14, y: e.y + 2, vx: (Math.random() - 0.5) * 70, vy: -Math.random() * 25, life: 0.35, max: 0.35, col: "rgba(200,190,170,0.8)", r: 2 + Math.random() * 2, g: 40 });
@@ -3426,9 +3436,8 @@ class MatchScreen extends Screen {
       this.rimFire -= dt; const [hx, hy] = S.HOOP, k = Math.min(1, this.rimFire / 0.8);
       if (Math.random() < 0.9 * k) this.spawn("ember", hx + (Math.random() - 0.5) * 24, hy - 6, { vx: (Math.random() - 0.5) * 40, vy: -100 - Math.random() * 80, life: 0.9, max: 0.9, r: 1.3 });
     }
-    for (const a of m.actors) if (a.onFire) {
-      for (let i = 0; i < 3; i++) { const side = Math.random() < 0.5 ? -1 : 1, l = 0.28 + Math.random() * 0.3; this.spawn("flame", a.x + side * (9 + Math.random() * 9), a.y - Math.random() * 40, { vx: side * 8 + (Math.random() - 0.5) * 20, vy: -(60 + Math.random() * 70), life: l, max: l, r: 3 + Math.random() * 3.5, body: true }); }
-      if (Math.random() < 0.45) this.spawn("ember", a.x + (Math.random() - 0.5) * 20, a.y - 30 - Math.random() * 20, { vx: (Math.random() - 0.5) * 30, vy: -90 - Math.random() * 90, life: 1, max: 1, r: 1.4 });
+    for (const a of m.actors) if (a.cold && Math.random() < 0.25) {   // ice cold: a few snowflakes drift down around them
+      this.parts.push({ x: a.x + (Math.random() - 0.5) * 50, y: a.y - 50 - Math.random() * 20, vx: (Math.random() - 0.5) * 10, vy: 18 + Math.random() * 12, life: 1.4, max: 1.4, col: "rgba(220,240,255,0.9)", r: 1.5 + Math.random(), g: 0 });
     }
     if (b.state === "shot" && !b.dunk) {   // fire and green trails on the ball
       const f = Math.min(1, b.t / b.dur), h = 50 * (1 - f) + Math.sin(Math.PI * f) * b.peak * 0.9, bx = b.x, by = b.y - h;
@@ -3449,6 +3458,19 @@ class MatchScreen extends Screen {
   }
   drawFloorFx() {   // under the players: shockwaves on the court, heat rings under anyone on fire
     const t = this.match.elapsed;
+    for (const a of this.match.actors) if (a.cold && !a.onFire) {   // ice cold: a frosty ring with crystals turning around it
+      const pulse = 0.5 + 0.5 * Math.sin(t * 3), R = 30;
+      ctx.save(); ctx.translate(a.x, a.y + 2); ctx.scale(1, 0.42);
+      const g = ctx.createRadialGradient(0, 0, 4, 0, 0, R); g.addColorStop(0, "rgba(150,210,255,0.08)"); g.addColorStop(0.7, "rgba(110,190,255,0.28)"); g.addColorStop(1, "rgba(110,190,255,0)");
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, R, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+      ellipse(a.x, a.y + 2, R - 3, (R - 3) * 0.42, null, `rgba(70,165,255,${0.75 + 0.25 * pulse})`, 3);
+      ellipse(a.x, a.y + 2, R - 7, (R - 7) * 0.42, null, "rgba(235,248,255,0.35)", 1);
+      for (let i = 0; i < 8; i++) {   // ice crystals: little diamonds around the ring
+        const an = (i / 8) * Math.PI * 2 - t * 0.6, cx = a.x + Math.cos(an) * (R - 3), cy = a.y + 2 + Math.sin(an) * (R - 3) * 0.42, h = 5 + 2 * Math.sin(t * 4 + i);
+        ctx.beginPath(); ctx.moveTo(cx, cy - h); ctx.lineTo(cx + 2.4, cy); ctx.lineTo(cx, cy + 1.5); ctx.lineTo(cx - 2.4, cy); ctx.closePath();
+        ctx.fillStyle = "rgba(225,245,255,0.95)"; ctx.fill(); ctx.strokeStyle = "rgba(90,170,240,0.9)"; ctx.lineWidth = 1; ctx.stroke();
+      }
+    }
     for (const a of this.match.actors) if (a.onFire) {
       ctx.save(); ctx.globalCompositeOperation = "lighter";
       const pulse = 0.5 + 0.5 * Math.sin(t * 7), R = 31 + pulse * 3;
@@ -3561,7 +3583,7 @@ class MatchScreen extends Screen {
     this.rings = this.rings.filter(q => q.t < 0.5);
     this.pops = this.pops.filter(q => q.life > 0);
     // embers rise off players who are on fire
-    for (const a of m.actors) if (a.onFire && Math.random() < dt * 25) this.parts.push({ x: a.x + (Math.random() - 0.5) * 20, y: a.y - Math.random() * 30, vx: (Math.random() - 0.5) * 30, vy: -60 - Math.random() * 60, life: 0.7, max: 0.7, col: Math.random() < 0.5 ? "#ff7a1a" : "#ffd23c", r: 1.5 + Math.random() * 2, g: -20 });
+    if (false) for (const a of m.actors) if (a.onFire && Math.random() < dt * 25) this.parts.push({ x: a.x + (Math.random() - 0.5) * 20, y: a.y - Math.random() * 30, vx: (Math.random() - 0.5) * 30, vy: -60 - Math.random() * 60, life: 0.7, max: 0.7, col: Math.random() < 0.5 ? "#ff7a1a" : "#ffd23c", r: 1.5 + Math.random() * 2, g: -20 });
     this.excite = Math.max(0.12, this.excite - dt * 0.6);
     this.exciteHome = Math.max(this.hsGym ? 0.25 : 0.12, this.exciteHome - dt * 0.6);
     // the home crowd boos while you have the ball, louder the more rattled you are
@@ -3757,7 +3779,7 @@ class MatchScreen extends Screen {
     if (m.phase === "check") text("CHECK BALL", 500, 380, { size: 40, center: true, display: true });
     if (m.phase === "over") { const won = m.winner === 0; text(won ? "YOU WIN!" : "YOU LOSE", 500, 330, { size: 80, color: won ? C.green : C.red, center: true, display: true }); }
     if (!isTouch) {
-      text("WASD move · SHIFT sprint · SPACE shoot · J pass · K move / steal · Q switch · M sound", 500, S.H - 16, { size: 20, center: true, weight: 500 });
+      text("WASD move · SHIFT sprint · SPACE shoot · J pass · K move / steal · E cross & go · Q switch · M sound", 500, S.H - 16, { size: 18, center: true, weight: 500 });
       this.drawKeys();
     }
     if (this.paused) {
@@ -4722,7 +4744,7 @@ class MysteryScreen extends Screen {
 // =====================================================================
 // Input wiring
 // =====================================================================
-const KEY_CODES = { KeyW: "w", KeyA: "a", KeyS: "s", KeyD: "d", KeyJ: "j", KeyK: "k", KeyL: "l", KeyQ: "q" };   // the keys by position, whatever the layout
+const KEY_CODES = { KeyW: "w", KeyA: "a", KeyS: "s", KeyD: "d", KeyJ: "j", KeyK: "k", KeyL: "l", KeyQ: "q", KeyE: "e" };   // the keys by position, whatever the layout
 const GAME_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "]);
 window.addEventListener("keydown", e => {
   Sound.wake();
@@ -4737,6 +4759,7 @@ window.addEventListener("keydown", e => {
     if (e.key === " ") App.edges.shootPressed = true;
     if (k === "j") App.edges.passPressed = true;
     if (k === "k") { App.edges.movePressed = true; App.kFlash = 0.35; }
+    if (k === "e") { App.edges.movePressed = true; App.edges.forceDrive = true; App.kFlash = 0.35; }   // E = cross & go (no 3-key combo needed)
     if (k === "l") App.edges.specialPressed = true;
     if (k === "q") App.edges.switchPressed = true;
 
