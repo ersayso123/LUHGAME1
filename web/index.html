@@ -903,7 +903,7 @@ class Match {
   resolveShot() {
     const b = this.ball, sh = b.shooter;
     if (b.made) {
-      this.score[sh.team] += b.points; sh.points += b.points;
+      this.score[sh.team] += b.points; sh.points += b.points; this.lastScorer = sh;
       if (sh === this.mainGuy) { this.box.fgm++; this.box.pts += b.points; }
       this.say(`${sh.p.name} +${b.points}`);
       b.setMade(S.HOOP[0], S.HOOP[1], b.dunk ? "dunk" : b.swish ? "swish" : "rim", this.elapsed);
@@ -1462,7 +1462,8 @@ class Career {
     this.me.badges = this.me.badges || []; this.me.moves = this.me.moves || [];
     for (const p of this.crew) if (p.cap == null) p.cap = overall(p) + 3;   // older teammates: a little room to grow
     if (!d || !d.milestonesHit) this.checkMilestones(true);                 // older saves: grant what you've already reached (no cash)
-    this.fitLadder(); if (!d || !d.seenRung) this.ladderNews = null;          // older saves: no pop-up for what you already have
+    this.fitLadder(); if (!d || !d.seenRung) this.ladderNews = null;
+    if (this.seenTier == null) this.seenTier = this.stage === "pro" ? this.tier : 0;   // older saves: no party for where you already are          // older saves: no pop-up for what you already have
     if (this.stage === "pro" && !this.salary) this.salary = SALARY[this.tier] || 0;
   }
   static fresh(name, main, pos = "SF", opts = {}) {
@@ -1949,8 +1950,8 @@ class Career {
   }
   toggleStarter(i) { if (!this.starters.includes(i)) this.starters = [this.starters[this.starters.length - 1], i]; }
   toJSON() {
-    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed, unlocked, milestonesHit, crewBonus, press, gymAsk, seenRung, ladderNews } = this;
-    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed, unlocked, milestonesHit, crewBonus, press, gymAsk, seenRung, ladderNews };
+    const { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed, unlocked, milestonesHit, crewBonus, press, gymAsk, seenRung, ladderNews, seenTier } = this;
+    return { me, crew, cash, fame, tier, champion, starters, tourney, entries, titles, games, market, moves, stage, team, startTier, gamesAtDraft, hsLog, hsDone, hsChamp, draftGrade, gold, ladder, hustleLog, hustleChamp, hustlePending, salary, proLog, offers, gamesSinceOffers, gym, gymDay, hustlePicks, lastTourney, throneLog, throneChamp, thronePending, school, prog, pickupSeed, unlocked, milestonesHit, crewBonus, press, gymAsk, seenRung, ladderNews, seenTier };
   }
 }
 
@@ -2178,6 +2179,11 @@ const Sound = {
   gasp() { this.noise(0.7, "bandpass", 750, 1.6, 0.13, 0.08); this.tone(200, 0.6, "sine", 0.03, 165, 0.02); },   // the crowd: "ooooh"
   click() { this.tone(1300, 0.025, "square", 0.025); this.tone(650, 0.05, "sine", 0.05); },
   tick() { this.tone(1900, 0.02, "square", 0.015); },
+  buzzer() { this.tone(196, 0.9, "square", 0.07); this.tone(199, 0.9, "sawtooth", 0.05); },
+  block() { this.noise(0.12, "lowpass", 400, 0.8, 0.3, 0.002); this.tone(150, 0.18, "sine", 0.2, 70); this.clank(); },
+  hum() { this.tone(110, 1.8, "sine", 0.035); this.noise(1.8, "bandpass", 380, 1.2, 0.04, 0.5); },
+  fanfare() { [523, 659, 784, 1046].forEach((f, i) => { this.tone(f, 0.22, "triangle", 0.09, null, i * 0.12); this.tone(f * 2, 0.18, "sine", 0.03, null, i * 0.12); }); this.tone(1046, 0.9, "triangle", 0.08, null, 0.5); this.tone(1318, 0.9, "sine", 0.05, null, 0.5); },
+  squeak() { this.tone(2400 + Math.random() * 600, 0.06, "sine", 0.03, 1800); },
   chime() { this.tone(1046, 0.12, "sine", 0.09); this.tone(1568, 0.2, "sine", 0.08, null, 0.07); },
   rimIn() { this.tone(520, 0.12, "triangle", 0.07); this.noise(0.2, "bandpass", 3500, 0.8, 0.12, 0.01, 0.06); },
   clank() { this.tone(390, 0.18, "square", 0.06); this.tone(610, 0.14, "triangle", 0.05, null, 0.02); },
@@ -2210,7 +2216,13 @@ const App = {
   career: null, screen: null, hits: [], keys: new Set(), edges: blankInputs(),
   touch: { up: false, down: false, left: false, right: false, shoot: false, sprint: false },
   slot: 0,
-  switch(s) { this.screen = s; nameInput.hidden = true; if (s.syncInput) s.syncInput(); pad.classList.toggle("show", isTouch && s instanceof MatchScreen); },
+  switch(s) {
+    const c = this.career;   // moved up a league? celebrate first (not mid-game or mid-report)
+    if (c && c.stage === "pro" && !(s instanceof PromotionScreen || s instanceof MatchScreen || s instanceof ResultScreen || s instanceof ScoutReportScreen || s instanceof OffersScreen)) {
+      if (c.seenTier == null || c.tier < c.seenTier) c.seenTier = c.tier;
+      else if (c.tier > c.seenTier) { const from = c.seenTier; c.seenTier = c.tier; this.save(); s = new PromotionScreen(from, c.tier, s); }
+    }
+    this.screen = s; nameInput.hidden = true; if (s.syncInput) s.syncInput(); pad.classList.toggle("show", isTouch && s instanceof MatchScreen); },
   // 5 career slots in this browser
   save() { if (!this.career) return; try { localStorage.setItem(slotKey(this.slot), JSON.stringify(this.career)); } catch (e) { /* storage unavailable: progress lasts this visit */ } },
   loadSlot(i) { try { const raw = localStorage.getItem(slotKey(i)); return raw ? new Career(JSON.parse(raw)) : null; } catch (e) { return null; } },
@@ -2609,7 +2621,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 47 (juice: fire rim, ankles, animated results)");
+    this.footer("Progress saves automatically in this browser  ·  version 48 (juice: steals, blocks, game winners, promotions)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -3085,6 +3097,7 @@ function drawPerson(m, a, highlight) {
     ctx.save(); ctx.globalCompositeOperation = "lighter"; ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(x, y + 1, 30, 12, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
   }
   if (a.dash) { for (let i = 1; i <= 3; i++) ellipse(x - a.dash.vx * 0.018 * i, y - a.dash.vy * 0.018 * i + 1, 10 - i * 2, 4 - i * 0.8, `rgba(255,255,255,${0.16 - i * 0.04})`); }
+  const ghosts = a.trail && a.trail.length > 1 ? a.trail : null;   // dribble moves leave after-images
   // shadow on the court
   ellipse(x, y + 1, 13 - P.lift * 3, 5 - P.lift, `rgba(0,0,0,${0.45 - P.lift * 0.15})`);
   const isMain = team === 0 && a.slot === 0;
@@ -3105,6 +3118,13 @@ function drawPerson(m, a, highlight) {
   pixelate(g);
   ctx.imageSmoothingEnabled = false;
   const spin = a.anim && ((a.anim.kind === "dunk" && a.dunkStyle === "360") || a.anim.kind === "spin") ? Math.cos(a.anim.t / a.anim.dur * Math.PI * 2) : 1;   // 360 dunk / spin move: turns all the way around
+  if (ghosts) {
+    for (let i = 0; i < ghosts.length - 1; i++) { const q = ghosts[i], k = (i + 1) / ghosts.length; ctx.globalAlpha = 0.32 * k;
+      ctx.drawImage(sprCanvas, Math.round(q.x - SPR.OX * PX), Math.round(q.y - up + P.crouch - SPR.OY * PX), SPR.W * PX, SPR.H * PX); }
+    ctx.globalAlpha = 1;
+    const o = ghosts[0]; ctx.strokeStyle = team === 0 ? "rgba(120,190,255,0.55)" : "rgba(255,140,130,0.55)"; ctx.lineWidth = 3; ctx.lineCap = "round";   // speed streak at the waist
+    ctx.beginPath(); ctx.moveTo(o.x, o.y - 22 - up); ctx.lineTo(x, y - 22 - up); ctx.stroke();
+  }
   if (spin !== 1) { ctx.save(); ctx.translate(x, 0); ctx.scale(Math.abs(spin) < 0.12 ? 0.12 * Math.sign(spin || 1) : spin, 1); ctx.translate(-x, 0); }
   ctx.drawImage(sprCanvas, Math.round(x - SPR.OX * PX), Math.round(y - up + P.crouch - SPR.OY * PX), SPR.W * PX, SPR.H * PX);
   if (spin !== 1) ctx.restore();
@@ -3273,7 +3293,7 @@ class MatchScreen extends Screen {
       this.press = outletFor(ci, new Rng()); this.scoutWatching = true;
       this.match.say(`A writer from ${this.press} is in the stands tonight!`, 3.2);
     }
-    this.parts = []; this.pops = []; this.rings = []; this.fxp = []; this.fx = []; this.scorePop = [0, 0]; this.rimFire = 0; this.hitstop = 0; this.zoom = null; this.slowmo = 0; this.vig = 0; this.white = 0; this.excite = 0.15; this.shake = 0; this.flash = 0; this.freeze = null; this.lastBounce = 0;
+    this.endFx = false; this.parts = []; this.pops = []; this.rings = []; this.fxp = []; this.fx = []; this.scorePop = [0, 0]; this.rimFire = 0; this.hitstop = 0; this.zoom = null; this.slowmo = 0; this.vig = 0; this.white = 0; this.excite = 0.15; this.shake = 0; this.flash = 0; this.freeze = null; this.lastBounce = 0;
   }
   burst(x, y, n, colors, speed = 160, up = 60) {
     for (let i = 0; i < n; i++) { const a = Math.random() * Math.PI * 2, sp = speed * (0.4 + Math.random() * 0.8);
@@ -3337,8 +3357,18 @@ class MatchScreen extends Screen {
         this.hitstop = 0.11; this.zoom = { x: e.x, y: e.y - 20, t: 0, dur: 0.75, amt: 0.14 };   // freeze-frame and a quick push-in on the fall
         this.sparks(e.x, e.y + 4, 16, "200,190,170", 90, 0.6, "smoke", -10);
         this.fx.push({ type: "stamp", text: "ANKLES!", x: e.x, y: e.y - 86, t: 0, dur: 1.0, size: 50, col: "#ffd23c" }); if (e.team === 0) { this.excite = Math.min(1.4, this.excite + 0.8); Sound.cheer(crowd, false); } }
-      else if (e.type === "block") { Sound.clank(); this.shake = Math.max(this.shake, 0.2); this.pop("REJECTED!", e.x, e.y - 90, C.red, 44); }
-      else if (e.type === "steal") { Sound.steal(); }
+      else if (e.type === "block") {   // a big swat: freeze, starburst, stamp
+        Sound.block(); this.shake = Math.max(this.shake, 0.3); this.hitstop = 0.09;
+        this.sparks(e.x, e.y - 50, 26, "255,255,255", 240, 0.5, "star"); this.sparks(e.x, e.y - 50, 14, "255,90,70", 200, 0.5, "spark");
+        this.fx.push({ type: "shock", x: e.x, y: e.y, t: 0, dur: 0.4, R: 70, col: "255,90,70" }, { type: "stamp", text: "REJECTED!", x: e.x, y: e.y - 96, t: 0, dur: 1.1, size: 56, col: "#ff5a4e" });
+        Sound.gasp(); this.excite = Math.min(1.4, this.excite + 0.6);
+      }
+      else if (e.type === "steal") {   // a swipe arc and the ball changes hands
+        Sound.steal(); Sound.whoosh(false); this.hitstop = 0.05; this.shake = Math.max(this.shake, 0.1);
+        this.fx.push({ type: "swipe", x: e.x, y: e.y - 26, t: 0, dur: 0.32, dir: Math.random() < 0.5 ? 1 : -1 });
+        this.sparks(e.x, e.y - 26, 10, "255,255,255", 160, 0.4, "spark");
+        this.pop("STOLEN!", e.x, e.y - 80, e.team === 0 ? C.gold : "#ff8a7a", 36, 0.9);
+      }
       else if (e.type === "cooled") { for (let i = 0; i < 18; i++) this.spawn("smoke", e.x + (Math.random() - 0.5) * 24, e.y - 20 - Math.random() * 30, { vx: (Math.random() - 0.5) * 30, vy: -30 - Math.random() * 40, life: 1.2, max: 1.2, r: 5 + Math.random() * 4 }); this.pop("COOLED OFF", e.x, e.y - 84, "#b8bcc8", 28, 1.0); }
       else if (e.type === "half") { Sound.cheer(Math.max(20, this.crowdN), true); }
       else if (e.type === "move") {
@@ -3402,7 +3432,16 @@ class MatchScreen extends Screen {
       const k = e.t / e.dur; ellipse(e.x, e.y, 8 + k * e.R, (8 + k * e.R) * 0.45, null, `rgba(${e.col},${(1 - k) * 0.9})`, 4 * (1 - k) + 1);
     }
   }
+  drawSwipes() {   // steal swipes: a bright arc that sweeps and fades
+    for (const e of this.fx) if (e.type === "swipe" && e.t > 0) {
+      const k = e.t / e.dur, a0 = -Math.PI * 0.9, sweep = Math.PI * 1.2 * Math.min(1, k * 2.2);
+      ctx.save(); ctx.translate(e.x, e.y); ctx.scale(e.dir, 1); ctx.lineCap = "round";
+      for (const [w, col] of [[14, `rgba(255,210,90,${0.5 * (1 - k)})`], [6, `rgba(255,255,255,${1 - k})`]]) { ctx.strokeStyle = col; ctx.lineWidth = w; ctx.beginPath(); ctx.arc(0, 0, 30 + k * 12, a0, a0 + sweep); ctx.stroke(); }
+      ctx.restore();
+    }
+  }
   drawTopFx() {     // over the players: beams, particles, stamps
+    this.drawSwipes();
     if (this.rimFire > 0) {   // fire on the rim: tongues of flame all the way around, tallest right after the swish
       const [hx, hy] = S.HOOP, t = this.match.elapsed, k = Math.min(1, this.rimFire / 0.8), boost = 1 + Math.max(0, this.rimFire - 2.1) * 1.6;
       for (const back of [true, false]) for (let i = 0; i < 9; i++) {
@@ -3499,7 +3538,32 @@ class MatchScreen extends Screen {
     }
     this.shake = Math.max(0, this.shake - dt); this.flash = Math.max(0, this.flash - dt);
     if (this.freeze) { this.freeze.t -= dt; if (this.freeze.t <= 0) this.freeze = null; }
-    if (this.match.phase === "over") { this.doneT += dt; if (this.doneT > 1.8) this.finish(); }
+    for (const a of m.actors) {   // after-images while a dribble move is moving them
+      a.trail = a.trail || [];
+      if (a.dash && a.anim && ["cross", "spin", "stepback"].includes(a.anim.kind)) { a.trail.push({ x: a.x, y: a.y }); if (a.trail.length > 6) a.trail.shift(); }
+      else if (a.trail.length) a.trail.shift();
+      if (a.dash && !a.squeaked && a === m.controlled) { a.squeaked = true; Sound.squeak(); } else if (!a.dash) a.squeaked = false;
+    }
+    const gp = m.phase !== "over" && Math.max(...m.score) >= m.gameTo - 2;   // game point: the gym hums
+    if (gp) { this.humT = (this.humT || 0) - dt; if (this.humT <= 0) { this.humT = 2.2; Sound.hum(); } }
+    if (this.match.phase === "over") {
+      if (!this.endFx) this.gameOverFx();
+      this.doneT += dt;
+      const w = m.winner, scorer = m.lastScorer && m.lastScorer.team === w ? m.lastScorer : m.team(w)[0];
+      m.team(w).forEach((a, i) => { if (a === scorer) return; const tx = scorer.x + (i === 1 ? -26 : 26), ty = scorer.y + 8;   // teammates run over to the scorer
+        a.x += (tx - a.x) * Math.min(1, dt * 3.5); a.y += (ty - a.y) * Math.min(1, dt * 3.5); a.moveAmt = 1; });
+      if (this.doneT > 2.9) this.finish();
+    }
+  }
+  // the last bucket: buzzer, a flash, a beat of slow motion, confetti, the winners mob each other
+  gameOverFx() {
+    const m = this.match, mine = m.winner === 0; this.endFx = true;
+    Sound.buzzer(); Sound.cheer(Math.max(30, this.crowdN), true);
+    this.white = 0.5; this.slowmo = 0.5; this.shake = Math.max(this.shake, 0.25);
+    this.fx.push({ type: "stamp", text: mine ? "GAME!" : "GAME OVER", x: 500, y: 228, t: -0.15, dur: 2.4, size: mine ? 96 : 70, col: mine ? C.gold : "#ff7a6a" });
+    const cols = mine ? [C.team[0], "#ffffff", C.gold, "#7dd3ff"] : [C.team[1], "#ffffff", "#ffb3aa"];
+    for (let i = 0; i < 170; i++) this.parts.push({ x: Math.random() * S.W, y: -10 - Math.random() * 200, vx: (Math.random() - 0.5) * 70, vy: 60 + Math.random() * 90, life: 3.2, max: 3.2, col: cols[i % cols.length], r: 2.5 + Math.random() * 2.5, g: 20, conf: true });
+    for (const a of m.team(m.winner)) a.setAnim("celebrate", 2.6);
   }
   drawPressure(m) {
     if (m.rattled) {   // red, pulsing edges
@@ -3562,7 +3626,7 @@ class MatchScreen extends Screen {
       const bob = Math.sin(m.elapsed * 8) * 3;
       text("OPEN ▼", t.x, t.y - 80 + bob, { size: 20, color: C.gold, center: true, display: true });
     }
-    for (const q of this.parts) circle(q.x, q.y, q.r * Math.max(0.3, q.life / q.max), q.col);
+    for (const q of this.parts) { if (q.conf) { ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(q.x * 0.05 + q.life * 6); ctx.fillStyle = q.col; ctx.fillRect(-q.r, -q.r * 0.45, q.r * 2, q.r * 0.9); ctx.restore(); } else circle(q.x, q.y, q.r * Math.max(0.3, q.life / q.max), q.col); }
     for (const q of this.rings) if (q.t > 0) { const k = q.t / 0.5; ellipse(S.HOOP[0], S.HOOP[1], 11 + k * 46, 7 + k * 26, null, `rgba(${q.col},${1 - k})`, 3 * (1 - k) + 1); }
     // shot meter: fills while you hold, then freezes for a moment where you let go
     const a = m.controlled;
@@ -3608,6 +3672,14 @@ class MatchScreen extends Screen {
       ctx.save(); ctx.translate(545, 23); ctx.scale(sc, sc); text(nm, 0, -nsz * 0.36, { size: nsz, color: k > 0.6 ? "#ffffff" : C.team[1], display: true }); ctx.restore(); }
     text(`${TIERS[this.ci].court} · ${this.crowdN ? `crowd ${this.crowdN}` : "empty gym"}`, 16, 14, { size: 22, color: C.grey });
     text(`Shot ${Math.max(0, Math.ceil(m.shotClock))}`, S.W - 16, 12, { size: 26, right: true });
+    if (m.phase !== "over" && Math.max(...m.score) >= m.gameTo - 2) {   // game point: dim the edges, pulse a banner
+      const k = 0.5 + 0.5 * Math.sin(m.elapsed * 5), g = ctx.createRadialGradient(500, 360, 260, 500, 360, 640);
+      g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(1, `rgba(0,0,0,${0.32 + 0.08 * k})`); ctx.fillStyle = g; ctx.fillRect(0, 44, S.W, S.H - 44);
+      const who = m.score[0] >= m.gameTo - 2 && m.score[1] >= m.gameTo - 2 ? "NEXT BUCKET WINS" : m.score[0] >= m.gameTo - 2 ? "GAME POINT" : "THEIR GAME POINT";
+      ctx.fillStyle = "#0f0f14"; ctx.fillRect(400, 4, 140, 38);   // replaces "to 21" in the scoreboard
+      ctx.save(); ctx.translate(470, 23); ctx.scale(1 + 0.08 * k, 1 + 0.08 * k); ctx.shadowColor = m.score[0] >= m.gameTo - 2 ? C.gold : C.red; ctx.shadowBlur = 10 + 8 * k;
+      text(who, 0, 0, { size: who.length > 12 ? 15 : 20, color: m.score[0] >= m.gameTo - 2 ? C.gold : "#ff8a7a", center: true, display: true }); ctx.restore();
+    }
     if (this.scoutWatching) text(this.press ? `PRESS: ${this.press.toUpperCase()}` : "SCOUT WATCHING", S.W - 16, 50, { size: 20, color: C.gold, right: true, display: true });
     let hy = this.hsGym ? 98 : 54;
     if (m.oppCall) {   // their coach's adjustment
@@ -3878,6 +3950,66 @@ class BracketScreen extends Screen {
     rrect(800, 616, 180, 50, 10, C.gold); text("CONTINUE ▶", 890, 641, { size: 26, color: "#1a1406", center: true, display: true });
     hit(800, 616, 180, 50, () => this.go());
     this.footer("Enter to continue");
+  }
+}
+
+// ---------------------------------------------------------------- moving up: banner, fireworks, and what's new at this level
+class PromotionScreen extends Screen {
+  constructor(from, to, next) {
+    super(); Object.assign(this, { from, to, next, t: 0, parts: [], nextBurst: 0.5 });
+    const A = rungOf(from), B = rungOf(to), out = [];
+    if (B.slots > A.slots) out.push(["ATTRIBUTE SLOT", B.slots === 1 ? "Your first attribute slot" : `${B.slots} attribute slots`, C.gold]);
+    if (B.league >= 5 && A.league < 5) out.push(["PRO ATTRIBUTES", "Deadeye · Posterizer · Lockdown", C.blue]);
+    if (B.league >= 6 && A.league < 6) out.push(["ELITE ATTRIBUTES", "Limitless Range · Clutch", "#ff8a3a"]);
+    if (B.sec && !A.sec) out.push(["2ND ARCHETYPE", "Pick your Secondary", C.green]);
+    if (B.third && !A.third) out.push(["3RD ARCHETYPE", "The Olympic prize", "#7ff9ff"]);
+    if (B.mainMax > A.mainMax) out.push(["MAIN ARCHETYPE", `Level ${B.mainMax} unlocked`, "#c9a0ff"]);
+    if (SALARY[to] > SALARY[from]) out.push(["SALARY", `$${SALARY[to]} a game`, C.green]);
+    this.cards = out.slice(0, 4);
+    try { Sound.fanfare(); Sound.cheer(120, true); } catch (e) {}
+  }
+  go() { App.switch(this.next || new HubScreen()); }
+  key(k) { if (this.t < 1.2) { this.t = 1.2; return; } if (K.ok(k) || K.back(k)) this.go(); }
+  update(dt) {
+    this.t += dt; this.nextBurst -= dt;
+    if (this.nextBurst <= 0 && this.t < 6) {   // fireworks: a rocket's worth of sparks at a time
+      this.nextBurst = 0.35 + Math.random() * 0.35; const x = 120 + Math.random() * 760, y = 90 + Math.random() * 200, hue = Math.floor(Math.random() * 360);
+      for (let i = 0; i < 46; i++) { const a = (i / 46) * Math.PI * 2, v = 120 + Math.random() * 90; this.parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1.1 + Math.random() * 0.4, max: 1.5, col: `hsl(${hue + Math.random() * 40},100%,${60 + Math.random() * 20}%)` }); }
+      try { Sound.noise(0.25, "lowpass", 600, 0.7, 0.12, 0.002); } catch (e) {}
+    }
+    for (const q of this.parts) { q.x += q.vx * dt; q.y += q.vy * dt; q.vx *= 0.985; q.vy = q.vy * 0.985 + 90 * dt; q.life -= dt; }
+    this.parts = this.parts.filter(q => q.life > 0);
+  }
+  draw() {
+    const t = this.t, T = TIERS[this.to];
+    const g = ctx.createRadialGradient(500, 250, 50, 500, 300, 700); g.addColorStop(0, "#2a2410"); g.addColorStop(1, "#08080c");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, S.W, S.H);
+    ctx.save(); ctx.globalCompositeOperation = "lighter";   // light rays behind the banner
+    ctx.translate(500, 210); ctx.rotate(t * 0.25); for (let i = 0; i < 14; i++) { ctx.rotate(Math.PI / 7); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-50, -700); ctx.lineTo(50, -700); ctx.closePath(); ctx.fillStyle = "rgba(245,200,60,0.06)"; ctx.fill(); }
+    ctx.restore();
+    for (const q of this.parts) { ctx.globalAlpha = Math.min(1, q.life / q.max * 1.6); circle(q.x, q.y, 2.2, q.col); } ctx.globalAlpha = 1;
+    // the banner drops in on two ropes and bounces
+    const k = clamp(t / 0.7, 0, 1), bounce = k < 1 ? 1 - Math.pow(1 - k, 3) + Math.sin(k * Math.PI * 2.5) * 0.08 * (1 - k) : 1, by = -200 + bounce * 300;
+    line(330, 0, 330, by, "#8a7a4a", 3); line(670, 0, 670, by, "#8a7a4a", 3);
+    rrect(270, by, 460, 150, 12, "#3a1d12", C.gold, 4);
+    ctx.save(); ctx.beginPath(); ctx.roundRect(270, by, 460, 150, 12); ctx.clip(); shine(270, by, 460, 150, 12); ctx.restore();
+    text(this.from === 0 ? "YOU WENT PRO!" : "PROMOTED!", 500, by + 30, { size: 26, color: "#ffe9a8", center: true, display: true });
+    text(T.name.toUpperCase(), 500, by + 76, { size: 50, color: C.gold, center: true, display: true });
+    text(T.court, 500, by + 120, { size: 22, color: "#e8d9b0", center: true, weight: 600 });
+    // what's new: cards flip in one by one
+    if (this.cards.length) text("NEW AT THIS LEVEL", 500, 400, { size: 20, color: C.grey, center: true, display: true });
+    const n = this.cards.length, w = 200, gap = 18, x0 = 500 - (n * w + (n - 1) * gap) / 2;
+    this.cards.forEach(([head, sub, col], i) => {
+      const at = 0.9 + i * 0.3, kk = clamp((t - at) / 0.4, 0, 1); if (kk <= 0) return;
+      if (!this["dinged" + i]) { this["dinged" + i] = true; try { Sound.chime(); } catch (e) {} }
+      const x = x0 + i * (w + gap), flip = Math.cos((1 - kk) * Math.PI / 2);
+      ctx.save(); ctx.translate(x + w / 2, 480); ctx.scale(Math.max(0.02, flip), 1);
+      ctx.shadowColor = col; ctx.shadowBlur = 16; rrect(-w / 2, -50, w, 100, 10, "#1b1d26", col, 3); ctx.shadowBlur = 0;
+      text(head, 0, -18, { size: 20, color: col, center: true, display: true }); text(sub, 0, 16, { size: 17, color: C.white, center: true, weight: 600 });
+      ctx.restore();
+    });
+    if (t > 1.2) { const p = 0.5 + 0.5 * Math.sin(t * 4); rrect(400, 580, 200, 50, 10, C.gold); text("CONTINUE ▶", 500, 605, { size: 24, color: "#1a1406", center: true, display: true }); hit(400, 580, 200, 50, () => this.go());
+      text("Enter to continue", 500, 650, { size: 16, color: `rgba(170,170,180,${0.5 + 0.4 * p})`, center: true }); }
   }
 }
 
