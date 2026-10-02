@@ -609,7 +609,12 @@ class Match {
       if (!it.action && this.meter === null) {
         if (inp.passPressed && this.practice) this.say("Practice: nobody to pass to", 0.8);
         else if (inp.passPressed) { it.action = "pass"; it.target = this.pickPassTarget(a, inp.move); }
-        else if (inp.movePressed) it.action = "cross";
+        else if (inp.movePressed) {
+          it.action = "cross";
+          // D/A + K while you're heading up the court (W held a moment ago, or already running up) = the up-crossover,
+          // so it works even on keyboards that can't register W + D + K at the same time
+          if (Math.abs(inp.move[0]) > 0.3 && inp.move[1] >= -0.3 && inp.move[1] <= 0.3 && (inp.upRecent || a.vy < -a.maxSpeed() * 0.35)) it.move = [inp.move[0] * 0.707, -0.707];
+        }
         else if (inp.specialPressed) {   // L: spin (or behind-the-back while holding back), once you've unlocked them
           const mv = a.p.moves || [], back = inp.move[1] > 0.3;
           if (back && mv.includes("behind")) { it.action = "cross"; it.moveType = "behind"; }
@@ -2663,7 +2668,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 56 (practice court)");
+    this.footer("Progress saves automatically in this browser  ·  version 57 (up-crossover assist)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -3573,6 +3578,8 @@ class MatchScreen extends Screen {
     const mx = ((ks.has("d") || ks.has("arrowright") || t.right) ? 1 : 0) - ((ks.has("a") || ks.has("arrowleft") || t.left) ? 1 : 0);
     const my = ((ks.has("s") || ks.has("arrowdown") || t.down) ? 1 : 0) - ((ks.has("w") || ks.has("arrowup") || t.up) ? 1 : 0);
     const inp = App.edges; inp.move = [mx, my]; inp.shootDown = ks.has(" ") || t.shoot;
+    if (my < 0) this.upAt = performance.now();
+    inp.upRecent = my < 0 || performance.now() - (this.upAt || -1e9) < 500;   // W/up held now or in the last half second
     inp.sprint = ks.has("shift") || t.sprint;
     const sdt = this.slowmo > 0 ? dt * 0.3 : dt; this.slowmo = Math.max(0, this.slowmo - dt);   // a beat of slow motion on the big moments
     this.scorePop = this.scorePop.map(v => Math.max(0, v - dt * 2.2));
