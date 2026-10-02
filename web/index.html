@@ -609,12 +609,7 @@ class Match {
       if (!it.action && this.meter === null) {
         if (inp.passPressed && this.practice) this.say("Practice: nobody to pass to", 0.8);
         else if (inp.passPressed) { it.action = "pass"; it.target = this.pickPassTarget(a, inp.move); }
-        else if (inp.movePressed) {
-          it.action = "cross";
-          // D/A + K while you're heading up the court (W held a moment ago, or already running up) = the up-crossover,
-          // so it works even on keyboards that can't register W + D + K at the same time
-          if (Math.abs(inp.move[0]) > 0.3 && inp.move[1] >= -0.3 && inp.move[1] <= 0.3 && (inp.upRecent || a.vy < -a.maxSpeed() * 0.35)) it.move = [inp.move[0] * 0.707, -0.707];
-        }
+        else if (inp.movePressed) it.action = "cross";
         else if (inp.specialPressed) {   // L: spin (or behind-the-back while holding back), once you've unlocked them
           const mv = a.p.moves || [], back = inp.move[1] > 0.3;
           if (back && mv.includes("behind")) { it.action = "cross"; it.moveType = "behind"; }
@@ -819,7 +814,7 @@ class Match {
     if (dfd && dd < 60 && dfd.stun <= 0 && !dfd.anim) dfd.setAnim("jump", 0.45);
   }
   passBall(a, target) { if (this.human && a === this.controlled && a.team === 0) this.habits.passTo[target.slot] = (this.habits.passTo[target.slot] || 0) + 1; if (a.team === 0) this.poss.passes++; a.holdT = 0; a.setAnim("pass", 0.3); this.ball.startPass(a, target, S.PASS_SPEED * (1 + a.eff("pass"))); }
-  // Dribble moves follow the direction held when K is pressed (screen directions; the hoop is up).
+  // Dribble moves follow the direction held when H is pressed (screen directions; the hoop is up).
   //   side only → crossover that way · up + side → crossover drive · down → step back
   //   up only → hesi-go · nothing → hesitation
   moveType(mx, my) {
@@ -2668,7 +2663,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 57 (up-crossover assist)");
+    this.footer("Progress saves automatically in this browser  ·  version 58 (moves on H)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -3578,8 +3573,6 @@ class MatchScreen extends Screen {
     const mx = ((ks.has("d") || ks.has("arrowright") || t.right) ? 1 : 0) - ((ks.has("a") || ks.has("arrowleft") || t.left) ? 1 : 0);
     const my = ((ks.has("s") || ks.has("arrowdown") || t.down) ? 1 : 0) - ((ks.has("w") || ks.has("arrowup") || t.up) ? 1 : 0);
     const inp = App.edges; inp.move = [mx, my]; inp.shootDown = ks.has(" ") || t.shoot;
-    if (my < 0) this.upAt = performance.now();
-    inp.upRecent = my < 0 || performance.now() - (this.upAt || -1e9) < 500;   // W/up held now or in the last half second
     inp.sprint = ks.has("shift") || t.sprint;
     const sdt = this.slowmo > 0 ? dt * 0.3 : dt; this.slowmo = Math.max(0, this.slowmo - dt);   // a beat of slow motion on the big moments
     this.scorePop = this.scorePop.map(v => Math.max(0, v - dt * 2.2));
@@ -3633,7 +3626,7 @@ class MatchScreen extends Screen {
   drawKeys() {
     const ks = App.keys, x0 = S.W - 104, y0 = S.H - 72, cell = (lbl, x, y, on) => { rrect(x, y, 26, 24, 5, on ? "rgba(245,200,60,0.85)" : "rgba(20,20,26,0.6)", "rgba(255,255,255,0.25)", 1); text(lbl, x + 13, y + 12, { size: 15, color: on ? "#1a1406" : "#9a9caa", center: true, display: true }); };
     cell("W", x0 + 28, y0, ks.has("w") || ks.has("arrowup")); cell("A", x0, y0 + 27, ks.has("a") || ks.has("arrowleft")); cell("S", x0 + 28, y0 + 27, ks.has("s") || ks.has("arrowdown")); cell("D", x0 + 56, y0 + 27, ks.has("d") || ks.has("arrowright"));
-    cell("K", x0 + 74, y0, (App.kFlash || 0) > 0);
+    cell("H", x0 + 74, y0, (App.kFlash || 0) > 0);
     App.kFlash = Math.max(0, (App.kFlash || 0) - 1 / 60);
   }
   // the last bucket: buzzer, a flash, a beat of slow motion, confetti, the winners mob each other
@@ -3798,7 +3791,7 @@ class MatchScreen extends Screen {
     if (m.phase === "check") text("CHECK BALL", 500, 380, { size: 40, center: true, display: true });
     if (m.phase === "over") { const won = m.winner === 0; text(won ? "YOU WIN!" : "YOU LOSE", 500, 330, { size: 80, color: won ? C.green : C.red, center: true, display: true }); }
     if (!isTouch) {
-      text("WASD / arrows move · SHIFT sprint · SPACE shoot · J pass · K move / steal · Q switch · M sound", 500, S.H - 16, { size: 18, center: true, weight: 500 });
+      text("WASD / arrows move · SHIFT sprint · SPACE shoot · J pass · H move / steal · Q switch · M sound", 500, S.H - 16, { size: 18, center: true, weight: 500 });
       this.drawKeys();
     }
     if (this.paused) {
@@ -4067,7 +4060,7 @@ class PracticeScreen extends MatchScreen {
     super.draw();
     rrect(300, 50, 400, 34, 8, "rgba(10,10,14,0.75)", C.gold, 1.5);
     text("PRACTICE COURT  ·  every move unlocked  ·  Esc to leave", 500, 67, { size: 18, color: C.gold, center: true, display: true });
-    text("K + WASD/arrows: crossovers & step-backs  ·  L: spin  ·  S + L: behind the back  ·  SPACE: shoot", 500, 626, { size: 16, color: C.white, center: true, weight: 600 });
+    text("H + WASD/arrows: crossovers & step-backs  ·  L: spin  ·  S + L: behind the back  ·  SPACE: shoot", 500, 626, { size: 16, color: C.white, center: true, weight: 600 });
   }
 }
 
@@ -4787,7 +4780,7 @@ class MysteryScreen extends Screen {
 // =====================================================================
 // Input wiring
 // =====================================================================
-const KEY_CODES = { KeyW: "w", KeyA: "a", KeyS: "s", KeyD: "d", KeyJ: "j", KeyK: "k", KeyL: "l", KeyQ: "q" };   // the keys by position, whatever the layout
+const KEY_CODES = { KeyW: "w", KeyA: "a", KeyS: "s", KeyD: "d", KeyJ: "j", KeyH: "h", KeyL: "l", KeyQ: "q" };   // the keys by position, whatever the layout
 const GAME_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "]);
 window.addEventListener("keydown", e => {
   Sound.wake();
@@ -4801,7 +4794,7 @@ window.addEventListener("keydown", e => {
   if (!e.repeat) {
     if (e.key === " ") App.edges.shootPressed = true;
     if (k === "j") App.edges.passPressed = true;
-    if (k === "k") { App.edges.movePressed = true; App.kFlash = 0.35; }
+    if (k === "h") { App.edges.movePressed = true; App.kFlash = 0.35; }   // H: dribble moves (crossovers, step-backs) and steals
     if (k === "l") App.edges.specialPressed = true;
     if (k === "q") App.edges.switchPressed = true;
 
