@@ -604,7 +604,6 @@ class Match {
       }
       if (!it.action && this.meter === null) {
         if (inp.passPressed) { it.action = "pass"; it.target = this.pickPassTarget(a, inp.move); }
-        else if (inp.movePressed && inp.forceDrive) { it.action = "cross"; it.moveType = "drive"; it.move = [Math.abs(inp.move[0]) > 0.3 ? Math.sign(inp.move[0]) * 0.7 : -a.hand * 0.7, -0.7]; }   // E: up-crossover in one press
         else if (inp.movePressed) it.action = "cross";
         else if (inp.specialPressed) {   // L: spin (or behind-the-back while holding back), once you've unlocked them
           const mv = a.p.moves || [], back = inp.move[1] > 0.3;
@@ -2651,7 +2650,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 54 (E works like K)");
+    this.footer("Progress saves automatically in this browser  ·  version 55 (K moves only)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -3779,7 +3778,7 @@ class MatchScreen extends Screen {
     if (m.phase === "check") text("CHECK BALL", 500, 380, { size: 40, center: true, display: true });
     if (m.phase === "over") { const won = m.winner === 0; text(won ? "YOU WIN!" : "YOU LOSE", 500, 330, { size: 80, color: won ? C.green : C.red, center: true, display: true }); }
     if (!isTouch) {
-      text("WASD / arrows move · SHIFT sprint · SPACE shoot · J pass · K (or E) move / steal · Q switch · M sound", 500, S.H - 16, { size: 18, center: true, weight: 500 });
+      text("WASD / arrows move · SHIFT sprint · SPACE shoot · J pass · K move / steal · Q switch · M sound", 500, S.H - 16, { size: 18, center: true, weight: 500 });
       this.drawKeys();
     }
     if (this.paused) {
@@ -4744,7 +4743,7 @@ class MysteryScreen extends Screen {
 // =====================================================================
 // Input wiring
 // =====================================================================
-const KEY_CODES = { KeyW: "w", KeyA: "a", KeyS: "s", KeyD: "d", KeyJ: "j", KeyK: "k", KeyL: "l", KeyQ: "q", KeyE: "e" };   // the keys by position, whatever the layout
+const KEY_CODES = { KeyW: "w", KeyA: "a", KeyS: "s", KeyD: "d", KeyJ: "j", KeyK: "k", KeyL: "l", KeyQ: "q" };   // the keys by position, whatever the layout
 const GAME_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "]);
 window.addEventListener("keydown", e => {
   Sound.wake();
@@ -4759,7 +4758,6 @@ window.addEventListener("keydown", e => {
     if (e.key === " ") App.edges.shootPressed = true;
     if (k === "j") App.edges.passPressed = true;
     if (k === "k") { App.edges.movePressed = true; App.kFlash = 0.35; }
-    if (k === "e") { App.edges.movePressed = true; App.kFlash = 0.35; }   // E = a second K (same moves), for keyboards that drop K in some combos
     if (k === "l") App.edges.specialPressed = true;
     if (k === "q") App.edges.switchPressed = true;
 
