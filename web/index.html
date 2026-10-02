@@ -2651,7 +2651,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 53 (up-crossover W+D / W+A + K)");
+    this.footer("Progress saves automatically in this browser  ·  version 54 (E works like K)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -3779,7 +3779,7 @@ class MatchScreen extends Screen {
     if (m.phase === "check") text("CHECK BALL", 500, 380, { size: 40, center: true, display: true });
     if (m.phase === "over") { const won = m.winner === 0; text(won ? "YOU WIN!" : "YOU LOSE", 500, 330, { size: 80, color: won ? C.green : C.red, center: true, display: true }); }
     if (!isTouch) {
-      text("WASD / arrows move · SHIFT sprint · SPACE shoot · J pass · K move / steal · E up-crossover · Q switch · M sound", 500, S.H - 16, { size: 18, center: true, weight: 500 });
+      text("WASD / arrows move · SHIFT sprint · SPACE shoot · J pass · K (or E) move / steal · Q switch · M sound", 500, S.H - 16, { size: 18, center: true, weight: 500 });
       this.drawKeys();
     }
     if (this.paused) {
@@ -4759,7 +4759,7 @@ window.addEventListener("keydown", e => {
     if (e.key === " ") App.edges.shootPressed = true;
     if (k === "j") App.edges.passPressed = true;
     if (k === "k") { App.edges.movePressed = true; App.kFlash = 0.35; }
-    if (k === "e") { App.edges.movePressed = true; App.edges.forceDrive = true; App.kFlash = 0.35; }   // E = up-crossover (no 3-key combo needed)
+    if (k === "e") { App.edges.movePressed = true; App.kFlash = 0.35; }   // E = a second K (same moves), for keyboards that drop K in some combos
     if (k === "l") App.edges.specialPressed = true;
     if (k === "q") App.edges.switchPressed = true;
 
