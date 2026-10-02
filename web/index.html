@@ -2412,7 +2412,7 @@ class CreateScreen extends Screen {
     return [
       ["First name", "text", "first"], ["Last name", "text", "last"], ["High school team", "text", "school"],
       ["Position", "pick", `${POS_NAMES[this.pos]} (${this.pos})`, d => { this.pi = (this.pi + d + POSITIONS.length) % POSITIONS.length; this.ai = ATTR_ORDER.indexOf(POS_ATTRS[this.pos][0]); }],
-      ["Main attribute", "pick", ATTRS[ATTR_ORDER[this.ai]].name, d => { this.ai = (this.ai + d + ATTR_ORDER.length) % ATTR_ORDER.length; }],
+      ["Main archetype", "pick", ATTRS[ATTR_ORDER[this.ai]].name, d => { this.ai = (this.ai + d + ATTR_ORDER.length) % ATTR_ORDER.length; }],
       ["Skin tone", "pick", `Tone ${s.skin + 1} of ${SKIN_TONES.length}`, cyc("skin", SKIN_TONES.length)],
       ["Hairstyle", "pick", HAIR_STYLES[s.hair][0], cyc("hair", HAIR_STYLES.length)],
       ["Hair color", "pick", HAIR_COLORS[s.hc][0], cyc("hc", HAIR_COLORS.length)],
@@ -2647,7 +2647,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 50 (cross & go, breakaways vs ankle breakers)");
+    this.footer("Progress saves automatically in this browser  ·  version 51 (key display, main archetype)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -3392,7 +3392,7 @@ class MatchScreen extends Screen {
         Sound.gasp(); this.excite = Math.min(1.4, this.excite + 0.6);
       }
       else if (e.type === "blowby") {   // a breakaway: quick and light, you keep moving
-        if (e.team === 0) { Sound.whoosh(true); this.pop("BLOW BY", e.ax, e.ay - 100, "#9fe6ff", 26, 0.6); this.excite = Math.min(1.4, this.excite + 0.25); }
+        if (e.team === 0) { Sound.whoosh(true); this.pop("BLOW BY", e.ax, e.ay - 134, "#9fe6ff", 26, 0.6); this.excite = Math.min(1.4, this.excite + 0.25); }
         for (let i = 0; i < 6; i++) this.parts.push({ x: e.x + (Math.random() - 0.5) * 14, y: e.y + 2, vx: (Math.random() - 0.5) * 70, vy: -Math.random() * 25, life: 0.35, max: 0.35, col: "rgba(200,190,170,0.8)", r: 2 + Math.random() * 2, g: 40 });
       }
       else if (e.type === "burst") { if (e.team === 0) { Sound.whoosh(true); Sound.squeak(); } for (let i = 0; i < 8; i++) this.parts.push({ x: e.x + (Math.random() - 0.5) * 12, y: e.y + 2, vx: (Math.random() - 0.5) * 60, vy: 20 + Math.random() * 40, life: 0.4, max: 0.4, col: "rgba(210,200,180,0.8)", r: 2 + Math.random() * 2.5, g: 0 }); }
@@ -3588,6 +3588,13 @@ class MatchScreen extends Screen {
       if (this.doneT > 2.9) this.finish();
     }
   }
+  // a tiny key display (bottom right): the direction keys you're holding and a flash when K lands
+  drawKeys() {
+    const ks = App.keys, x0 = S.W - 104, y0 = S.H - 72, cell = (lbl, x, y, on) => { rrect(x, y, 26, 24, 5, on ? "rgba(245,200,60,0.85)" : "rgba(20,20,26,0.6)", "rgba(255,255,255,0.25)", 1); text(lbl, x + 13, y + 12, { size: 15, color: on ? "#1a1406" : "#9a9caa", center: true, display: true }); };
+    cell("W", x0 + 28, y0, ks.has("w") || ks.has("arrowup")); cell("A", x0, y0 + 27, ks.has("a") || ks.has("arrowleft")); cell("S", x0 + 28, y0 + 27, ks.has("s") || ks.has("arrowdown")); cell("D", x0 + 56, y0 + 27, ks.has("d") || ks.has("arrowright"));
+    cell("K", x0 + 74, y0, (App.kFlash || 0) > 0);
+    App.kFlash = Math.max(0, (App.kFlash || 0) - 1 / 60);
+  }
   // the last bucket: buzzer, a flash, a beat of slow motion, confetti, the winners mob each other
   gameOverFx() {
     const m = this.match, mine = m.winner === 0; this.endFx = true;
@@ -3751,6 +3758,7 @@ class MatchScreen extends Screen {
     if (m.phase === "over") { const won = m.winner === 0; text(won ? "YOU WIN!" : "YOU LOSE", 500, 330, { size: 80, color: won ? C.green : C.red, center: true, display: true }); }
     if (!isTouch) {
       text("WASD move · SHIFT sprint · SPACE shoot · J pass · K move / steal · Q switch · M sound", 500, S.H - 16, { size: 20, center: true, weight: 500 });
+      this.drawKeys();
     }
     if (this.paused) {
       rrect(290, 240, 420, 200, 12, "rgba(16,17,22,0.95)", C.grey, 1.5);
@@ -4714,6 +4722,7 @@ class MysteryScreen extends Screen {
 // =====================================================================
 // Input wiring
 // =====================================================================
+const KEY_CODES = { KeyW: "w", KeyA: "a", KeyS: "s", KeyD: "d", KeyJ: "j", KeyK: "k", KeyL: "l", KeyQ: "q" };   // the keys by position, whatever the layout
 const GAME_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "]);
 window.addEventListener("keydown", e => {
   Sound.wake();
@@ -4723,11 +4732,11 @@ window.addEventListener("keydown", e => {
     return;
   }
   if (GAME_KEYS.has(e.key)) e.preventDefault();
-  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase();
+  const k = KEY_CODES[e.code] || (e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase());
   if (!e.repeat) {
     if (e.key === " ") App.edges.shootPressed = true;
     if (k === "j") App.edges.passPressed = true;
-    if (k === "k") App.edges.movePressed = true;
+    if (k === "k") { App.edges.movePressed = true; App.kFlash = 0.35; }
     if (k === "l") App.edges.specialPressed = true;
     if (k === "q") App.edges.switchPressed = true;
 
@@ -4735,7 +4744,7 @@ window.addEventListener("keydown", e => {
   }
   App.keys.add(k);
 });
-window.addEventListener("keyup", e => App.keys.delete(e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase()));
+window.addEventListener("keyup", e => { App.keys.delete(KEY_CODES[e.code] || (e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase())); App.keys.delete(e.key.toLowerCase()); });
 window.addEventListener("blur", () => { App.keys.clear(); for (const d in App.touch) App.touch[d] = false; });
 canvas.addEventListener("pointerdown", e => {
   Sound.wake();
