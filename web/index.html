@@ -854,7 +854,7 @@ class Match {
     if (dfd && dd < 55 && dfd.stun <= 0) {
       const ch = (0.25 + (a.p.stats.handles - dfd.p.stats.defense) / 200 + a.eff("cross") + 0.08 * this.edge(a)) * mv.odds;
       if (this.rng.random() < clamp(ch, 0.04, 0.8)) {
-        dfd.stun = mv.stun * (hasBadge(a.p, "ankles") ? 1.4 : 1); dfd.vx *= 0.2; dfd.vy *= 0.2;
+        dfd.stun = mv.stun * (hasBadge(a.p, "ankles") ? 1.4 : 1); dfd.vx *= 0.2; dfd.vy *= 0.2; dfd.stunMax = dfd.stun; dfd.fallDir = dfd.x < a.x ? -1 : 1;
         this.events.push({ type: "ankles", x: dfd.x, y: dfd.y, team: a.team });
         if (a === this.mainGuy) this.box.ankles++;
         if (a.team === 0) this.nerves(-0.1);
@@ -2097,6 +2097,19 @@ function drawCourt(tier) {
   ellipse(hx, hy + 30, 26, 8, "rgba(0,0,0,0.22)");   // the hoop's shadow on the floor
   drawHoop(hx, hy);
 }
+// One flickering tongue of fire: red outside, orange, then a yellow core. (x, y) = its base; h = height
+function flameTongue(x, y, h, w, t, seed, alpha = 1) {
+  const sway = Math.sin(t * 9 + seed * 3.1) * w * 0.6 + Math.sin(t * 17 + seed) * w * 0.25;
+  const layers = [[1, "255,70,20"], [0.68, "255,150,30"], [0.38, "255,235,120"]];
+  for (const [k, col] of layers) {
+    const hh = h * k, ww = w * k, tx = x + sway * k;
+    ctx.beginPath(); ctx.moveTo(x - ww, y);
+    ctx.quadraticCurveTo(x - ww * 1.1, y - hh * 0.55, tx, y - hh);
+    ctx.quadraticCurveTo(x + ww * 1.1, y - hh * 0.55, x + ww, y);
+    ctx.quadraticCurveTo(x, y + ww * 0.6, x - ww, y); ctx.closePath();
+    ctx.fillStyle = `rgba(${col},${alpha * (k === 1 ? 0.85 : 0.95)})`; ctx.fill();
+  }
+}
 // The hoop hangs above the floor: drawn on top of the players. ox = rim shake, swish = net ripple.
 function drawHoop(hx, hy, ox = 0, swish = 0) {
   // pole and arm coming from behind the baseline
@@ -2151,7 +2164,21 @@ const Sound = {
     src.connect(f); f.connect(g); src.start(t); src.stop(t + dur + 0.05);
   },
   dribble() { this.tone(140, 0.07, "sine", 0.18, 70); },
-  swish() { this.noise(0.28, "bandpass", 4200, 0.9, 0.22, 0.02); },
+  swish() {   // the net: a quick airy "shhk" that sweeps down, a little snap of the cords, a soft whump
+    if (!this.on || !this.ctx) return;
+    const c = this.ctx, t = c.currentTime, dur = 0.34, len = Math.ceil(c.sampleRate * dur), buf = c.createBuffer(1, len, c.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    const src = c.createBufferSource(), f = c.createBiquadFilter(), g = this.out();
+    src.buffer = buf; f.type = "bandpass"; f.Q.value = 1.1; f.frequency.setValueAtTime(7500, t); f.frequency.exponentialRampToValueAtTime(1800, t + 0.26);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.32, t + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f); f.connect(g); src.start(t); src.stop(t + dur + 0.05);
+    this.noise(0.05, "highpass", 6000, 0.7, 0.12, 0.002, 0.03);    // the cords snap
+    this.tone(240, 0.14, "sine", 0.06, 120, 0.02);                 // the ball through the net
+  },
+  gasp() { this.noise(0.7, "bandpass", 750, 1.6, 0.13, 0.08); this.tone(200, 0.6, "sine", 0.03, 165, 0.02); },   // the crowd: "ooooh"
+  click() { this.tone(1300, 0.025, "square", 0.025); this.tone(650, 0.05, "sine", 0.05); },
+  tick() { this.tone(1900, 0.02, "square", 0.015); },
+  chime() { this.tone(1046, 0.12, "sine", 0.09); this.tone(1568, 0.2, "sine", 0.08, null, 0.07); },
   rimIn() { this.tone(520, 0.12, "triangle", 0.07); this.noise(0.2, "bandpass", 3500, 0.8, 0.12, 0.01, 0.06); },
   clank() { this.tone(390, 0.18, "square", 0.06); this.tone(610, 0.14, "triangle", 0.05, null, 0.02); },
   dunk() { this.tone(110, 0.3, "sine", 0.5, 38); this.noise(0.25, "lowpass", 900, 1, 0.35); this.tone(300, 0.25, "square", 0.05, 180, 0.02); },
@@ -2582,7 +2609,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 46 (the ladder: archetypes & attributes by league)");
+    this.footer("Progress saves automatically in this browser  ·  version 47 (juice: fire rim, ankles, animated results)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -3068,7 +3095,11 @@ function drawPerson(m, a, highlight) {
   const sz = bodyScale(a.p), g = sprCtx;
   g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, SPR.W, SPR.H);
   g.translate(SPR.OX, SPR.OY); g.scale(sz / PX, sz / PX);
-  if (a.stun > 0) g.rotate(Math.sin(m.elapsed * 24) * 0.18);
+  if (a.stun > 0 && a.fallDir) {   // ankles broken: tips over fast, lands, scrambles back up
+    const T = a.stunMax || 0.6, gone = T - a.stun, down = Math.min(1, gone / 0.16), up = Math.min(1, a.stun / 0.22);
+    const k = Math.min(1 - Math.pow(1 - down, 3), up), wob = down >= 1 && up >= 1 ? Math.sin(m.elapsed * 30) * 0.05 : 0;
+    g.rotate(a.fallDir * (1.25 * k + wob));
+  } else if (a.stun > 0) g.rotate(Math.sin(m.elapsed * 24) * 0.18);
   else if (P.lean) g.transform(1, 0, -P.lean / 40, 1, 0, 0);   // lean into the move
   drawBody(g, P, a, look, team, front, a.stun > 0, !!(a.anim && a.anim.kind === "celebrate"));
   pixelate(g);
@@ -3242,7 +3273,7 @@ class MatchScreen extends Screen {
       this.press = outletFor(ci, new Rng()); this.scoutWatching = true;
       this.match.say(`A writer from ${this.press} is in the stands tonight!`, 3.2);
     }
-    this.parts = []; this.pops = []; this.rings = []; this.fxp = []; this.fx = []; this.slowmo = 0; this.vig = 0; this.white = 0; this.excite = 0.15; this.shake = 0; this.flash = 0; this.freeze = null; this.lastBounce = 0;
+    this.parts = []; this.pops = []; this.rings = []; this.fxp = []; this.fx = []; this.scorePop = [0, 0]; this.rimFire = 0; this.hitstop = 0; this.zoom = null; this.slowmo = 0; this.vig = 0; this.white = 0; this.excite = 0.15; this.shake = 0; this.flash = 0; this.freeze = null; this.lastBounce = 0;
   }
   burst(x, y, n, colors, speed = 160, up = 60) {
     for (let i = 0; i < n; i++) { const a = Math.random() * Math.PI * 2, sp = speed * (0.4 + Math.random() * 0.8);
@@ -3287,6 +3318,8 @@ class MatchScreen extends Screen {
         else if (e.swish) { Sound.swish(); this.burst(hx, hy + 6, e.green ? 28 : 16, e.green ? [C.gold, "#fff5c4", "#7dff9a"] : ["#ffffff", "#cfe3ff"], e.green ? 220 : 150, 20); if (!e.green) this.pop("SWISH", hx, hy + 44, C.white, 40); }
         else { Sound.rimIn(); this.burst(hx, hy, 10, [C.orange, "#fff"], 120, 10); }
         this.pop(`+${e.points}`, hx + 96, hy + 6, mine ? C.team[0] : C.team[1], 46, 0.9);
+        this.scorePop[e.team] = 1;
+        if (e.swish && (e.fire || e.newFire)) { this.rimFire = 2.6; this.flames(hx, hy - 2, 40, 26, 16, 1.1); Sound.fire(); }   // a swish while on fire: the rim catches
         if (e.newFire) {   // ignition: a flame explosion and a burning stamp
           Sound.fire(); this.shake = Math.max(this.shake, 0.32);
           this.flames(e.x, e.y, 70, 50, 60, 1.6); for (let i = 0; i < 24; i++) this.spawn("ember", e.x + (Math.random() - 0.5) * 40, e.y - Math.random() * 50, { vx: (Math.random() - 0.5) * 120, vy: -120 - Math.random() * 160, life: 1.2, max: 1.2, r: 1.6 });
@@ -3300,7 +3333,10 @@ class MatchScreen extends Screen {
       } else if (e.type === "injury") { Sound.clank(); this.shake = Math.max(this.shake, 0.2); this.pop(e.sub ? "SUB IN" : "HURT", 500, 260, "#ff8a7a", 40, 1.2);
       } else if (e.type === "play") { if (e.ok) { Sound.green(); this.pop(e.text.split("!")[0] + "!", 500, 300, C.green, 44, 1.1); this.excite = Math.min(1.4, this.excite + 0.5); }
       } else if (e.type === "miss") { Sound.clank(); if (this.hsGym && e.team === 0) { Sound.boo(m.pressure); this.exciteHome = Math.min(1.5, this.exciteHome + 0.6); } if (e.team === 0) this.pop("CLANK", hx, hy + 40, C.grey, 30, 0.7); }
-      else if (e.type === "ankles") { Sound.ankles(); this.shake = Math.max(this.shake, 0.22); this.pop("ANKLES!", e.x, e.y - 70, C.gold, 40, 0.9); this.burst(e.x, e.y, 10, [C.gold, "#fff"], 90, 60); if (e.team === 0) { this.excite = Math.min(1.4, this.excite + 0.8); Sound.cheer(crowd, false); } }
+      else if (e.type === "ankles") { Sound.ankles(); Sound.gasp(); this.shake = Math.max(this.shake, 0.22); this.burst(e.x, e.y, 10, [C.gold, "#fff"], 90, 60);
+        this.hitstop = 0.11; this.zoom = { x: e.x, y: e.y - 20, t: 0, dur: 0.75, amt: 0.14 };   // freeze-frame and a quick push-in on the fall
+        this.sparks(e.x, e.y + 4, 16, "200,190,170", 90, 0.6, "smoke", -10);
+        this.fx.push({ type: "stamp", text: "ANKLES!", x: e.x, y: e.y - 86, t: 0, dur: 1.0, size: 50, col: "#ffd23c" }); if (e.team === 0) { this.excite = Math.min(1.4, this.excite + 0.8); Sound.cheer(crowd, false); } }
       else if (e.type === "block") { Sound.clank(); this.shake = Math.max(this.shake, 0.2); this.pop("REJECTED!", e.x, e.y - 90, C.red, 44); }
       else if (e.type === "steal") { Sound.steal(); }
       else if (e.type === "cooled") { for (let i = 0; i < 18; i++) this.spawn("smoke", e.x + (Math.random() - 0.5) * 24, e.y - 20 - Math.random() * 30, { vx: (Math.random() - 0.5) * 30, vy: -30 - Math.random() * 40, life: 1.2, max: 1.2, r: 5 + Math.random() * 4 }); this.pop("COOLED OFF", e.x, e.y - 84, "#b8bcc8", 28, 1.0); }
@@ -3323,6 +3359,10 @@ class MatchScreen extends Screen {
   }
   stepFx(dt) {
     const m = this.match, b = m.ball;
+    if (this.rimFire > 0) {   // the rim is burning: flames dance around the ring and lick upward
+      this.rimFire -= dt; const [hx, hy] = S.HOOP, k = Math.min(1, this.rimFire / 0.8);
+      if (Math.random() < 0.9 * k) this.spawn("ember", hx + (Math.random() - 0.5) * 24, hy - 6, { vx: (Math.random() - 0.5) * 40, vy: -100 - Math.random() * 80, life: 0.9, max: 0.9, r: 1.3 });
+    }
     for (const a of m.actors) if (a.onFire) {
       for (let i = 0; i < 3; i++) { const side = Math.random() < 0.5 ? -1 : 1, l = 0.28 + Math.random() * 0.3; this.spawn("flame", a.x + side * (9 + Math.random() * 9), a.y - Math.random() * 40, { vx: side * 8 + (Math.random() - 0.5) * 20, vy: -(60 + Math.random() * 70), life: l, max: l, r: 3 + Math.random() * 3.5, body: true }); }
       if (Math.random() < 0.45) this.spawn("ember", a.x + (Math.random() - 0.5) * 20, a.y - 30 - Math.random() * 20, { vx: (Math.random() - 0.5) * 30, vy: -90 - Math.random() * 90, life: 1, max: 1, r: 1.4 });
@@ -3344,13 +3384,39 @@ class MatchScreen extends Screen {
     this.fx = this.fx.filter(e => e.t < e.dur);
     this.vig = Math.max(0, this.vig - dt * 0.9); this.white = Math.max(0, this.white - dt);
   }
-  drawFloorFx() {   // under the players: shockwaves on the court
+  drawFloorFx() {   // under the players: shockwaves on the court, heat rings under anyone on fire
+    const t = this.match.elapsed;
+    for (const a of this.match.actors) if (a.onFire) {
+      ctx.save(); ctx.globalCompositeOperation = "lighter";
+      const pulse = 0.5 + 0.5 * Math.sin(t * 7), R = 31 + pulse * 3;
+      const g = ctx.createRadialGradient(a.x, a.y + 2, 2, a.x, a.y + 2, R); g.addColorStop(0, "rgba(255,140,40,0.15)"); g.addColorStop(0.6, "rgba(255,80,10,0.4)"); g.addColorStop(0.85, "rgba(255,60,0,0.55)"); g.addColorStop(1, "rgba(255,40,0,0)");
+      ctx.save(); ctx.translate(a.x, a.y + 2); ctx.scale(1, 0.42); ctx.translate(-a.x, -(a.y + 2)); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(a.x, a.y + 2, R, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+      ellipse(a.x, a.y + 2, R - 3, (R - 3) * 0.42, null, `rgba(255,${90 + 60 * pulse},30,${0.75 + 0.25 * pulse})`, 3);
+      ctx.restore();
+      for (let i = 0; i < 12; i++) {   // a ring of little flames licking up around your feet
+        const an = (i / 12) * Math.PI * 2 + t * 0.8, fx = a.x + Math.cos(an) * (R - 3), fy = a.y + 2 + Math.sin(an) * (R - 3) * 0.42;
+        flameTongue(fx, fy, 7 + 4 * Math.sin(t * 9 + i * 2.3), 2.6, t, i + 3, 0.85);
+      }
+    }
     for (const e of this.fx) if (e.type === "shock" && e.t > 0) {
       const k = e.t / e.dur; ellipse(e.x, e.y, 8 + k * e.R, (8 + k * e.R) * 0.45, null, `rgba(${e.col},${(1 - k) * 0.9})`, 4 * (1 - k) + 1);
     }
   }
   drawTopFx() {     // over the players: beams, particles, stamps
+    if (this.rimFire > 0) {   // fire on the rim: tongues of flame all the way around, tallest right after the swish
+      const [hx, hy] = S.HOOP, t = this.match.elapsed, k = Math.min(1, this.rimFire / 0.8), boost = 1 + Math.max(0, this.rimFire - 2.1) * 1.6;
+      for (const back of [true, false]) for (let i = 0; i < 9; i++) {
+        const an = (i / 9) * Math.PI * 2 + 0.2, y = hy + Math.sin(an) * 7; if ((Math.sin(an) < 0) !== back) continue;
+        const h = (17 + 8 * Math.sin(t * 7 + i * 1.7) + 4 * Math.sin(t * 13 + i)) * k * boost;
+        flameTongue(hx + Math.cos(an) * 12, y - 1, h, 4.2, t, i, 0.95);
+      }
+    }
     ctx.save(); ctx.globalCompositeOperation = "lighter";
+    if (this.rimFire > 0) {   // the burning rim: a soft orange glow behind the flames
+      const [hx, hy] = S.HOOP, k = Math.min(1, this.rimFire / 0.8), f = 0.8 + 0.2 * Math.sin(this.match.elapsed * 23);
+      const g = ctx.createRadialGradient(hx, hy - 8, 4, hx, hy - 8, 46); g.addColorStop(0, `rgba(255,120,30,${0.28 * k * f})`); g.addColorStop(1, "rgba(255,60,0,0)");
+      ctx.fillStyle = g; ctx.fillRect(hx - 50, hy - 58, 100, 100);
+    }
     for (const e of this.fx) if (e.type === "beam") {   // the green light column
       const k = e.t / e.dur, w = 30 * (1 - k * 0.6), g = ctx.createLinearGradient(0, e.y, 0, e.y - 190);
       g.addColorStop(0, `rgba(125,255,154,${0.55 * (1 - k)})`); g.addColorStop(0.5, `rgba(180,255,200,${0.3 * (1 - k)})`); g.addColorStop(1, "rgba(125,255,154,0)");
@@ -3403,7 +3469,10 @@ class MatchScreen extends Screen {
     const inp = App.edges; inp.move = [mx, my]; inp.shootDown = ks.has(" ") || t.shoot;
     inp.sprint = ks.has("shift") || t.sprint;
     const sdt = this.slowmo > 0 ? dt * 0.3 : dt; this.slowmo = Math.max(0, this.slowmo - dt);   // a beat of slow motion on the big moments
-    this.match.update(Math.min(sdt, 1 / 30), inp);
+    this.scorePop = this.scorePop.map(v => Math.max(0, v - dt * 2.2));
+    if (this.zoom) { this.zoom.t += dt; if (this.zoom.t >= this.zoom.dur) this.zoom = null; }
+    if (this.hitstop > 0) this.hitstop -= dt;            // freeze-frame: the game holds for a beat
+    else this.match.update(Math.min(sdt, 1 / 30), inp);
     App.edges = blankInputs();
     this.handleEvents();
     this.stepFx(dt);
@@ -3461,6 +3530,7 @@ class MatchScreen extends Screen {
     const sk = (this.shake > 0 ? this.shake * 14 : 0) + noise;
     ctx.save();
     if (sk) ctx.translate((Math.random() - 0.5) * sk, (Math.random() - 0.5) * sk);
+    if (this.zoom) { const z = this.zoom, k = Math.sin(Math.PI * Math.min(1, z.t / z.dur)), sc = 1 + z.amt * k; ctx.translate(z.x, z.y); ctx.scale(sc, sc); ctx.translate(-z.x, -z.y); }
     drawCourt(this.ci);
     if (m.needsClear && m.phase === "live") {   // take it back: everything outside the 3-point line blinks red
       const k = 0.5 + 0.5 * Math.sin(m.elapsed * 9);
@@ -3529,11 +3599,13 @@ class MatchScreen extends Screen {
     if (m.pressureOn) this.drawPressure(m);
     this.drawCoach(m);
     ctx.fillStyle = "#0f0f14"; ctx.fillRect(0, 0, S.W, 44);
-    text(`YOU  ${m.score[0]}`, 350, 23, { size: 34, color: C.team[0], center: true, display: true });
+    { const k = this.scorePop[0], sc = 1 + 0.5 * Math.sin(Math.min(1, (1 - k) * 2.2) * Math.PI) * (k > 0 ? 1 : 0);   // the score pops when it changes
+      ctx.save(); ctx.translate(350, 23); ctx.scale(sc, sc); text(`YOU  ${m.score[0]}`, 0, 0, { size: 34, color: k > 0.6 ? "#ffffff" : C.team[0], center: true, display: true }); ctx.restore(); }
     text(m.halfDone ? `2nd half · to ${m.gameTo}` : `to ${m.gameTo} · half at ${S.HALF}`, 470, 23, { size: 20, color: C.grey, center: true });
     const nm = `${m.score[1]}  ${this.crew.name.toUpperCase()}`;
     const nsz = nm.length > 18 ? 22 : nm.length > 14 ? 26 : 30;
-    text(nm, 545, 23 - nsz * 0.36, { size: nsz, color: C.team[1], display: true });
+    { const k = this.scorePop[1], sc = 1 + 0.35 * Math.sin(Math.min(1, (1 - k) * 2.2) * Math.PI) * (k > 0 ? 1 : 0);
+      ctx.save(); ctx.translate(545, 23); ctx.scale(sc, sc); text(nm, 0, -nsz * 0.36, { size: nsz, color: k > 0.6 ? "#ffffff" : C.team[1], display: true }); ctx.restore(); }
     text(`${TIERS[this.ci].court} · ${this.crowdN ? `crowd ${this.crowdN}` : "empty gym"}`, 16, 14, { size: 22, color: C.grey });
     text(`Shot ${Math.max(0, Math.ceil(m.shotClock))}`, S.W - 16, 12, { size: 26, right: true });
     if (this.scoutWatching) text(this.press ? `PRESS: ${this.press.toUpperCase()}` : "SCOUT WATCHING", S.W - 16, 50, { size: 20, color: C.gold, right: true, display: true });
@@ -3605,32 +3677,45 @@ class ResultScreen extends Screen {
       items.push(["Back to the Hub", () => App.switch(new HubScreen())]);
     }
     this.menu = new Menu(items);
+    this.t0 = performance.now(); this.lastTick = 0; this.chimed = 0;
     App.save();
   }
-  key(k) { this.menu.key(k); }
+  key(k) { if ((performance.now() - this.t0) / 1000 < 2.2 && (K.ok(k) || k === " ")) { this.t0 -= 5000; return; } this.menu.key(k); }   // Enter skips the count-up
+  // fade/slide a block in, starting at time `at` (seconds after the screen opens)
+  enter(at, f) { const k = clamp((this.el - at) / 0.35, 0, 1); if (k <= 0) return; const e = 1 - Math.pow(1 - k, 3); ctx.save(); ctx.globalAlpha = e; ctx.translate(0, (1 - e) * 16); f(); ctx.restore(); }
   draw() {
     this.header(); const m = this.match, c = this.c, r = this.r;
+    const el = this.el = (performance.now() - this.t0) / 1000;
     const title = r.champ ? "CHAMPIONS!" : this.forfeit ? "FORFEIT" : this.won ? "VICTORY" : r.eliminated ? "ELIMINATED" : "DEFEAT";
-    text(title, 500, 100, { size: 62, color: this.won ? (r.champ ? C.gold : C.green) : C.red, center: true, display: true });
+    { const k = clamp(el / 0.45, 0, 1), sc = k < 1 ? 2.2 - 1.2 * (1 - Math.pow(1 - k, 3)) + Math.sin(k * Math.PI) * 0.12 : 1;   // the title slams in
+      ctx.save(); ctx.globalAlpha = Math.min(1, k * 2); ctx.translate(500, 100); ctx.scale(sc, sc);
+      if (this.won) { ctx.shadowColor = r.champ ? C.gold : C.green; ctx.shadowBlur = 18 + 10 * Math.sin(el * 4); }
+      text(title, 0, 0, { size: 62, color: this.won ? (r.champ ? C.gold : C.green) : C.red, center: true, display: true }); ctx.restore(); }
+    // count the rewards up (with a ticking sound)
+    const cnt = clamp((el - 0.45) / 0.9, 0, 1), ce = 1 - Math.pow(1 - cnt, 2), num = v => Math.round(v * ce);
+    if (cnt > 0 && cnt < 1 && el - this.lastTick > 0.06) { this.lastTick = el; Sound.tick(); }
     const where = this.crew.mode === "tourney" ? `${TIERS[this.crew.court].tourney} · ${roundLabel(this.crew)}` : "Pickup game";
     this.whereFits = where;
-    text(`${m.score[0]} - ${m.score[1]}  vs  ${this.crew.name}  ·  ${where}`, 500, 150, { size: 28, center: true });
-    const lines = [r.fame >= 0 ? `+${r.fame} fame` : `${r.fame} fame`];
-    if (r.cash) lines.push(`+$${r.cash}`);
-    if (r.salary) lines.push(`+$${r.salary} salary`);
-    if (r.tips) lines.push(`+$${r.tips} tips`);
-    if (this.bet) lines.push(this.won ? `Bet paid $${r.betWin}!` : `Lost your $${this.bet} bet`);
-    text(lines.join("     "), 500, 186, { size: 30, color: r.fame < 0 ? "#ff9a8a" : C.gold, center: true });
+    this.enter(0.2, () => text(`${m.score[0]} - ${m.score[1]}  vs  ${this.crew.name}  ·  ${where}`, 500, 150, { size: 28, center: true }));
+    const lines = [r.fame >= 0 ? `+${num(r.fame)} fame` : `${num(r.fame)} fame`];
+    if (r.cash) lines.push(`+$${num(r.cash)}`);
+    if (r.salary) lines.push(`+$${num(r.salary)} salary`);
+    if (r.tips) lines.push(`+$${num(r.tips)} tips`);
+    if (this.bet) lines.push(this.won ? `Bet paid $${num(r.betWin)}!` : `Lost your $${this.bet} bet`);
+    this.enter(0.4, () => { const pop = cnt >= 1 ? 1 + 0.12 * Math.max(0, 1 - (el - 1.35) / 0.25) : 1; ctx.translate(500, 186); ctx.scale(pop, pop);
+      text(lines.join("     "), 0, 0, { size: 30, color: r.fame < 0 ? "#ff9a8a" : C.gold, center: true }); });
     // ---- the stat sheet (left) and who got better (right)
     const box = m.box || {}, py = 214, ph = 150;
-    rrect(40, py, 450, ph, 10, "#1b1d26"); rrect(510, py, 450, ph, 10, "#1b1d26");
+    this.enter(1.0, () => {
+    rrect(40, py, 450, ph, 10, "#1b1d26");
     text("YOUR LINE", 56, py + 12, { size: 18, color: C.gold, display: true });
     text(`${this.myPts} PTS   ${box.fgm || 0}/${box.fga || 0} FG   ${box.greens || 0} greens`, 56, py + 40, { size: 24 });
     text(`${box.reb || 0} REB   ${box.stl || 0} STL   ${box.blk || 0} BLK   ${box.ankles || 0} ankles   ${box.to || 0} TO`, 56, py + 70, { size: 20, color: C.grey, weight: 500 });
     const mates = Object.entries(m.pointsBy ? m.pointsBy(0) : {}).filter(([n]) => n !== c.me.name);
     if (mates.length) text(`Teammates: ${mates.map(([n, v]) => `${n} ${v}`).join("  ·  ")}`, 56, py + 100, { size: 20, color: C.white, weight: 500 });
     if (m.fatigueSubs) text(`${m.fatigueSubs} sub${m.fatigueSubs > 1 ? "s" : ""} for tired legs`, 56, py + 126, { size: 17, color: C.grey, weight: 500 });
-    text("GOT BETTER", 526, py + 12, { size: 18, color: C.gold, display: true });
+    });
+    this.enter(1.2, () => { rrect(510, py, 450, ph, 10, "#1b1d26"); text("GOT BETTER", 526, py + 12, { size: 18, color: C.gold, display: true }); });
     const prog = [];
     if (r.grow) {
       prog.push([S.STATS.map(k => `${S.LABEL[k].slice(0, 3).toUpperCase()} +${r.grow.gains[k]}%`).join("  "), C.grey, 17]);
@@ -3640,10 +3725,19 @@ class ResultScreen extends Screen {
     for (const ms of r.milestones || []) prog.push([`MILESTONE OVR ${ms.ovr}: ${milestoneText(ms)}  +$${ms.cash}${ms.fame ? ` +${ms.fame} fame` : ""}`, C.gold, 18]);
     if (prog.length <= 1) prog.push(["Nobody leveled up this game. Keep playing.", C.grey, 19]);
     const shown = prog.slice(0, 5);
-    shown.forEach(([t, col, sz], i) => { ctx.save(); ctx.font = `700 ${Math.round(sz * 0.72)}px ${FONT_BODY}`; const w = ctx.measureText(t).width; ctx.translate(526, py + 40 + i * 22); if (w > 420) ctx.scale(420 / w, 1); text(t, 0, 0, { size: sz, color: col, weight: 600 }); ctx.restore(); });
-    if (prog.length > 5) text(`+${prog.length - 5} more`, 944, py + ph - 22, { size: 16, color: C.grey, right: true });
+    shown.forEach(([t, col, sz], i) => {   // each line lands one after another; level-ups flash gold and chime
+      const at = 1.4 + i * 0.22, k = clamp((el - at) / 0.25, 0, 1); if (k <= 0) return;
+      const up = col === C.green || col === C.gold;
+      if (up && this.chimed <= i && k > 0) { this.chimed = i + 1; Sound.chime(); }
+      ctx.save(); ctx.globalAlpha = k; ctx.font = `700 ${Math.round(sz * 0.72)}px ${FONT_BODY}`; const w = ctx.measureText(t).width;
+      const pop = up ? 1 + 0.25 * Math.max(0, 1 - (el - at) / 0.3) : 1;
+      ctx.translate(526 + (1 - k) * 30, py + 40 + i * 22); if (w > 420) ctx.scale(420 / w, 1); ctx.scale(pop, pop);
+      if (up && el - at < 0.6) { ctx.shadowColor = col; ctx.shadowBlur = 14 * (1 - (el - at) / 0.6); }
+      text(t, 0, 0, { size: sz, color: col, weight: 600 }); ctx.restore(); });
+    if (prog.length > 5 && el > 2.4) text(`+${prog.length - 5} more`, 944, py + ph - 22, { size: 16, color: C.grey, right: true });
     let y = py + ph + 26;
     // ---- a writer was in the stands: their story
+    const late = clamp((el - 1.7) / 0.35, 0, 1); ctx.save(); ctx.globalAlpha = late;
     if (r.press) {
       const pr = r.press; y -= 14;
       rrect(120, y, 760, 66, 6, "#ece6d6", "#b8ae92", 1.5);
@@ -3674,8 +3768,10 @@ class ResultScreen extends Screen {
     if (r.crowned) say(`YOU ARE THE ${KING.toUpperCase()}!`, C.gold, 36, true);
     if (r.gold) { say("OLYMPIC GOLD MEDAL!", C.gold, 40, true); say("You beat the best in the country.", C.white, 24); }
     if (r.tierUp && c.scouting() >= 0.15) say(`You moved up fast. Teams are scouting you (${Math.round(c.scouting() * 100)}%).`, "#ff8a7a", 20);
+    ctx.restore();
     const n = this.menu.items ? this.menu.items.length : 3, gap = 40;
-    this.menu.draw(500, Math.min(S.H - 30 - (n - 1) * gap, Math.max(y + 22, 470)), gap, 30);
+    this.enter(1.9, () => this.menu.draw(500, Math.min(S.H - 30 - (n - 1) * gap, Math.max(y + 22, 470)), gap, 30));
+    if (el < 1.9) hit(0, 0, S.W, S.H, () => { this.t0 -= 5000; });   // click to skip the count-up
   }
 }
 
@@ -4444,8 +4540,24 @@ canvas.addEventListener("pointerdown", e => {
   Sound.wake();
   canvas.focus();
   const r = canvas.getBoundingClientRect(), x = (e.clientX - r.left) / r.width * S.W, y = (e.clientY - r.top) / r.height * S.H;
-  for (const h of [...App.hits].reverse()) if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) { h.fn(); return; }
+  for (const h of [...App.hits].reverse()) if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) {
+    if (App.screen instanceof MatchScreen || h.w * h.h > S.W * S.H * 0.6) { h.fn(); return; }   // in a game (or a click-anywhere): act right away
+    if (App.press) return;                                                            // a button is already going down
+    Sound.click(); App.press = { x: h.x, y: h.y, w: h.w, h: h.h, t: 0 };              // buttons press in, then act
+    setTimeout(() => { App.press = null; h.fn(); }, 80); return;
+  }
 });
+canvas.addEventListener("pointermove", e => { const r = canvas.getBoundingClientRect(); App.mouse = { x: (e.clientX - r.left) / r.width * S.W, y: (e.clientY - r.top) / r.height * S.H }; });
+canvas.addEventListener("pointerleave", () => { App.mouse = null; });
+// hover glow and press-in on whatever button the mouse is over (menus only, never during a game)
+function drawPointerFx() {
+  if (App.screen instanceof MatchScreen) { canvas.style.cursor = ""; return; }
+  if (App.press) { const p = App.press; rrect(p.x + 1, p.y + 1, p.w - 2, p.h - 2, 8, "rgba(0,0,0,0.28)", "rgba(245,200,60,0.9)", 2); canvas.style.cursor = "pointer"; return; }
+  const mo = App.mouse; let over = null;
+  if (mo) for (const h of [...App.hits].reverse()) if (mo.x >= h.x && mo.x <= h.x + h.w && mo.y >= h.y && mo.y <= h.y + h.h && h.w * h.h <= S.W * S.H * 0.6) { over = h; break; }
+  canvas.style.cursor = over ? "pointer" : "";
+  if (over) { const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 180); rrect(over.x - 2, over.y - 2, over.w + 4, over.h + 4, 9, "rgba(255,255,255,0.06)", `rgba(245,200,60,${0.45 + 0.35 * pulse})`, 1.5); }
+}
 for (const btn of pad.querySelectorAll("[data-dir]")) {
   const d = btn.dataset.dir;
   const on = e => { e.preventDefault(); App.touch[d] = true; btn.classList.add("on"); };
@@ -4474,6 +4586,7 @@ function frame(now) {
   App.screen.update(dt);
   App.hits = [];
   App.screen.draw();
+  drawPointerFx();
   requestAnimationFrame(frame);
 }
 function start(data) {
