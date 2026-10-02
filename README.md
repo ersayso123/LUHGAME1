@@ -4,29 +4,13 @@ A top-down **3v3 streetball** career game. You start as a nobody at a cracked-up
 
 ## How to run
 
-**No install:** open `web/index.html` in any browser. It's the same game converted to JavaScript, with touch buttons for phones.
+**Best:** play the online version at https://claude.ai/artifact/B4v3SddbEb7wSkMKUkDzTk. It's always the newest version and saves your careers in your browser.
 
-**Windows, easiest:** double-click **`PLAY.bat`**. It installs what the game needs the first time, then starts it.
+**Offline:** open `web/index.html` in any browser, or double-click **`PLAY.bat`** on Windows (it opens the same file). Pull the latest from GitHub first to get new features.
 
-**Or from a terminal:**
+### Old Python version
 
-You need [Python 3.10+](https://www.python.org/downloads/).
-
-```bash
-pip install -r requirements.txt
-python main.py
-```
-
-Progress saves automatically to `saves/career.json`.
-
-### Play in your browser (localhost)
-
-```bash
-pip install pygbag
-python -m pygbag .
-```
-
-Then open **http://localhost:8000** and click the page to start. The first load takes a bit because it downloads the Python-in-the-browser runtime. In the browser version your career lasts until you close the tab.
+`python main.py` (and `python -m pygbag .` for localhost) runs the original Python prototype in `game/`. It is **not updated anymore** and is missing everything added since (archetypes and attributes, the league ladder, card machines, scouts, fatigue, the new moves and animations, and more).
 
 ## Controls (in a game)
 
