@@ -162,7 +162,7 @@ const canDunk = p => (p.main === "dunker" && p.mainLvl > 0) || (p.sec === "dunke
 // Teammates can buy them; better opponents come with them. (Your Sharpshooter/Dunker/etc. pick is your Archetype.)
 const BADGES = {
   combo: { name: "Combo Dribbler", short: "Combo", league: 3, price: 400, pos: ["PG", "SG", "SF"], desc: "Chain two dribble moves with no delay, then a longer cooldown." },
-  firststep: { name: "Quick First Step", short: "1st Step", league: 3, price: 350, pos: ["PG", "SG", "SF"], desc: "Crossovers, cross & drives and hesi-gos explode into a burst of speed." },
+  firststep: { name: "Quick First Step", short: "1st Step", league: 3, price: 350, pos: ["PG", "SG", "SF"], desc: "Crossovers, up-crossovers and hesi-gos explode into a burst of speed." },
   ankles: { name: "Ankle Breaker", short: "Ankles", league: 3, price: 450, pos: ["PG", "SG"], desc: "Your moves break ankles 30% more, and defenders stay down longer." },
   deadeye: { name: "Deadeye", short: "Deadeye", league: 5, price: 500, pos: ["SG", "SF", "PG"], desc: "Contests hurt your shots 30% less." },
   range: { name: "Limitless Range", short: "Range", league: 6, price: 550, pos: ["SG", "PG", "SF"], desc: "Deep shots fall more, and your green window holds up from range." },
@@ -312,7 +312,7 @@ class Actor {
   get gassed() { return this.energy < S.GASSED; }
   get cold() { return (this.misses || 0) >= 3; }
 }
-const MOVE_LABEL = { cross: "crossover", drive: "cross & drive", stepback: "step-back", sidestep: "step-back", go: "hesi-go", hesi: "hesi" };
+const MOVE_LABEL = { cross: "crossover", drive: "up crossover", stepback: "step-back", sidestep: "step-back", go: "hesi-go", hesi: "hesi" };
 function toward2(a, pt) { const dx = pt[0] - a.x, dy = pt[1] - a.y, d = Math.hypot(dx, dy); return d < 4 ? [0, 0] : [dx / d * Math.min(1, d / 14), dy / d * Math.min(1, d / 14)]; }
 // dunk styles: flight time, name, how hard it shakes the place
 const DUNK_STYLES = {
@@ -604,7 +604,7 @@ class Match {
       }
       if (!it.action && this.meter === null) {
         if (inp.passPressed) { it.action = "pass"; it.target = this.pickPassTarget(a, inp.move); }
-        else if (inp.movePressed && inp.forceDrive) { it.action = "cross"; it.moveType = "drive"; it.move = [Math.abs(inp.move[0]) > 0.3 ? Math.sign(inp.move[0]) * 0.7 : -a.hand * 0.7, -0.7]; }   // E: cross & go in one press
+        else if (inp.movePressed && inp.forceDrive) { it.action = "cross"; it.moveType = "drive"; it.move = [Math.abs(inp.move[0]) > 0.3 ? Math.sign(inp.move[0]) * 0.7 : -a.hand * 0.7, -0.7]; }   // E: up-crossover in one press
         else if (inp.movePressed) it.action = "cross";
         else if (inp.specialPressed) {   // L: spin (or behind-the-back while holding back), once you've unlocked them
           const mv = a.p.moves || [], back = inp.move[1] > 0.3;
@@ -824,7 +824,7 @@ class Match {
     const side = mx > 0.3 ? 1 : mx < -0.3 ? -1 : -a.hand;
     const MOVES = {   // dash direction, dash speed, dash time, ankle-break odds, stun time, label
       cross: { v: [side, 0], sp: 380, t: 0.15, odds: 1.0, stun: 0.7, label: side > 0 ? "CROSSOVER ▶" : "◀ CROSSOVER" },
-      drive: { v: [side, 0.05], sp: 430, t: 0.09, odds: 0.85, stun: 0.6, label: side > 0 ? "CROSS & GO ↗" : "↖ CROSS & GO", next: { v: [side * 0.35, -1], sp: 570, t: 0.24 } },   // jab across, then explode at the rim
+      drive: { v: [side * 0.75, -0.75], sp: 420, t: 0.17, odds: 0.9, stun: 0.65, label: side > 0 ? "CROSSOVER ↗" : "↖ CROSSOVER" },   // W+D / W+A: a crossover up and across
       stepback: { v: [0, 1], sp: 440, t: 0.17, odds: 0.7, stun: 0.45, label: "STEP BACK", plant: true },
       sidestep: { v: [side * 0.72, 0.7], sp: 400, t: 0.17, odds: 0.8, stun: 0.5, label: side > 0 ? "STEP BACK ↘" : "↙ STEP BACK", plant: true },
       go: { v: [0, -1], sp: 380, t: 0.15, odds: 0.6, stun: 0.5, label: "HESI-GO" },
@@ -2651,7 +2651,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 52 (E = cross & go, cold ring)");
+    this.footer("Progress saves automatically in this browser  ·  version 53 (up-crossover W+D / W+A + K)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -3779,7 +3779,7 @@ class MatchScreen extends Screen {
     if (m.phase === "check") text("CHECK BALL", 500, 380, { size: 40, center: true, display: true });
     if (m.phase === "over") { const won = m.winner === 0; text(won ? "YOU WIN!" : "YOU LOSE", 500, 330, { size: 80, color: won ? C.green : C.red, center: true, display: true }); }
     if (!isTouch) {
-      text("WASD move · SHIFT sprint · SPACE shoot · J pass · K move / steal · E cross & go · Q switch · M sound", 500, S.H - 16, { size: 18, center: true, weight: 500 });
+      text("WASD / arrows move · SHIFT sprint · SPACE shoot · J pass · K move / steal · E up-crossover · Q switch · M sound", 500, S.H - 16, { size: 18, center: true, weight: 500 });
       this.drawKeys();
     }
     if (this.paused) {
@@ -4759,7 +4759,7 @@ window.addEventListener("keydown", e => {
     if (e.key === " ") App.edges.shootPressed = true;
     if (k === "j") App.edges.passPressed = true;
     if (k === "k") { App.edges.movePressed = true; App.kFlash = 0.35; }
-    if (k === "e") { App.edges.movePressed = true; App.edges.forceDrive = true; App.kFlash = 0.35; }   // E = cross & go (no 3-key combo needed)
+    if (k === "e") { App.edges.movePressed = true; App.edges.forceDrive = true; App.kFlash = 0.35; }   // E = up-crossover (no 3-key combo needed)
     if (k === "l") App.edges.specialPressed = true;
     if (k === "q") App.edges.switchPressed = true;
 
