@@ -18,8 +18,9 @@ A top-down **3v3 streetball** career game. You start as a nobody at a cracked-up
 | --- | --- | --- |
 | WASD / arrows | Move whoever has the ball | Move your player |
 | SPACE | Hold, then release in the green zone to shoot. Near the rim with **Dunker**, it dunks | Jump (block or rebound) |
-| J | Pass (aims the way you're moving). Control follows the ball | |
-| H | Crossover (can break ankles) | Steal |
+| K | Pass (aims the way you're moving). Control follows the ball | |
+| H | Crossover (with W/A/S/D for the direction; can break ankles) | Steal |
+| J | Step-back (J + A or D steps back to that side) | |
 | Q | | Switch to the defender nearest the ball |
 | Esc | Pause (F to forfeit) | |
 

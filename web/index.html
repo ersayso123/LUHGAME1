@@ -319,7 +319,7 @@ const DUNK_STYLES = {
   two: { t: 0.4, name: "SLAM!", shake: 0.35 }, tomahawk: { t: 0.46, name: "TOMAHAWK!", shake: 0.45 }, windmill: { t: 0.52, name: "WINDMILL!", shake: 0.5 },
   "360": { t: 0.58, name: "360 JAM!", shake: 0.55, slow: 0.35 }, poster: { t: 0.44, name: "POSTERIZED!", shake: 0.6, slow: 0.35 },
 };
-const blankInputs = () => ({ move: [0, 0], shootPressed: false, shootDown: false, passPressed: false, movePressed: false, forceDrive: false, specialPressed: false, switchPressed: false, sprint: false, coachAccept: false, coachIgnore: false });
+const blankInputs = () => ({ move: [0, 0], shootPressed: false, shootDown: false, passPressed: false, movePressed: false, stepPressed: false, forceDrive: false, specialPressed: false, switchPressed: false, sprint: false, coachAccept: false, coachIgnore: false });
 
 // Coach's calls: team tactics your teammates carry out on their own.
 const PLAYS = [
@@ -327,8 +327,8 @@ const PLAYS = [
   { id: "spread", side: "off", name: "Spread the floor", desc: "Teammates fill the corners and wings. Attack the open lane." },
   { id: "crash", side: "off", name: "Crash the boards", desc: "Everyone hits the glass when you shoot." },
   // help calls: the coach only makes these when your offense is stuck
-  { id: "cut", side: "off", help: true, name: "Cut to the rim", desc: "Teammate cuts to the rim. Pass it (J)!" },
-  { id: "getopen", side: "off", help: true, name: "Get open", desc: "Teammates find space. Hit the open man (J)." },
+  { id: "cut", side: "off", help: true, name: "Cut to the rim", desc: "Teammate cuts to the rim. Pass it (K)!" },
+  { id: "getopen", side: "off", help: true, name: "Get open", desc: "Teammates find space. Hit the open man (K)." },
   { id: "boxout", side: "def", name: "Box out", desc: "Seal your man on every shot. Win the rebound." },
   { id: "lockdown", side: "def", name: "Lock down", desc: "Get up in their jerseys. Tight D, active hands." },
 ];
@@ -609,6 +609,7 @@ class Match {
       if (!it.action && this.meter === null) {
         if (inp.passPressed && this.practice) this.say("Practice: nobody to pass to", 0.8);
         else if (inp.passPressed) { it.action = "pass"; it.target = this.pickPassTarget(a, inp.move); }
+        else if (inp.stepPressed) { it.action = "cross"; it.moveType = Math.abs(inp.move[0]) > 0.3 ? "sidestep" : "stepback"; }   // J: step-back
         else if (inp.movePressed) it.action = "cross";
         else if (inp.specialPressed) {   // L: spin (or behind-the-back while holding back), once you've unlocked them
           const mv = a.p.moves || [], back = inp.move[1] > 0.3;
@@ -2663,7 +2664,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 58 (moves on H)");
+    this.footer("Progress saves automatically in this browser  ·  version 59 (H cross · J step-back · K pass)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -3791,7 +3792,7 @@ class MatchScreen extends Screen {
     if (m.phase === "check") text("CHECK BALL", 500, 380, { size: 40, center: true, display: true });
     if (m.phase === "over") { const won = m.winner === 0; text(won ? "YOU WIN!" : "YOU LOSE", 500, 330, { size: 80, color: won ? C.green : C.red, center: true, display: true }); }
     if (!isTouch) {
-      text("WASD / arrows move · SHIFT sprint · SPACE shoot · J pass · H move / steal · Q switch · M sound", 500, S.H - 16, { size: 18, center: true, weight: 500 });
+      text("WASD / arrows move · SHIFT sprint · SPACE shoot · H crossover / steal · J step-back · K pass · Q switch · M sound", 500, S.H - 16, { size: 18, center: true, weight: 500 });
       this.drawKeys();
     }
     if (this.paused) {
@@ -4060,7 +4061,7 @@ class PracticeScreen extends MatchScreen {
     super.draw();
     rrect(300, 50, 400, 34, 8, "rgba(10,10,14,0.75)", C.gold, 1.5);
     text("PRACTICE COURT  ·  every move unlocked  ·  Esc to leave", 500, 67, { size: 18, color: C.gold, center: true, display: true });
-    text("H + WASD/arrows: crossovers & step-backs  ·  L: spin  ·  S + L: behind the back  ·  SPACE: shoot", 500, 626, { size: 16, color: C.white, center: true, weight: 600 });
+    text("H + WASD: crossovers  ·  J (+ A/D): step-backs  ·  K: pass  ·  L: spin  ·  S + L: behind the back  ·  SPACE: shoot", 500, 626, { size: 16, color: C.white, center: true, weight: 600 });
   }
 }
 
@@ -4780,7 +4781,7 @@ class MysteryScreen extends Screen {
 // =====================================================================
 // Input wiring
 // =====================================================================
-const KEY_CODES = { KeyW: "w", KeyA: "a", KeyS: "s", KeyD: "d", KeyJ: "j", KeyH: "h", KeyL: "l", KeyQ: "q" };   // the keys by position, whatever the layout
+const KEY_CODES = { KeyW: "w", KeyA: "a", KeyS: "s", KeyD: "d", KeyJ: "j", KeyH: "h", KeyK: "k", KeyL: "l", KeyQ: "q" };   // the keys by position, whatever the layout
 const GAME_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "]);
 window.addEventListener("keydown", e => {
   Sound.wake();
@@ -4793,7 +4794,8 @@ window.addEventListener("keydown", e => {
   const k = KEY_CODES[e.code] || (e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase());
   if (!e.repeat) {
     if (e.key === " ") App.edges.shootPressed = true;
-    if (k === "j") App.edges.passPressed = true;
+    if (k === "k") App.edges.passPressed = true;      // K: pass
+    if (k === "j") App.edges.stepPressed = true;      // J: step-back (J + D / A for a side step-back)
     if (k === "h") { App.edges.movePressed = true; App.kFlash = 0.35; }   // H: dribble moves (crossovers, step-backs) and steals
     if (k === "l") App.edges.specialPressed = true;
     if (k === "q") App.edges.switchPressed = true;
