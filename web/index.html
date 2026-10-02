@@ -1890,7 +1890,7 @@ class Career {
         const gain = base + (k === "shooting" ? Math.min(20, 2 * sc) : 0);
         if (overall(p) >= p.cap || p.stats[k] >= S.STAT_MAX) { p.prog[k] = Math.min(99, (p.prog[k] || 0) + gain); continue; }
         p.prog[k] = (p.prog[k] || 0) + gain;
-        if (p.prog[k] >= 100) { p.prog[k] -= 100; const from = p.stats[k]; p.stats[k]++; ups.push({ name: p.name, stat: k, from, to: p.stats[k] }); }
+        if (p.prog[k] >= 100) { p.prog[k] -= 100; const from = p.stats[k]; p.stats[k]++; p.upNew = true; ups.push({ name: p.name, stat: k, from, to: p.stats[k] }); }
       }
     }
     return ups;
@@ -2181,6 +2181,7 @@ const Sound = {
   tick() { this.tone(1900, 0.02, "square", 0.015); },
   buzzer() { this.tone(196, 0.9, "square", 0.07); this.tone(199, 0.9, "sawtooth", 0.05); },
   block() { this.noise(0.12, "lowpass", 400, 0.8, 0.3, 0.002); this.tone(150, 0.18, "sine", 0.2, 70); this.clank(); },
+  chant() { for (let i = 0; i < 3; i++) { this.noise(0.16, "bandpass", 900, 0.8, 0.22, 0.01, i * 0.42); this.noise(0.2, "bandpass", 500, 1.2, 0.12, 0.02, i * 0.42 + 0.2); } },   // clap-clap... "DE-FENSE"
   hum() { this.tone(110, 1.8, "sine", 0.035); this.noise(1.8, "bandpass", 380, 1.2, 0.04, 0.5); },
   fanfare() { [523, 659, 784, 1046].forEach((f, i) => { this.tone(f, 0.22, "triangle", 0.09, null, i * 0.12); this.tone(f * 2, 0.18, "sine", 0.03, null, i * 0.12); }); this.tone(1046, 0.9, "triangle", 0.08, null, 0.5); this.tone(1318, 0.9, "sine", 0.05, null, 0.5); },
   squeak() { this.tone(2400 + Math.random() * 600, 0.06, "sine", 0.03, 1800); },
@@ -2222,6 +2223,9 @@ const App = {
       if (c.seenTier == null || c.tier < c.seenTier) c.seenTier = c.tier;
       else if (c.tier > c.seenTier) { const from = c.seenTier; c.seenTier = c.tier; this.save(); s = new PromotionScreen(from, c.tier, s); }
     }
+    if (this.screen && typeof document !== "undefined" && !(s instanceof MatchScreen) && !(this.screen instanceof MatchScreen)) {   // crossfade from the old screen
+      try { const sn = this.snap || (this.snap = document.createElement("canvas")); sn.width = canvas.width; sn.height = canvas.height; sn.getContext("2d").drawImage(canvas, 0, 0); this.snapT = 0.2; } catch (e) { this.snapT = 0; }
+    }
     this.screen = s; nameInput.hidden = true; if (s.syncInput) s.syncInput(); pad.classList.toggle("show", isTouch && s instanceof MatchScreen); },
   // 5 career slots in this browser
   save() { if (!this.career) return; try { localStorage.setItem(slotKey(this.slot), JSON.stringify(this.career)); } catch (e) { /* storage unavailable: progress lasts this visit */ } },
@@ -2254,8 +2258,13 @@ class Screen {
     text(c.me.name, 24, 12, { size: 40, color: C.gold, display: true });
     const who = c.stage === "pro" ? `${c.team} · ${TIERS[c.tier].name}${c.salary ? ` · $${c.salary}/game` : ""}` : c.title;
     text(`${who}  |  OVR ${overall(c.me)}  |  ${attrLabel(c.me)}`, 24, 46, { size: 24, color: c.champion ? C.gold : C.white });
-    text(`$${c.cash}`, S.W - 24, 10, { size: 36, color: C.green, right: true, display: true });
-    text(`Fame ${c.fame}`, S.W - 24, 46, { size: 24, color: C.gold, right: true });
+    const sh = App.shown || (App.shown = { cash: c.cash, fame: c.fame, career: c });
+    if (sh.career !== c) Object.assign(sh, { cash: c.cash, fame: c.fame, career: c });
+    const ease = (v, to) => Math.abs(to - v) < 1 ? to : v + (to - v) * 0.12;
+    const up = c.cash > sh.cash + 0.5, dn = c.cash < sh.cash - 0.5, fu = c.fame > sh.fame + 0.5;
+    sh.cash = ease(sh.cash, c.cash); sh.fame = ease(sh.fame, c.fame);
+    text(`$${Math.round(sh.cash)}`, S.W - 24, 10, { size: 36, color: up ? "#b6ffc8" : dn ? "#ff9a8a" : C.green, right: true, display: true });
+    text(`Fame ${Math.round(sh.fame)}`, S.W - 24, 46, { size: 24, color: fu ? "#fff1b0" : C.gold, right: true });
     if (sub) text(sub, S.W / 2, 112, { size: 44, center: true, display: true });
   }
   backButton(to) {
@@ -2603,6 +2612,7 @@ class HubScreen extends Screen {
       const done = i < c.tier || (i === OLYMPICS && c.gold);
       const status = here ? "YOU ARE HERE" : !done ? "LOCKED" : i === 0 ? "GRADUATED" : i === OLYMPICS ? "GOLD" : c.stage === "pro" && i < c.startTier ? "SKIPPED" : "WON";
       const col = here ? C.white : done ? (status === "SKIPPED" ? C.grey : C.green) : "#5c5f6b";
+      if (here) { const p = 0.5 + 0.5 * Math.sin(performance.now() / 300); rrect(552, y - 6, 400, 46, 8, `rgba(245,200,60,${0.06 + 0.06 * p})`, `rgba(245,200,60,${0.35 + 0.4 * p})`, 1.5); }
       const nw = text(t.name, 564, y, { size: 26, color: col });
       const UNLOCK = { 3: "+ATTRIBUTE", 4: "+2ND ARCHETYPE", 5: "+2ND ATTRIBUTE", 6: "+ELITE · MAIN MAX", 7: "+3RD ARCHETYPE" };   // what each level unlocks
       if (UNLOCK[i]) text(UNLOCK[i], 564 + nw + 10, y + 6, { size: 13, color: done || here ? "#c9a640" : "#6a5d34", display: true });
@@ -2621,7 +2631,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 48 (juice: steals, blocks, game winners, promotions)");
+    this.footer("Progress saves automatically in this browser  ·  version 49 (juice: transitions, lever, bracket, crowd)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -3339,6 +3349,8 @@ class MatchScreen extends Screen {
         else { Sound.rimIn(); this.burst(hx, hy, 10, [C.orange, "#fff"], 120, 10); }
         this.pop(`+${e.points}`, hx + 96, hy + 6, mine ? C.team[0] : C.team[1], 46, 0.9);
         this.scorePop[e.team] = 1;
+        this.run = this.run && this.run.team === e.team ? { team: e.team, n: this.run.n + 1 } : { team: e.team, n: 1 };
+        if (this.run.n === 3 && mine && crowd > 0) { Sound.chant(); this.pop("THE CROWD'S ON ITS FEET!", 500, 200, C.gold, 26, 1.6); this.excite = 1.4; }
         if (e.swish && (e.fire || e.newFire)) { this.rimFire = 2.6; this.flames(hx, hy - 2, 40, 26, 16, 1.1); Sound.fire(); }   // a swish while on fire: the rim catches
         if (e.newFire) {   // ignition: a flame explosion and a burning stamp
           Sound.fire(); this.shake = Math.max(this.shake, 0.32);
@@ -3851,7 +3863,11 @@ class ResultScreen extends Screen {
 const BR = { W: 98, H: 22, X: [6, 114, 222, 330], TOP: 104, PAIR: 24, STEP: 60, FX: 446, FW: 108 };
 class BracketScreen extends Screen {
   // next: the screen to go to on Continue (or a function that makes it)
-  constructor(next) { super(); this.next = next; this.t0 = performance.now(); }
+  constructor(next) {
+    super(); this.next = next; this.t0 = performance.now();
+    const t = this.t; this.animRound = t && !t.over && t.round > 0 && t.series && t.series.w + t.series.l === 0 ? t.round - 1 : t && t.over && t.champ ? FINAL_ROUND - 1 : -1;
+    if (this.animRound >= 0) setTimeout(() => { try { Sound.chime(); } catch (e) {} }, 500);
+  }
   go() { const n = this.next, s = typeof n === "function" ? n() : n || new CourtScreen(); if (s) App.switch(s); }   // a function may switch screens itself
   key(k) { if (K.ok(k) || K.back(k) || k === "b" || k === "B") this.go(); }
   get t() { const c = this.c; return c.tourney && c.tourney.field ? c.tourney : c.lastTourney; }
@@ -3891,6 +3907,14 @@ class BracketScreen extends Screen {
     // connector out to the next round
     const ex = right ? x - 4 : x + w + 4, ox = right ? x : x + w, mid = (ya + yb) / 2, nx = right ? x - 10 : x + w + 10;
     const col = mt.you && mt.winner === 0 ? C.gold : "#3a3d4a";
+    if (mt.you && mt.winner === 0 && r === this.animRound) {   // you just won this round: the line sweeps forward and glows
+      const k = clamp((performance.now() - this.t0 - 250) / 700, 0, 1), yy = mt.a === 0 ? ya : yb;
+      line(ox, ya, ex, ya, "#3a3d4a", 1.5); line(ox, yb, ex, yb, "#3a3d4a", 1.5); line(ex, ya, ex, yb, "#3a3d4a", 1.5); line(ex, mid, nx, mid, "#3a3d4a", 1.5);
+      ctx.save(); ctx.shadowColor = C.gold; ctx.shadowBlur = 12;
+      const seg = [[ox, yy, ex, yy], [ex, yy, ex, mid], [ex, mid, nx, mid]], L = seg.map(([a, b, c2, d]) => Math.hypot(c2 - a, d - b)), tot = L.reduce((a, b) => a + b, 0);
+      let left = tot * k; for (let i = 0; i < 3 && left > 0; i++) { const f = Math.min(1, left / L[i]), [a, b, c2, d] = seg[i]; line(a, b, a + (c2 - a) * f, b + (d - b) * f, C.gold, 3); left -= L[i]; }
+      ctx.restore(); return;
+    }
     line(ox, ya, ex, ya, col, 1.5); line(ox, yb, ex, yb, col, 1.5); line(ex, ya, ex, yb, col, 1.5); line(ex, mid, nx, mid, col, 1.5);
   }
   draw() {
@@ -4161,7 +4185,7 @@ class ScoutReportScreen extends Screen {
 const statLine = p => S.STATS.map(k => `${S.LABEL[k].slice(0, 3).toUpperCase()} ${p.stats[k]}`).join("  ");
 
 class CrewScreen extends Screen {
-  constructor() { super(); this.i = 0; this.msg = ""; }
+  constructor() { super(); this.i = 0; this.msg = ""; this.t0 = performance.now(); this.shiny = this.c.crew.filter(p => p.upNew); for (const p of this.shiny) p.upNew = false; }
   releaseSel() {
     const c = this.c, name = c.crew[this.i].name;
     if (c.release(this.i)) { this.msg = `Released ${name}.`; this.i = Math.min(this.i, c.crew.length - 1); App.save(); }
@@ -4184,6 +4208,8 @@ class CrewScreen extends Screen {
     c.crew.forEach((p, i) => {
       const y = 214 + i * 62, sel = i === this.i, starter = c.starters.includes(i);
       rrect(60, y - 6, 600, 56, 8, sel ? "#34364a" : null, sel ? C.gold : null, 1.5);
+      if (this.shiny.includes(p) && performance.now() - this.t0 < 6000) {   // just got better: a shine sweeps the row
+        shine(60, y - 6, 600, 56, 8, (performance.now() - this.t0) / 1000 * 1.6); text("▲ LEVELED UP", 650, y + 2, { size: 15, color: C.gold, right: true, display: true }); }
       const status = p.injured > 0 ? `  · HURT (${p.injured} games)` : starter ? "  · STARTER" : "";
       text(`${p.pos}  #${p.number} ${p.name}  OVR ${overall(p)}${status}`, 80, y, { size: 28, color: p.injured > 0 ? "#ff8a7a" : starter ? C.green : C.white });
       const wear = p.wear || 0; rrect(500, y + 4, 80, 8, 4, "#2a2c36"); rrect(500, y + 4, 80 * (1 - wear), 8, 4, wear > 0.6 ? C.red : wear > 0.3 ? C.orange : C.green);
@@ -4498,12 +4524,15 @@ class PackReveal {
     this.confetti(dt);
     for (const q of this.parts) { q.x += q.vx * dt; q.y += q.vy * dt; q.vy += q.g * dt; q.life -= dt; }
     this.parts = this.parts.filter(q => q.life > 0 && q.y < 720);
+    if (this.fly != null) { this.fly += dt; if (this.fly >= 0.5) { this.fly = null; try { Sound.chime(); } catch (e) {} this.opts.close && this.opts.close(); } }
   }
   key(k) {
+    if (this.fly != null) return;
     if (!this.done) { if (K.ok(k) || k === " ") this.skip(); return; }
-    if (K.back(k)) this.opts.close && this.opts.close();
+    if (K.back(k)) this.close();
     else if (K.ok(k) || k === " ") this.opts.again && this.opts.again();
   }
+  close() { if (this.fly == null) { this.fly = 0; try { Sound.whoosh(true); } catch (e) {} } }   // the card flies into your crew, then we leave
   draw(c) {
     ctx.fillStyle = "#07080c"; ctx.fillRect(0, 0, S.W, S.H);
     const t = this.t, rc = this.color, after = t - this.packT;
@@ -4534,6 +4563,8 @@ class PackReveal {
       const fk = clamp(after / 0.6, 0, 1), ease = 1 - Math.pow(1 - fk, 3), sc = 0.3 + 0.7 * ease, flip = Math.cos((1 - ease) * Math.PI);
       ctx.save(); ctx.translate(500, 330); ctx.scale(Math.max(0.02, Math.abs(flip)), 1); ctx.translate(-500, -330);
       if (flip < 0) { rrect(500 - 125 * sc, 330 - 175 * sc, 250 * sc, 350 * sc, 18 * sc, "#1b1d26", rc, 4); text("SK", 500, 330 - 20 * sc, { size: 60 * sc, color: rc, center: true, display: true }); }
+      else if (this.fly != null) { const f = Math.min(1, this.fly / 0.45), e = f * f; ctx.restore(); ctx.save();   // fly up to the CREW badge
+        drawPlayerCard(this.p, this.label, 500 + (880 - 500) * e, 330 + (40 - 330) * e, Math.max(0.08, 1 - 0.92 * e), 1); }
       else drawPlayerCard(this.p, this.label, 500, 330, sc, clamp((after - 0.5) / 0.9, 0, 1));
       ctx.restore();
       text(this.label === "Bum" ? "BUM" : `${this.label.toUpperCase()}!`, 500, 120 - 30, { size: 30 + 8 * this.ti, color: this.ti >= 5 ? rainbow(380, 70, 240, 40) : rc, center: true, display: true });
@@ -4542,12 +4573,14 @@ class PackReveal {
     if (after >= 0 && after < 0.5 && this.opts.pack !== false || after >= 0 && after < 0.3) { ctx.save(); ctx.globalAlpha = Math.max(0, (this.ti >= 3 ? 0.9 : 0.5) * (1 - after / 0.5)); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, S.W, S.H); ctx.restore(); }
     for (const q of this.parts) { ctx.globalAlpha = Math.min(1, q.life / q.max * 1.5); if (q.conf) { ctx.fillStyle = q.col; ctx.fillRect(q.x, q.y, q.r * 2, q.r); } else circle(q.x, q.y, q.r, q.col); }
     ctx.globalAlpha = 1;
-    if (this.done) {
+    if (this.fly != null || this.t < this.packT) { const bump = this.fly != null ? 1 + 0.3 * Math.sin(Math.min(1, this.fly / 0.5) * Math.PI) : 1;   // the CREW badge the card flies to
+      ctx.save(); ctx.translate(880, 40); ctx.scale(bump, bump); rrect(-60, -20, 120, 40, 10, "#1b1d26", C.gold, 2); text(`CREW ${c.crew.length}/${c.crewMax()}`, 0, 0, { size: 18, color: C.gold, center: true, display: true }); ctx.restore(); }
+    if (this.done && this.fly == null) {
       text(`Added to your crew (${c.crew.length}/${c.crewMax()})  ·  $${c.cash} left`, 500, 528, { size: 24, color: C.grey, center: true });
       if (this.opts.again) { rrect(300, 566, 190, 52, 10, C.gold); text(this.opts.againLabel || "AGAIN", 395, 592, { size: 24, color: "#1a1406", center: true, display: true }); hit(300, 566, 190, 52, () => this.opts.again()); }
-      rrect(510, 566, 190, 52, 10, "#2a2c38", C.grey, 1.5); text("DONE", 605, 592, { size: 24, center: true, display: true }); hit(510, 566, 190, 52, () => this.opts.close());
+      rrect(510, 566, 190, 52, 10, "#2a2c38", C.grey, 1.5); text("DONE", 605, 592, { size: 24, center: true, display: true }); hit(510, 566, 190, 52, () => this.close());
       text("Enter = again  ·  Esc = done", 500, 642, { size: 18, color: C.grey, center: true, weight: 500 });
-    } else text("Enter to skip", 500, 650, { size: 16, color: "#5a5d6a", center: true, weight: 500 });
+    } else if (this.fly == null) text("Enter to skip", 500, 650, { size: 16, color: "#5a5d6a", center: true, weight: 500 });
   }
 }
 
@@ -4562,7 +4595,8 @@ class SlotScreen extends Screen {
     if (!res) { this.msg = `Need $${Luck.machineCost(c, this.mi)}.`; return; }
     this.pending = res; this.msg = ""; App.save();
     const ti = RAR_TIER[res[0]];
-    this.spinMax = this.spinT = ti >= 3 ? 2.4 : 1.6;     // the last reel hangs longer on a big pull
+    this.spinMax = this.spinT = ti >= 3 ? 2.6 : 1.8;     // the last reel hangs longer on a big pull
+    this.leverT = 0; this.reelNext = [0, 0, 0]; try { Sound.noise(0.12, "lowpass", 300, 0.7, 0.2, 0.002); } catch (e) {}
     const low = ["Bum", "Solid", "Baller"], L = res[0];
     this.final = ti >= 3 ? [L, L, L] : this.rng.random() < 0.5 ? [L, L, this.rng.choice(low.filter(x => x !== L))] : [this.rng.choice(low.filter(x => x !== L)), L, L];
   }
@@ -4579,9 +4613,17 @@ class SlotScreen extends Screen {
     if (this.reveal) { this.reveal.update(dt); return; }
     if (this.spinT <= 0) return;
     this.spinT -= dt;
-    const e = this.spinMax - this.spinT, stops = this.spinMax > 2 ? [0.6, 1.0, 2.2] : [0.6, 1.0, 1.4];
-    this.reels = this.reels.map((r, i) => e >= stops[i] ? this.final[i] : this.rng.choice(Object.keys(RAR_TIER)));
+    if (this.leverT != null) this.leverT += dt;
+    const e = this.spinMax - this.spinT, stops = this.spinMax > 2.2 ? [0.8, 1.25, 2.45] : [0.8, 1.25, 1.65];
+    this.reelNext = this.reelNext || [0, 0, 0];
+    this.reels = this.reels.map((r, i) => {   // each reel spins fast, then slows (ticks get further apart) and lands
+      if (e >= stops[i]) { if (!this.landed || !this.landed[i]) { (this.landed = this.landed || [])[i] = true; try { Sound.clank(); } catch (er) {} } return this.final[i]; }
+      const left = stops[i] - e, gapT = left < 0.6 ? 0.04 + (0.6 - left) * 0.35 : 0.04;
+      if (e >= this.reelNext[i]) { this.reelNext[i] = e + gapT; if (left < 0.6) try { Sound.tick(); } catch (er) {} return this.rng.choice(Object.keys(RAR_TIER)); }
+      return r;
+    });
     if (this.spinT <= 0) {
+      this.landed = null; this.leverT = null;
       const [label, p] = this.pending;
       this.reveal = new PackReveal(label, p, { pack: false, againLabel: `AGAIN $${Luck.machineCost(this.c, this.mi)}`,
         again: () => { this.reveal = null; this.pull(); }, close: () => { this.reveal = null; } });
@@ -4608,6 +4650,12 @@ class SlotScreen extends Screen {
       if (RAR_TIER[sym] >= 4) ctx.restore();
       if (et) shine(x, y, 150, 110, 14);
     });
+    { // the lever: pulled down when you spin, springs back
+      const lt = this.leverT, k = lt == null ? 0 : lt < 0.18 ? lt / 0.18 : Math.max(0, 1 - (lt - 0.18) / 0.4), ky = 300 + k * 90;
+      rrect(760, 330, 16, 80, 6, "#5a5d6a"); ctx.strokeStyle = "#c9ccd6"; ctx.lineWidth = 7; ctx.lineCap = "round"; ctx.beginPath(); ctx.moveTo(768, 370); ctx.lineTo(790, ky); ctx.stroke();
+      circle(790, ky, 15, "#e23b3b", "#7a1010", 3); circle(785, ky - 5, 4, "rgba(255,255,255,0.6)");
+      hit(770, ky - 20, 44, 44, () => this.pull());
+    }
     rrect(400, 442, 200, 54, 10, C.gold); text(`PULL $${Luck.machineCost(c, this.mi)}`, 500, 469, { size: 28, color: "#1a1406", center: true, display: true }); hit(400, 442, 200, 54, () => this.pull());
     if (this.msg) text(this.msg, 500, 520, { size: 26, color: this.msg.startsWith("Need") || this.msg.startsWith("Crew") ? C.red : C.white, center: true });
     text(`Bum ${m.odds[0]}%  ·  Solid ${m.odds[1]}%  ·  Baller ${m.odds[2]}%  ·  Legend ${m.odds[3]}%  ·  Mythic ${m.odds[4]}%  ·  Eternal ${m.odds[5]}%`, 500, 560, { size: 20, color: C.grey, center: true, weight: 500 });
@@ -4719,6 +4767,11 @@ function frame(now) {
   App.hits = [];
   App.screen.draw();
   drawPointerFx();
+  if (App.snapT > 0) {   // the old screen fades out over the new one (with a tiny zoom)
+    const k = App.snapT / 0.2; App.snapT -= dt;
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = k * k; const z = 1 + (1 - k) * 0.03, w = canvas.width, h = canvas.height;
+    ctx.drawImage(App.snap, -w * (z - 1) / 2, -h * (z - 1) / 2, w * z, h * z); ctx.restore();
+  }
   requestAnimationFrame(frame);
 }
 function start(data) {
