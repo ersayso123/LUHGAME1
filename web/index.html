@@ -214,7 +214,7 @@ const MILESTONES = [
   { ovr: 62 }, { ovr: 65, stamina: true }, { ovr: 68 }, { ovr: 70 }, { ovr: 72 }, { ovr: 75, stamina: true, crew: true },
   { ovr: 80 }, { ovr: 82 }, { ovr: 85 }, { ovr: 90 },
 ];
-const MOVE_NAMES = { spin: "Spin move", behind: "Behind-the-back" };
+const MOVE_NAMES = { spin: "Faster spin", behind: "Killer spin" };
 const milestoneText = ms => [ms.badge && BADGES[ms.badge].name, ms.slot && "+1 attribute slot", ms.move && MOVE_NAMES[ms.move], ms.stamina && "+stamina", ms.crew && "+1 crew slot"].filter(Boolean).join(" · ") || "cash & fame";
 // Opponents and generated players: the better they are, the more attributes (and moves) they have
 function tierForOvr(o) { let t = 0; for (let i = 0; i < TIERS.length; i++) if (TIERS[i].base <= o + 2) t = i; return t; }
@@ -319,7 +319,7 @@ const DUNK_STYLES = {
   two: { t: 0.4, name: "SLAM!", shake: 0.35 }, tomahawk: { t: 0.46, name: "TOMAHAWK!", shake: 0.45 }, windmill: { t: 0.52, name: "WINDMILL!", shake: 0.5 },
   "360": { t: 0.58, name: "360 JAM!", shake: 0.55, slow: 0.35 }, poster: { t: 0.44, name: "POSTERIZED!", shake: 0.6, slow: 0.35 },
 };
-const blankInputs = () => ({ move: [0, 0], shootPressed: false, shootDown: false, passPressed: false, movePressed: false, stepPressed: false, forceDrive: false, specialPressed: false, switchPressed: false, sprint: false, coachAccept: false, coachIgnore: false });
+const blankInputs = () => ({ move: [0, 0], shootPressed: false, shootDown: false, passPressed: false, movePressed: false, specialPressed: false, switchPressed: false, sprint: false, coachAccept: false, coachIgnore: false });
 
 // Coach's calls: team tactics your teammates carry out on their own.
 const PLAYS = [
@@ -327,8 +327,8 @@ const PLAYS = [
   { id: "spread", side: "off", name: "Spread the floor", desc: "Teammates fill the corners and wings. Attack the open lane." },
   { id: "crash", side: "off", name: "Crash the boards", desc: "Everyone hits the glass when you shoot." },
   // help calls: the coach only makes these when your offense is stuck
-  { id: "cut", side: "off", help: true, name: "Cut to the rim", desc: "Teammate cuts to the rim. Pass it (K)!" },
-  { id: "getopen", side: "off", help: true, name: "Get open", desc: "Teammates find space. Hit the open man (K)." },
+  { id: "cut", side: "off", help: true, name: "Cut to the rim", desc: "Teammate cuts to the rim. Pass it (P)!" },
+  { id: "getopen", side: "off", help: true, name: "Get open", desc: "Teammates find space. Hit the open man (P)." },
   { id: "boxout", side: "def", name: "Box out", desc: "Seal your man on every shot. Win the rebound." },
   { id: "lockdown", side: "def", name: "Lock down", desc: "Get up in their jerseys. Tight D, active hands." },
 ];
@@ -609,14 +609,11 @@ class Match {
       if (!it.action && this.meter === null) {
         if (inp.passPressed && this.practice) this.say("Practice: nobody to pass to", 0.8);
         else if (inp.passPressed) { it.action = "pass"; it.target = this.pickPassTarget(a, inp.move); }
-        else if (inp.stepPressed) { it.action = "cross"; it.moveType = Math.abs(inp.move[0]) > 0.3 ? "sidestep" : "stepback"; }   // J: step-back
-        else if (inp.movePressed) it.action = "cross";
-        else if (inp.specialPressed) {   // L: spin (or behind-the-back while holding back), once you've unlocked them
-          const mv = a.p.moves || [], back = inp.move[1] > 0.3;
-          if (back && mv.includes("behind")) { it.action = "cross"; it.moveType = "behind"; }
-          else if (mv.includes("spin")) { it.action = "cross"; it.moveType = "spin"; }
-          else this.say(back ? "Behind-the-back unlocks at OVR 60" : "Spin move unlocks at OVR 52", 1.2);
+        else if (inp.movePressed) {   // K: D/A = crossover right/left, S = step-back, S+D / S+A = step-back to that side
+          const [mx, my] = inp.move; it.action = "cross";
+          it.moveType = my > 0.3 ? (Math.abs(mx) > 0.3 ? "sidestep" : "stepback") : Math.abs(mx) > 0.3 ? "cross" : my < -0.3 ? "go" : "hesi";
         }
+        else if (inp.specialPressed) { it.action = "cross"; it.moveType = "spin"; }   // L: spin forward (W+D up-right, W+A up-left)
       }
     } else {
       this.meter = null;
@@ -852,7 +849,9 @@ class Match {
     // Combo Dribbler: the 1st move chains straight into a 2nd, then a longer cooldown
     if (hasBadge(a.p, "combo")) { a.chain = this.elapsed - (a.lastMoveT ?? -9) < 1.2 ? (a.chain || 0) + 1 : 1; a.cool = a.chain % 2 === 1 ? 0.12 : 1.6; }
     else a.cool = 0.9;
-    if (type === "spin") a.cool += 0.3;
+    const mvs = a.p.moves || [];
+    if (type === "spin" && !mvs.includes("spin")) a.cool += 0.3;          // Faster spin (OVR 52): no extra recovery
+    if (type === "spin" && mvs.includes("behind")) mv.odds *= 1.25;      // Killer spin (OVR 60): breaks ankles more
     a.lastMoveT = this.elapsed;
     if (hasBadge(a.p, "firststep") && (type === "cross" || type === "drive" || type === "go")) a.burst = 0.45;
     if (hasBadge(a.p, "ankles")) mv.odds *= 1.3;
@@ -2664,7 +2663,7 @@ class HubScreen extends Screen {
     } else if (c.gold) text("OLYMPIC GOLD. The best in the country.", 755, 556, { size: 24, color: C.gold, center: true, display: true });
     else if (c.champion) text(`${KING}. Next: the Olympics.`, 755, 556, { size: 22, color: C.gold, center: true, display: true });
     else text(`${c.team} · drafted grade ${c.draftGrade || "-"} · titles ${c.titles}`, 755, 560, { size: 21, color: C.grey, center: true, weight: 500 });
-    this.footer("Progress saves automatically in this browser  ·  version 59 (H cross · J step-back · K pass)");
+    this.footer("Progress saves automatically in this browser  ·  version 60 (P pass · K moves · L spin)");
   }
 }
 // Draw text that shrinks until it fits a width.
@@ -3565,7 +3564,7 @@ class MatchScreen extends Screen {
     App.switch(this.crew.mode === "tourney" && this.c.lastTourney ? new BracketScreen(rs) : rs);   // tournament games show the bracket first
   }
   key(k) {
-    if (k === "Escape" || k === "p" || k === "P") this.paused = !this.paused;
+    if (k === "Escape") this.paused = !this.paused;
     else if (this.paused && (k === "f" || k === "F")) this.finish(true);
   }
   update(dt) {
@@ -3625,10 +3624,10 @@ class MatchScreen extends Screen {
   }
   // a tiny key display (bottom right): the direction keys you're holding and a flash when K lands
   drawKeys() {
-    const ks = App.keys, x0 = S.W - 104, y0 = S.H - 72, cell = (lbl, x, y, on) => { rrect(x, y, 26, 24, 5, on ? "rgba(245,200,60,0.85)" : "rgba(20,20,26,0.6)", "rgba(255,255,255,0.25)", 1); text(lbl, x + 13, y + 12, { size: 15, color: on ? "#1a1406" : "#9a9caa", center: true, display: true }); };
+    const ks = App.keys, x0 = S.W - 140, y0 = S.H - 72, cell = (lbl, x, y, on) => { rrect(x, y, 26, 24, 5, on ? "rgba(245,200,60,0.85)" : "rgba(20,20,26,0.6)", "rgba(255,255,255,0.25)", 1); text(lbl, x + 13, y + 12, { size: 15, color: on ? "#1a1406" : "#9a9caa", center: true, display: true }); };
     cell("W", x0 + 28, y0, ks.has("w") || ks.has("arrowup")); cell("A", x0, y0 + 27, ks.has("a") || ks.has("arrowleft")); cell("S", x0 + 28, y0 + 27, ks.has("s") || ks.has("arrowdown")); cell("D", x0 + 56, y0 + 27, ks.has("d") || ks.has("arrowright"));
-    cell("H", x0 + 74, y0, (App.kFlash || 0) > 0);
-    App.kFlash = Math.max(0, (App.kFlash || 0) - 1 / 60);
+    cell("K", x0 + 84, y0 + 27, (App.kFlash || 0) > 0); cell("L", x0 + 112, y0 + 27, (App.lFlash || 0) > 0);
+    App.kFlash = Math.max(0, (App.kFlash || 0) - 1 / 60); App.lFlash = Math.max(0, (App.lFlash || 0) - 1 / 60);
   }
   // the last bucket: buzzer, a flash, a beat of slow motion, confetti, the winners mob each other
   gameOverFx() {
@@ -3792,7 +3791,7 @@ class MatchScreen extends Screen {
     if (m.phase === "check") text("CHECK BALL", 500, 380, { size: 40, center: true, display: true });
     if (m.phase === "over") { const won = m.winner === 0; text(won ? "YOU WIN!" : "YOU LOSE", 500, 330, { size: 80, color: won ? C.green : C.red, center: true, display: true }); }
     if (!isTouch) {
-      text("WASD / arrows move · SHIFT sprint · SPACE shoot · H crossover / steal · J step-back · K pass · Q switch · M sound", 500, S.H - 16, { size: 18, center: true, weight: 500 });
+      text("WASD move · SPACE shoot · P pass · K crossover / step-back / steal · L spin · SHIFT sprint · Q switch · ESC pause", 500, S.H - 16, { size: 18, center: true, weight: 500 });
       this.drawKeys();
     }
     if (this.paused) {
@@ -4061,7 +4060,7 @@ class PracticeScreen extends MatchScreen {
     super.draw();
     rrect(300, 50, 400, 34, 8, "rgba(10,10,14,0.75)", C.gold, 1.5);
     text("PRACTICE COURT  ·  every move unlocked  ·  Esc to leave", 500, 67, { size: 18, color: C.gold, center: true, display: true });
-    text("H + WASD: crossovers  ·  J (+ A/D): step-backs  ·  K: pass  ·  L: spin  ·  S + L: behind the back  ·  SPACE: shoot", 500, 626, { size: 16, color: C.white, center: true, weight: 600 });
+    text("K + A/D: crossover  ·  K + S (+A/D): step-back  ·  L + W/D or W/A: spin forward  ·  SPACE: shoot", 500, 626, { size: 16, color: C.white, center: true, weight: 600 });
   }
 }
 
@@ -4781,7 +4780,7 @@ class MysteryScreen extends Screen {
 // =====================================================================
 // Input wiring
 // =====================================================================
-const KEY_CODES = { KeyW: "w", KeyA: "a", KeyS: "s", KeyD: "d", KeyJ: "j", KeyH: "h", KeyK: "k", KeyL: "l", KeyQ: "q" };   // the keys by position, whatever the layout
+const KEY_CODES = { KeyW: "w", KeyA: "a", KeyS: "s", KeyD: "d", KeyK: "k", KeyL: "l", KeyP: "p", KeyQ: "q" };   // the keys by position, whatever the layout
 const GAME_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "]);
 window.addEventListener("keydown", e => {
   Sound.wake();
@@ -4794,13 +4793,12 @@ window.addEventListener("keydown", e => {
   const k = KEY_CODES[e.code] || (e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase());
   if (!e.repeat) {
     if (e.key === " ") App.edges.shootPressed = true;
-    if (k === "k") App.edges.passPressed = true;      // K: pass
-    if (k === "j") App.edges.stepPressed = true;      // J: step-back (J + D / A for a side step-back)
-    if (k === "h") { App.edges.movePressed = true; App.kFlash = 0.35; }   // H: dribble moves (crossovers, step-backs) and steals
-    if (k === "l") App.edges.specialPressed = true;
+    if (k === "p") App.edges.passPressed = true;                          // P: pass
+    if (k === "k") { App.edges.movePressed = true; App.kFlash = 0.35; }   // K: crossovers and step-backs (steal on defense)
+    if (k === "l") { App.edges.specialPressed = true; App.lFlash = 0.35; }   // L: spin forward
     if (k === "q") App.edges.switchPressed = true;
 
-    if (!(App.screen instanceof MatchScreen) || ["Escape", "p", "P", "f", "F"].includes(e.key)) App.screen.key(e.key);
+    if (!(App.screen instanceof MatchScreen) || ["Escape", "f", "F"].includes(e.key)) App.screen.key(e.key);
   }
   App.keys.add(k);
 });
